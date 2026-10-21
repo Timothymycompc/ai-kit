@@ -152,9 +152,11 @@ else
   echo "  (not checking the clean report: this kit is not a git checkout)"
 fi
 
-PIN_RENDER="$(bash "$REPO_ROOT/install.sh" "$(new_project pin-render)" 2>&1)"
-assert_contains "$PIN_RENDER" "! Checked 5 of $PINS_TOTAL" "install.sh renders a partial pin check as a warning"
-assert_eq "" "$(printf '%s\n' "$PIN_RENDER" | grep -F '✓ Checked' || true)" "...and never as a tick"
+# Streams kept apart: a warning belongs on stderr, where a caller discarding stdout still reads it.
+PIN_RENDER="$(bash "$REPO_ROOT/install.sh" "$(new_project pin-render)" 2>"$TEMP_DIR/pin-render.err")"
+PIN_RENDER_ERR="$(cat "$TEMP_DIR/pin-render.err")"
+assert_contains "$PIN_RENDER_ERR" "! Checked 5 of $PINS_TOTAL" "install.sh renders a partial pin check as a warning, on stderr"
+assert_eq "" "$(printf '%s\n' "$PIN_RENDER" "$PIN_RENDER_ERR" | grep -F '✓ Checked' || true)" "...and never as a tick"
 
 # The registry pin is the only record of a pack's commit that reaches a project, so a kit
 # whose gitlink says something else must stop the install rather than vendor it quietly.
@@ -170,15 +172,18 @@ PY
 G -C "$KIT" commit -qam "drift one pin"
 P7="$(new_project drifted)"
 TOTAL=$((TOTAL + 1))
-DRIFT_OUT="$(bash "$REPO_ROOT/install.sh" "$P7" 2>&1)" && DRIFT_RC=0 || DRIFT_RC=$?
-if [ "$DRIFT_RC" -ne 0 ] && printf '%s' "$DRIFT_OUT" | grep -q "solana-dev: gitlink"; then
-  echo "  PASS: install.sh refuses a pack whose gitlink differs from the registry pin"
+# stdout discarded, as ci.yml's agents-mode-clients step does: the refusal has to reach
+# stderr, or that caller fails with an empty log (#246).
+DRIFT_ERR="$(bash "$REPO_ROOT/install.sh" "$P7" 2>&1 >/dev/null)" && DRIFT_RC=0 || DRIFT_RC=$?
+if [ "$DRIFT_RC" -ne 0 ]; then
+  echo "  PASS: install.sh refuses a pack whose gitlink differs from the registry pin (exit $DRIFT_RC)"
   PASS=$((PASS + 1))
 else
-  echo "  FAIL: install.sh vendored a pack at a commit the registry does not record (exit $DRIFT_RC)"
-  printf '%s\n' "$DRIFT_OUT" | tail -5 | sed 's/^/    /'
+  echo "  FAIL: install.sh vendored a pack at a commit the registry does not record"
   FAIL=$((FAIL + 1))
 fi
+assert_contains "$DRIFT_ERR" "solana-dev: gitlink" "...naming the drifted pack on stderr"
+assert_contains "$DRIFT_ERR" "✗ A skill pack is not at the commit skill-registry.json records for it" "...with the refusal on stderr too"
 assert_dir_not_exists "$P7/.claude/skills/ext/solana-dev" "...and installs no pack"
 (cd "$KIT" && bash .claude/bin/skills.sh pins --write >/dev/null)
 G -C "$KIT" commit -qam "resync pins"
