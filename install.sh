@@ -85,11 +85,13 @@ print_banner() {
   printf '%s\n\n' "${CSUB}         by @SuperteamBR 🇧🇷${CRST}"
 }
 
-# Log helpers — glyph prefixes only; message text stays grep-stable.
+# Log helpers — glyph prefixes only; message text stays grep-stable. Progress goes to
+# stdout, warnings and refusals to stderr: a caller that silences progress with
+# > /dev/null must still see why the install stopped (#246 failed CI with an empty log).
 step() { printf '▸ %s\n' "$*"; }
 ok()   { printf '✓ %s\n' "$*"; }
-warn() { printf '! %s\n' "$*"; }
-fail() { printf '✗ %s\n' "$*"; }
+warn() { printf '! %s\n' "$*" >&2; }
+fail() { printf '✗ %s\n' "$*" >&2; }
 
 print_banner
 
@@ -177,7 +179,7 @@ if [ -f "$TEMP_DIR/repo/.claude/bin/skills.sh" ]; then
       *)     warn "$PIN_OUT" ;;
     esac
   else
-    printf '%s\n' "$PIN_OUT"
+    printf '%s\n' "$PIN_OUT" >&2
     fail "A skill pack is not at the commit skill-registry.json records for it"
     exit 1
   fi
