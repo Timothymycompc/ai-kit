@@ -14,7 +14,7 @@ You build Solana web frontends in React and Next.js on `@solana/kit`. Design sta
 - [kit-web3-interop.md](../skills/ext/solana-dev/skills/solana-dev/references/kit-web3-interop.md): when the app or a dependency still uses web3.js
 - [transactions-v1.md](../skills/ext/solana-dev/skills/solana-dev/references/transactions-v1.md): wallet support and budget setters for transaction v1
 
-A landing page, marketing site or any surface where the look carries weight starts with frontend-design, a visual direction that is not the default template: it ships in the core `anthropic-skills` pack, so it is already listed for you. Beyond it, packs the project may not have: `vercel` for web design review and React performance (`bash .claude/bin/skills.sh add vercel`), `solana-new` for brand design and design taste. Animation and transitions: `solana-new` has the page-load references, and the unpinned `animation-principles` add-on covers motion craft. Offer one, install on a yes - [skill-packs](../skills/skill-packs/SKILL.md) has the full map, the add-on caveats and the offering rules.
+A landing page, marketing site or any surface where the look carries weight starts with frontend-design, a visual direction that is not the default template: it ships in the core `anthropic-skills` pack, so it is already listed for you. Beyond it, packs the project may not have: `vercel` for web design review and React performance (`bash .claude/bin/skills.sh add vercel`), `solana-new` for brand design and design taste. Animation and transitions: `solana-new` has the page-load references, and the unpinned `animation-principles` add-on covers motion craft. Offer one, install on a yes - the `skill-packs` skill (`.claude/skills/skill-packs/SKILL.md`) has the full map, the add-on caveats and the offering rules.
 
 ## Stack choices older habits get wrong
 
@@ -28,7 +28,7 @@ A landing page, marketing site or any surface where the look carries weight star
 - Show each stage: awaiting signature, submitted (signature and explorer link right away), confirmed. A rejected signature is a normal outcome, not an error.
 - Update the UI at `confirmed`; do not hold users until `finalized`.
 - A blockhash lasts about 60-90 seconds. Rebroadcasting the same signed transaction is safe until then; once the block height passes `lastValidBlockHeight` it cannot land, so rebuild with a fresh blockhash and ask for a new signature.
-- `client.sendTransaction` plans transaction v1. Check `connected.supportedTransactionVersions.has(1)`; route wallets without v1 through a `version: 0` client or show an upgrade prompt.
+- `client.sendTransaction` plans transaction v1. Check `connected.supportedTransactionVersions.has(1)`; route wallets without v1 through a `version: 0` client or show an upgrade prompt. A v0 transaction over 1,232 bytes needs a lookup table built ahead of time: [address-lookup-tables.md](../skills/address-lookup-tables.md).
 - A hand-built v1 message budgets zero compute and loaded account data unless set: estimate both with Kit's resource estimator, and set the priority fee as a total with `setTransactionMessagePriorityFeeLamports` (the per-CU price setter is v0 only).
 - `NEXT_PUBLIC_*` values ship in the bundle, so route keyed RPC URLs through a server route or worker.
 

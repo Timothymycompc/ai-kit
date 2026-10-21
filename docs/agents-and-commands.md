@@ -1,6 +1,6 @@
 # Agents and commands
 
-The complete reference: 15 agents with the model each one runs on, 32 workflow commands, and how to compose them into a team. Nothing here loads up front — Claude Code lists only each agent's and command's one-line description, and reads a body when a task needs it.
+The complete reference: 15 agents with the model each one runs on, 33 workflow commands, and how to compose them into a team. Nothing here loads up front — Claude Code lists only each agent's and command's one-line description, and reads a body when a task needs it.
 
 ## Agents
 
@@ -22,7 +22,7 @@ The complete reference: 15 agents with the model each one runs on, 32 workflow c
 | **solana-guide** | Learning, tutorials, concept explanations, progressive learning paths | Sonnet |
 | **solana-researcher** | Ecosystem research, protocol investigation, SDK analysis | Sonnet |
 
-**Model routing:** `Opus` for deep reasoning where Opus is the right fit; `Sonnet` for implementation-heavy, mechanical, docs or high-volume work; `Inherit` means no `model:` line, so the agent runs on your session model (architecture and unsafe low-level code get the strongest model you run, Fable included). The kit never pins `fable`. Commands inherit your session model too, except `/doctor`, `/setup-mcp`, `/resync`, `/update`, `/cleanup`, `/commit-claude-config` and `/scaffold`, which run on Sonnet for that turn. `CLAUDE_CODE_SUBAGENT_MODEL` in your settings `env` sets the model for `Inherit` agents; add `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` to apply it to every agent.
+**Model routing:** `Opus` for deep reasoning where Opus is the right fit; `Sonnet` for implementation-heavy, mechanical, docs or high-volume work; `Inherit` means no `model:` line, so the agent runs on your session model (architecture and unsafe low-level code get the strongest model you run, Fable included). The kit never pins `fable`. Commands inherit your session model too, except `/doctor`, `/setup-mcp` and `/scaffold`, which run on Sonnet for that turn: they are mechanical and you run them at the start of a session, where a model switch costs no cached prompt. `CLAUDE_CODE_SUBAGENT_MODEL` in your settings `env` sets the model for `Inherit` agents; add `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` to apply it to every agent.
 
 ## Agent Teams
 
@@ -95,6 +95,7 @@ Recommended team patterns:
 | Command | Purpose |
 |---------|---------|
 | `/quick-commit` | Create branch, format, lint, conventional commit |
+| `/pr-description` | Write a PR title and body a reviewer can verify: repro without funds, test plan with real counts, risk |
 | `/commit-claude-config` | Version the kit config in git (un-ignores `.claude/`, `CLAUDE.md`, `.mcp.json`, `.gitmodules`) |
 | `/setup-ci-cd` | Configure GitHub Actions pipeline |
 | `/firewall` | Show or switch the firewall tier (Off / Relaxed / Medium / High) |

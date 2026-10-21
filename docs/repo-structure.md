@@ -21,8 +21,11 @@ What is in the kit repository, which parts reach an installed project, and the w
 │   ├── ci.yml                       # PR validation
 │   ├── claude-code-review.yml       # Automatic Claude review of every PR (advisory)
 │   ├── claude.yml                   # @claude mention responder (issues/PRs)
+│   ├── install-live.yml             # Nightly un-mocked install from the one-liner, checked against the docs
 │   └── submodule-review.yml         # Flags risky content in ext/ pin bumps
 ├── .github/scripts/
+│   ├── check-install.sh             # Installed tree vs README counts (used by install-live.yml)
+│   ├── codex-skill-budget.py        # Fails when Codex cuts a skill description (used by ci.yml)
 │   └── submodule-bump-review.sh     # Diff each bumped pack (used by submodule-review.yml)
 ├── .github/templates/
 │   └── claude-code.yml              # Claude Code action template (copy into a project's own workflows/)
@@ -34,7 +37,7 @@ What is in the kit repository, which parts reach an installed project, and the w
     │   ├── resync.sh                # Submodule resync script
     │   ├── firewall.sh              # Generates a tier's permission + sandbox rules
     │   └── skills.sh                # List skill packs, install extensions on demand
-    ├── commands/                # 32 workflow commands
+    ├── commands/                # 33 workflow commands
     ├── hooks/                   # PreToolUse/SessionStart gate scripts
     ├── skills/                  # Progressive-loading knowledge
     │   ├── SKILL.md                 # Unified hub routing to all skills
@@ -56,11 +59,15 @@ What is in the kit repository, which parts reach an installed project, and the w
     │   │   ├── alchemy/               # Official Alchemy (Solana RPC, DAS, gRPC)
     │   │   ├── position-manager-skill/ # CLMM LP lifecycle (Orca, Raydium, Meteora)
     │   │   ├── content-gen-skill/      # Educational content pipeline (courses, explainers)
-    │   │   └── writer-style-skill/     # Prose in a named author's voice
+    │   │   ├── writer-style-skill/     # Prose in a named author's voice
+    │   │   └── startup-builder/        # Idea, pitch, hackathon, pricing, fundraising, launch, BD
     │   ├── skill-registry.json     # Pack tiers (core/extension) + opt-in add-on catalog
     │   ├── skill-packs/            # Work → pack index: which extension or add-on to offer (local)
     │   ├── token-extensions/        # Token-2022 extensions: pick, combine, create (local)
     │   ├── backend-async.md         # Axum/Tokio patterns (local)
+    │   ├── address-lookup-tables.md # Lookup tables for the v0 fallback path (local)
+    │   ├── keeper-ops.md            # Keepers and cranks in production (local)
+    │   ├── monitoring.md            # Monitoring and alerting for a deployed program (local)
     │   └── deployment.md            # Deployment workflows (local)
     ├── security.json            # Firewall tier in force + the exact rules it enforced
     └── settings.json            # Sandbox, permissions, hooks, stbr marketplace + safe-ai-skill@stbr
@@ -109,3 +116,5 @@ git diff main...HEAD
 Remove: excessive comments, abnormal try/catch blocks, verbose errors, redundant validation.
 
 Keep: legitimate security checks, non-obvious explanations, matching error patterns.
+
+Then `/pr-description` writes the PR title and body from that diff and the test output you ran.
