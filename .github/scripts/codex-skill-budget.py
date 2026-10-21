@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Fail when Codex shortened the description of a skill it registered from a project.
 
-Usage: codex-skill-budget.py <codex-debug-prompt-input.json> <project>/.agents/skills [min-entries]
+Usage: codex-skill-budget.py [--require <relpath>]...
+           <codex-debug-prompt-input.json> <project>/.agents/skills [min-entries]
 
 Codex lists each skill as `- <name>: <description> (file: rN/<path>)` and splits one
 shared description budget across every entry, cutting each to its share with no marker
@@ -11,9 +12,15 @@ skills root with the `description` in the SKILL.md it points at: the emitted tex
 be at least as long as the source, capped at PER_SKILL_CAP, below Codex's own per-skill
 clip (~1024 chars), which is a fixed limit and not the budget.
 
+--require <relpath> additionally asserts that a skill was registered at that path under
+the project's own skills root. Codex registers several roots in one prompt — its bundled
+skills and the user's as well as the project's — so a grep for a name over the whole
+prompt cannot tell which root it came from; the root map read below can.
+
 Exit 0: every entry whole. Exit 1: at least one shortened. Exit 2: nothing to check
 (no skills block, or fewer than min-entries project entries), so a Codex output-format
-change fails loudly instead of passing on zero rows.
+change fails loudly instead of passing on zero rows. Exit 4: a --require path was not
+registered from the project's skills root.
 """
 import json
 import os
@@ -59,11 +66,19 @@ def source_description(path):
 
 
 def main():
-    prompt, skills_dir = sys.argv[1], os.path.realpath(sys.argv[2])
-    min_entries = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+    argv, required = [], []
+    rest = sys.argv[1:]
+    while rest:
+        a = rest.pop(0)
+        if a == "--require":
+            required.append(rest.pop(0))
+        else:
+            argv.append(a)
+    prompt, skills_dir = argv[0], os.path.realpath(argv[1])
+    min_entries = int(argv[2]) if len(argv) > 2 else 1
     block = next((s for s in strings(json.load(open(prompt))) if "### Available skills" in s), "")
     roots = {k: os.path.realpath(v) for k, v in re.findall(r"^- `(r\d+)` = `([^`]+)`", block, re.M)}
-    checked, short = 0, []
+    checked, short, seen = 0, [], set()
     for line in block.splitlines():
         m = re.match(r"^- (.+?) \(file: (r\d+)/(.+)\)$", line)
         if not m or roots.get(m.group(2)) != skills_dir:
@@ -72,6 +87,7 @@ def main():
         want = min(len(source_description(skills_dir + "/" + m.group(3))), PER_SKILL_CAP)
         got = len(norm(desc))
         checked += 1
+        seen.add(m.group(3))
         if got < want:
             short.append(f"{name}: {got} of {want} chars ({m.group(3)})")
     print(f"{checked} project skills registered by Codex, {len(short)} with a shortened description")
@@ -80,6 +96,10 @@ def main():
     if checked < min_entries:
         print(f"expected at least {min_entries} project skills in the Codex prompt")
         return 2
+    missing = [p for p in required if p not in seen]
+    if missing:
+        print("not registered from the project's skills root: " + ", ".join(missing))
+        return 4
     return 1 if short else 0
 
 

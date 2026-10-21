@@ -1,6 +1,6 @@
 # Agents and commands
 
-The complete reference: 15 agents with the model each one runs on, 33 workflow commands, and how to compose them into a team. Nothing here loads up front — Claude Code lists only each agent's and command's one-line description, and reads a body when a task needs it.
+The complete reference: 15 agents with the model each one runs on, 34 workflow commands, and how to compose them into a team. Nothing here loads up front — Claude Code lists only each agent's and command's one-line description, and reads a body when a task needs it.
 
 ## Agents
 
@@ -83,6 +83,7 @@ Recommended team patterns:
 | `/profile-cu` | CU profiling per instruction with optimization suggestions |
 | `/benchmark` | CU benchmarks with before/after comparison |
 | `/debug-user-tx` | Replay a user's failing tx against forked state, map error to source |
+| `/inspect-mint` | Decode a mint from raw bytes (RPC `jsonParsed` drops extensions), list live authorities, flag integration risks |
 
 ### Deployment & Migration
 | Command | Purpose |

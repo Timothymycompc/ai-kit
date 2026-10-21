@@ -23,9 +23,9 @@ assert_file_contains "$REPO_ROOT/QUICK-START.md" "15 Specialized Agents" "QUICK-
 # --- Command count cross-references ---
 echo "[commands]"
 CMD_COUNT=$(find "$REPO_ROOT/.claude/commands" -name "*.md" | wc -l | tr -d ' ')
-assert_eq "33" "$CMD_COUNT" "Actual command count is 33"
-assert_file_contains "$REPO_ROOT/README.md" "33 workflow commands" "README.md references 33 workflow commands"
-assert_file_contains "$REPO_ROOT/QUICK-START.md" "33 Slash Commands" "QUICK-START.md references 33 Slash Commands"
+assert_eq "34" "$CMD_COUNT" "Actual command count is 34"
+assert_file_contains "$REPO_ROOT/README.md" "34 workflow commands" "README.md references 34 workflow commands"
+assert_file_contains "$REPO_ROOT/QUICK-START.md" "34 Slash Commands" "QUICK-START.md references 34 Slash Commands"
 
 # --- MCP server count cross-references ---
 echo "[mcp]"

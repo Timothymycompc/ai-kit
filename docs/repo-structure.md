@@ -25,7 +25,7 @@ What is in the kit repository, which parts reach an installed project, and the w
 │   └── submodule-review.yml         # Flags risky content in ext/ pin bumps
 ├── .github/scripts/
 │   ├── check-install.sh             # Installed tree vs README counts (used by install-live.yml)
-│   ├── codex-skill-budget.py        # Fails when Codex cuts a skill description (used by ci.yml)
+│   ├── codex-skill-budget.py        # Fails when Codex drops a kit skill or cuts its description (used by ci.yml)
 │   └── submodule-bump-review.sh     # Diff each bumped pack (used by submodule-review.yml)
 ├── .github/templates/
 │   └── claude-code.yml              # Claude Code action template (copy into a project's own workflows/)
@@ -37,7 +37,7 @@ What is in the kit repository, which parts reach an installed project, and the w
     │   ├── resync.sh                # Submodule resync script
     │   ├── firewall.sh              # Generates a tier's permission + sandbox rules
     │   └── skills.sh                # List skill packs, install extensions on demand
-    ├── commands/                # 33 workflow commands
+    ├── commands/                # 34 workflow commands
     ├── hooks/                   # PreToolUse/SessionStart gate scripts
     ├── skills/                  # Progressive-loading knowledge
     │   ├── SKILL.md                 # Unified hub routing to all skills

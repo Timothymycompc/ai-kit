@@ -99,64 +99,91 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install pinned opencode and Codex CLIs
-        run: npm install -g opencode-ai@1.18.32 @openai/codex@0.156.1 --no-audit --no-fund
+      - name: Install the pinned Codex and Grok Build CLIs
+        run: npm install -g @openai/codex@0.156.1 @xai-official/grok@1.0.62 --no-audit --no-fund
 
       - name: Agents-mode installs (default, near the Codex budget, over it)
         run: |
           # big: 42 project skills, the most measured with every description whole
           # (#212). over: sendai alone registers 57 and Codex cuts 11 of them.
+          # Keep the installer's own output: it reports a failed pin check, a pack that
+          # would not fetch and every other refusal on stdout, so discarding it leaves a
+          # failure here with nothing in the log at all (that is how #246 presented).
           for p in proj:'' big:helius,solana-mobile,light-protocol,jupiter over:sendai; do
             T="$RUNNER_TEMP/${p%%:*}"; packs="${p#*:}"
             mkdir -p "$T"; git -C "$T" init -q
-            bash install.sh --agents ${packs:+--with "$packs"} "$T" > /dev/null
+            if ! bash install.sh --agents ${packs:+--with "$packs"} "$T" > "$RUNNER_TEMP/install-${p%%:*}.log" 2>&1; then
+              echo "::error::the --agents install failed for ${p%%:*}"
+              tail -40 "$RUNNER_TEMP/install-${p%%:*}.log"
+              exit 1
+            fi
           done
 
-      - name: opencode discovers the kit skills in .agents/skills
+      # Grok Build reads the same AGENTS.md + .agents/skills/ an --agents install writes,
+      # which is why one flag serves both it and Codex. `grok inspect` is a documented
+      # subcommand and --json a stable shape, so assert on the JSON rather than on
+      # rendered text. --trust is required: in an untrusted folder Grok reports no
+      # project instructions and no project skills at all, and exits 0 doing it.
+      - name: Grok Build discovers AGENTS.md and the kit skills in .agents/skills
         run: |
           cd "$RUNNER_TEMP/proj"
-          timeout 300 opencode debug skill > "$RUNNER_TEMP/opencode-skills.json"
-          # Both skills the kit ships in-repo. skill-packs carries the pack routing,
-          # so an --agents install can surface a pack at all.
-          for s in skill-packs token-extensions; do
-            grep -q "/\.agents/skills/$s/SKILL\.md" "$RUNNER_TEMP/opencode-skills.json" \
-              || { echo "::error::opencode did not discover $s"; head -c 3000 "$RUNNER_TEMP/opencode-skills.json"; exit 1; }
+          # The installer gitignores AGENTS.md by default and Grok skips gitignored
+          # instruction files (skills load either way), so a default install gives Grok
+          # no house rules. Apply the documented remedy -- what /commit-claude-config
+          # does -- and assert that it works, rather than asserting a default that is
+          # not true by design.
+          sed -i '/^AGENTS\.md$/d' .gitignore
+          timeout 300 grok --trust inspect --json > "$RUNNER_TEMP/grok-proj.json"
+          dump() { echo "::error::$1"; head -c 3000 "$RUNNER_TEMP/grok-proj.json"; exit 1; }
+          jq -e '[.projectInstructions[] | select(.fileType == "agents_md")] | length >= 1' \
+            "$RUNNER_TEMP/grok-proj.json" > /dev/null || dump "Grok did not load AGENTS.md"
+          # skill-packs and token-extensions are the two the kit ships in-repo;
+          # skill-packs carries the pack routing, so an --agents install can surface a
+          # pack at all. ext/auditor-skill reaches the project by a different route — a
+          # submodule checkout under skills/ext/ rather than install.sh's copy of the
+          # in-repo skills — and is the core pack to assert on: a submodule, so a failed
+          # fetch aborts the install and this cannot flake on an absent pack
+          # (anthropic-skills only warns), and the one whose SKILL.md sits at its root,
+          # so the path does not encode the pack's inner layout.
+          for rel in skill-packs/SKILL.md token-extensions/SKILL.md ext/auditor-skill/SKILL.md; do
+            jq -e --arg p "/.agents/skills/$rel" \
+              '[.skills[] | select(.source.type == "project") | .source.path | select(endswith($p))] | length >= 1' \
+              "$RUNNER_TEMP/grok-proj.json" > /dev/null || dump "Grok did not discover $rel"
           done
-          # An installed pack's skill, which reaches the project by a different route
-          # than the two above: a submodule checkout under skills/ext/ rather than
-          # install.sh's copy of the in-repo skills. auditor-skill is the pack to assert
-          # on — a core pack that is a submodule, so a failed fetch aborts the install
-          # and this cannot flake on an absent pack (anthropic-skills only warns), and
-          # the one core pack whose SKILL.md sits at its root, so the path does not
-          # encode the pack's inner layout.
-          grep -q '/\.agents/skills/ext/auditor-skill/SKILL\.md' "$RUNNER_TEMP/opencode-skills.json" \
-            || { echo "::error::opencode did not discover the auditor-skill pack"; head -c 3000 "$RUNNER_TEMP/opencode-skills.json"; exit 1; }
+          # A floor as well as the three paths: a changed output shape would otherwise
+          # pass every `jq -e` above by matching nothing at all.
+          n="$(jq '[.skills[] | select(.source.type == "project")] | length' "$RUNNER_TEMP/grok-proj.json")"
+          [ "${n:-0}" -ge 8 ] || dump "Grok registered $n project skills, expected at least 8"
 
-      - name: Codex loads AGENTS.md and the kit skills
+      - name: Codex loads AGENTS.md whole
         run: |
           cd "$RUNNER_TEMP/proj"
           timeout 300 codex debug prompt-input "hello" > "$RUNNER_TEMP/codex-prompt.json"
-          grep -q 'solana-builder' "$RUNNER_TEMP/codex-prompt.json" \
-            || { echo "::error::Codex did not load AGENTS.md"; head -c 3000 "$RUNNER_TEMP/codex-prompt.json"; exit 1; }
-          grep -q 'skill-packs' "$RUNNER_TEMP/codex-prompt.json" \
-            || { echo "::error::Codex did not list the kit skills"; head -c 3000 "$RUNNER_TEMP/codex-prompt.json"; exit 1; }
-          # The same installed-pack check as the opencode step, by name rather than
-          # path: Codex splits one shared description budget across every registered
-          # skill and truncates each entry, so the name is the stable part. No false
-          # positive — CLAUDE-solana.md, which becomes AGENTS.md here, never names it.
-          grep -q 'auditor-skill' "$RUNNER_TEMP/codex-prompt.json" \
-            || { echo "::error::Codex did not list the auditor-skill pack"; head -c 3000 "$RUNNER_TEMP/codex-prompt.json"; exit 1; }
+          # Two anchors, not one: the first heading of AGENTS.md and its last. A single
+          # grep near the top passes just as well on a file Codex loaded and then cut.
+          for s in '# Solana project (solana-builder)' '## Project Learnings'; do
+            grep -qF "$s" "$RUNNER_TEMP/codex-prompt.json" \
+              || { echo "::error::Codex did not load AGENTS.md ($s missing)"; head -c 3000 "$RUNNER_TEMP/codex-prompt.json"; exit 1; }
+          done
 
-      # A name survives when Codex empties or cuts its description, so the steps above
+      # A name survives when Codex empties or cuts its description, so a grep for one
       # cannot see the shared budget running out (#212). Compare each description with
       # its SKILL.md instead; the over-budget install proves the check still sees a cut.
-      - name: Codex keeps every project skill description whole
+      # --require anchors the three skills to their paths under the project's own skills
+      # root, which a bare grep over the prompt cannot do — every root Codex registered
+      # is in there, the user's and its own bundled ones included.
+      - name: Codex registers the kit skills and keeps every description whole
         run: |
           check() {
-            ( cd "$RUNNER_TEMP/$1" && timeout 300 codex debug prompt-input "hello" > "$RUNNER_TEMP/codex-$1.json" ) || return 3
-            python3 .github/scripts/codex-skill-budget.py "$RUNNER_TEMP/codex-$1.json" "$RUNNER_TEMP/$1/.agents/skills" "$2"
+            d="$1"; min="$2"; shift 2
+            ( cd "$RUNNER_TEMP/$d" && timeout 300 codex debug prompt-input "hello" > "$RUNNER_TEMP/codex-$d.json" ) || return 3
+            python3 .github/scripts/codex-skill-budget.py "$@" \
+              "$RUNNER_TEMP/codex-$d.json" "$RUNNER_TEMP/$d/.agents/skills" "$min"
           }
-          check proj 8 || { echo "::error::Codex shortened a description in the default --agents install"; exit 1; }
+          check proj 8 --require skill-packs/SKILL.md \
+                       --require token-extensions/SKILL.md \
+                       --require ext/auditor-skill/SKILL.md \
+            || { echo "::error::Codex did not register the kit skills, or shortened a description, in the default --agents install"; exit 1; }
           check big 40 || { echo "::error::Codex shortened a description with four Solana packs; the kit is past the skill budget"; exit 1; }
           rc=0; check over 50 || rc=$?
           [ "$rc" -eq 1 ] || { echo "::error::the budget check did not flag sendai's 57 skills (exit $rc); has Codex's output format changed?"; exit 1; }
