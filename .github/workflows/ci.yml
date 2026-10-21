@@ -127,6 +127,12 @@ jobs:
       - name: Grok Build discovers AGENTS.md and the kit skills in .agents/skills
         run: |
           cd "$RUNNER_TEMP/proj"
+          # The installer gitignores AGENTS.md by default and Grok skips gitignored
+          # instruction files (skills load either way), so a default install gives Grok
+          # no house rules. Apply the documented remedy -- what /commit-claude-config
+          # does -- and assert that it works, rather than asserting a default that is
+          # not true by design.
+          sed -i '/^AGENTS\.md$/d' .gitignore
           timeout 300 grok --trust inspect --json > "$RUNNER_TEMP/grok-proj.json"
           dump() { echo "::error::$1"; head -c 3000 "$RUNNER_TEMP/grok-proj.json"; exit 1; }
           jq -e '[.projectInstructions[] | select(.fileType == "agents_md")] | length >= 1' \
