@@ -17,8 +17,10 @@ Inspect the mint in $ARGUMENTS: what it takes to integrate, and who can still ch
 Don't read extensions from RPC `jsonParsed` or `spl-token display`. Agave RPC nodes before 4.2 decode with `spl-token-2022-interface` 2.x, and for a mint that carries PermissionedBurn they return no `extensions` field at all, hiding a permanent delegate or hook on the same mint. `spl-token` 5.5.0 and a `--locked` 5.6.1 build use the same decoder. Decode with `@solana-program/token-2022` 0.19 on Kit 8 instead: from the project root if it already depends on both, otherwise from a scratch directory.
 
 ```bash
-mkdir -p "${TMPDIR:-/tmp}/inspect-mint" && cd "${TMPDIR:-/tmp}/inspect-mint" && npm init -y >/dev/null && npm i -q '@solana/kit@^8.3' '@solana-program/token-2022@^0.19'
+mkdir -p "$HOME/.cache/solana-ai-kit/inspect-mint" && cd "$HOME/.cache/solana-ai-kit/inspect-mint" && npm init -y >/dev/null && npm i -q '@solana/kit@^8.3' '@solana-program/token-2022@^0.19'
 ```
+
+The scratch directory lives under `$HOME/.cache`, not `$TMPDIR`, because the run needs mainnet RPC and Node's `fetch` ignores the sandbox's proxy — so under Claude Code the run goes outside the sandbox, where `$TMPDIR` names a different directory than it did during the install, and the script would not be found. `$HOME` is the same on both sides, and `~/.cache` is in the kit's sandbox `allowWrite`.
 
 `@solana-program/token-2022` 0.19 peers `@solana/kit` `^8.3`. A workspace pinned to an older kit major keeps its pin — run from the scratch directory instead of moving it.
 
@@ -53,7 +55,7 @@ console.log(JSON.stringify({ mint, program: is2022 ? 'Token-2022' : 'SPL Token',
 ```
 
 ```bash
-node "${TMPDIR:-/tmp}/inspect-mint/inspect-mint.mjs" <MINT> <RPC_URL>
+node "$HOME/.cache/solana-ai-kit/inspect-mint/inspect-mint.mjs" <MINT> <RPC_URL>
 ```
 
 Kit's `__kind` names differ from the Rust ones — `ScaledUiAmountConfig`, `PausableConfig`, `ConfidentialTransferFee` ([Reading an unknown mint](../skills/token-extensions/SKILL.md#reading-an-unknown-mint)). Report the extension under the name the user will meet in their own tool.
