@@ -293,6 +293,10 @@ expect relaxed DENY "reset --hard"                   "git --no-pager reset --har
 expect relaxed DENY "reset --ha, the abbreviation git accepts" "git --no-pager reset --ha HEAD~3"
 expect relaxed DENY "reflog expire — the one that makes history unrecoverable" \
   "git --no-pager reflog expire --expire=now --all"
+expect relaxed DENY "prune — Bash(git prune *) denies it at every tier, so the prefixed spelling is denied to match" \
+  "git --no-pager prune"
+expect relaxed DENY "prune --expire=now, -P prefix"   "git -P prune --expire=now"
+expect relaxed DENY "prune behind a wrapper"          "env git --no-pager prune"
 expect relaxed DENY "push --mirror"                  "git --no-pager push --mirror origin"
 expect relaxed DENY "push --receive-pack=<prog>"     "git --no-pager push --receive-pack=/tmp/x.sh origin main"
 expect relaxed DENY "push --exec=<prog>"             "git --no-pager push --exec=/tmp/x.sh origin main"
@@ -306,8 +310,24 @@ expect relaxed DENY "second statement"               "echo hi; git -P clean -fd"
 expect relaxed DENY "absolute path to git"           "/usr/bin/git --no-pager clean -fd"
 
 echo ""
+echo "[the bare forms, prefixed: each glob's trailing * matches them too]"
+# A trailing ` *` that is a rule's only wildcard is optional in Claude Code's matcher, so
+# Bash(git clean *) denies a bare `git clean` (verified live: bare `chown` is refused by
+# Bash(chown *) with no twin beside it). The mirror has to deny the prefixed bare form,
+# and for clean that is not cosmetic: with clean.requireForce false a bare `git clean`
+# deletes untracked files, and --config-env sets that inside the same command line.
+expect relaxed DENY "bare clean"                     "git --no-pager clean"
+expect relaxed DENY "bare clean with clean.requireForce turned off in the same line" \
+  "RF=false git --config-env=clean.requireForce=RF clean"
+expect relaxed DENY "bare restore"                   "git -P restore"
+expect relaxed DENY "bare checkout --"               "git --no-pager checkout --"
+expect relaxed DENY "bare reflog expire"             "git -P reflog expire"
+
+echo ""
 echo "[UNPREFIXED: the glob rules own these, and the hook stays out of the way]"
 expect relaxed PASS "clean"          "git clean -fdx"
+expect relaxed PASS "bare clean"     "git clean"
+expect relaxed PASS "prune"          "git prune"
 expect relaxed PASS "restore"        "git restore ."
 expect relaxed PASS "checkout --"    "git checkout -- ."
 expect relaxed PASS "reset --hard"   "git reset --hard HEAD~3"
@@ -329,15 +349,19 @@ expect relaxed PASS "as a -S pickaxe"      "git --no-pager log -S 'git clean -fd
 
 echo ""
 echo "[excluded on purpose, and ordinary git, both prefixed]"
-# branch -D/-f and gc --prune/prune are OUT: reflog-recoverable or unreferenced-only,
-# and -D against a safe -d plus -f clustered in -Df is the worst parsing surface in the
-# set. `--sort=-date` already tripped a -d matcher in this same guard once.
+# branch -D/-f is OUT: reflog-recoverable, and -D against a safe -d plus -f clustered in
+# -Df is the worst parsing surface in the set. `--sort=-date` already tripped a -d matcher
+# in this same guard once. gc --prune is OUT too, as a recorded gap rather than a verdict
+# that it is safe — it deletes the same unreachable set prune does.
 expect relaxed PASS "branch -d, the safe delete"  "git --no-pager branch -d old-branch"
 expect relaxed PASS "branch -D, excluded as reflog-recoverable" "git --no-pager branch -D old-branch"
 expect relaxed PASS "branch --sort=-date"         "git --no-pager branch --sort=-date"
-expect relaxed PASS "gc --prune, unreferenced only" "git --no-pager gc --prune=now"
-expect relaxed PASS "prune, unreferenced only"    "git --no-pager prune"
+expect relaxed PASS "gc --prune, a recorded gap"  "git --no-pager gc --prune=now"
+# prune is IN, as the subcommand only. These four share the word and are other commands.
 expect relaxed PASS "worktree prune"              "git --no-pager worktree prune"
+expect relaxed PASS "remote prune"                "git -P remote prune origin"
+expect relaxed PASS "prune-packed"                "git --no-pager prune-packed"
+expect relaxed PASS "fetch --prune"               "git --no-pager fetch --prune"
 expect relaxed PASS "stash"                       "git --no-pager stash"
 expect relaxed PASS "status"                      "git --no-pager status"
 expect relaxed PASS "switch"                      "git --no-pager switch main"
@@ -352,9 +376,8 @@ expect relaxed PASS "an ordinary fetch"           "git --no-pager fetch origin"
 expect relaxed PASS "pull --rebase"               "git --no-pager pull --rebase"
 expect relaxed PASS "diff"                        "git --no-pager diff"
 expect relaxed PASS "add -A"                      "git --no-pager add -A"
-# Mirroring the glob means mirroring where it stops: `Bash(git clean *)` has no zero-gap
-# twin, and `Bash(git checkout -- *)` anchors `--` right after the subcommand.
-expect relaxed PASS "bare clean, no args — the glob needs one too" "git --no-pager clean"
+# Mirroring the glob means mirroring where it stops: `Bash(git checkout -- *)` anchors
+# `--` right after the subcommand.
 expect relaxed PASS "checkout <tree-ish> -- <path>, open in both layers" \
   "git --no-pager checkout HEAD -- src/lib.rs"
 expect relaxed PASS "checkout --force -- ., open in both layers" \
@@ -549,6 +572,8 @@ M="$(mutate 'GW_SUB == "reset"' 'GW_SUB == "reset-NOT"')"
 flips "reset --hard switched off" "$M" "git --no-pager reset --hard HEAD~3" DENY PASS
 M="$(mutate 'GW_SUB == "reflog"' 'GW_SUB == "reflog-NOT"')"
 flips "reflog expire switched off" "$M" "git --no-pager reflog expire --all" DENY PASS
+M="$(mutate 'GW_SUB == "prune"' 'GW_SUB == "prune-NOT"')"
+flips "prune switched off" "$M" "git --no-pager prune" DENY PASS
 M="$(mutate 'GW_SUB == "push"' 'GW_SUB == "push-NOT"')"
 flips "push --mirror switched off" "$M" "git --no-pager push --mirror origin" DENY PASS
 M="$(mutate 'T[i] ~ /^--upload-pack/' 'T[i] ~ /^--upload-pack-NOT/')"
@@ -563,6 +588,11 @@ flips "the --receive-pack transport override switched off" \
 M="$(mutate 'GW_SUB == "clean"' 'GW_SUB == "branch"')"
 flips "branch added to the destructive set, so a recoverable delete is gated" \
   "$M" "git --no-pager branch -D old-branch" PASS DENY
+#    And prune's boundary: matched as a substring instead of the subcommand, it would gate
+#    prune-packed, so "prune-packed stays silent" has to be able to fail.
+M="$(mutate 'GW_SUB == "prune"' 'GW_SUB ~ /prune/')"
+flips "prune matched as a substring, so prune-packed is gated" \
+  "$M" "git --no-pager prune-packed" PASS DENY
 
 # 9. The global-option walk itself: drop an operand-taking option and the walk lands on
 #    the operand instead of the subcommand, which is a MISS rather than a false positive.
@@ -571,5 +601,14 @@ flips "--git-dir dropped from the operand list, so the walk loses the subcommand
   "$M" "git --git-dir .git clean -fd" DENY PASS
 flips "...while the =-spelling still fires, since it needs no operand skip" \
   "$M" "git --git-dir=.git clean -fd" DENY DENY
+
+# 10. The bare form. Requiring an argument after the subcommand is the exact belief the
+#     first version of this pass encoded — that `Bash(git clean *)` needs one — so putting
+#     it back has to reopen `git --no-pager clean` and nothing else.
+M="$(mutate 'if (GW_SUB == "clean")' 'if (GW_SUB == "clean" && i <= n)')"
+flips "an argument required after clean again, so the bare prefixed form walks past" \
+  "$M" "git --no-pager clean" DENY PASS
+flips "...while clean with an argument still fires, so only the bare form broke" \
+  "$M" "git --no-pager clean -fd" DENY DENY
 
 print_summary

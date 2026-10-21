@@ -90,6 +90,27 @@ OUT="$(cd "$TEMP_DIR" && bash validate.sh 2>&1)" && RC=0 || RC=$?
 assert_eq "1" "$RC" "validate.sh fails when the shipped version is added to the migration case"
 cp "$TEMP_DIR/update.sh.orig" "$UPDATE_SH"
 
+# The empty-gap probe, against holes the check it replaced could not see: a trailing gap
+# in a two-wildcard rule whose mid twin is present, and a spaced * in a one-wildcard rule.
+# The shipped rule set is clean, so the passing run at the top proves nothing about
+# whether the probe can fail — this does, and asserts it names the escaping command.
+echo "[empty-gap probe]"
+cp "$TEMP_DIR/.claude/settings.json" "$TEMP_DIR/settings.json.orig"
+python3 - "$TEMP_DIR/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s["permissions"]["deny"] += ["Bash(git push * --force *)", "Bash(git push --force *)",
+                             "Bash(git log * main)"]
+json.dump(s, open(sys.argv[1], "w"), indent=2)
+PY
+OUT="$(cd "$TEMP_DIR" && bash validate.sh 2>&1)" && RC=0 || RC=$?
+assert_eq "1" "$RC" "validate.sh fails on a wildcard whose gap cannot be empty"
+assert_contains "$OUT" "Bash(git push * --force *) does not stop 'git push ZZZ --force'" \
+  "the trailing gap of a two-wildcard rule is named by the command it lets through"
+assert_contains "$OUT" "Bash(git log * main) does not stop 'git log main'" \
+  "a spaced * in a one-wildcard rule is named by the command it lets through"
+cp "$TEMP_DIR/settings.json.orig" "$TEMP_DIR/.claude/settings.json"
+
 # A default MCP server on @latest (or any unpinned npx package) fails validation
 echo "[mcp pins]"
 sed -i.bak 's/"helius-mcp@[^"]*"/"helius-mcp@latest"/' "$TEMP_DIR/.mcp.json"

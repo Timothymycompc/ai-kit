@@ -100,6 +100,8 @@ All work on a feature branch: `git checkout -b <type>/<scope>-<description>-<DD-
 
 ### Recurring Issues
 
+- fnmatch is not Claude Code's permission matcher, and reasoning from it has produced false holes and real ones: a sole trailing ` *` is optional (`Bash(git prune *)` denies a bare `git prune`), while a `*` with spaces on both sides, or a trailing one in a multi-wildcard rule, cannot be empty. Judge rule coverage with `validate.sh`'s `gap_probe`, and a hook mirroring a glob must mirror its bare form.
+
 ### Fix Patterns
 
 ### Config Conventions
