@@ -312,8 +312,8 @@ if [ "$DRY_RUN" = false ] && [ -f "$TEMP_DIR/repo/.claude/bin/skills.sh" ]; then
   PIN_SRC="$TEMP_DIR/repo"
   [ -n "$LOCAL_SRC" ] && PIN_SRC="$LOCAL_SRC"
   if ! PIN_REPORT="$(bash "$TEMP_DIR/repo/.claude/bin/skills.sh" pins "$PIN_SRC" 2>&1)"; then
-    echo "Note: a skill pack is not at the commit skill-registry.json records for it:"
-    printf '%s\n' "$PIN_REPORT" | sed 's/^/  /'
+    echo "Note: a skill pack is not at the commit skill-registry.json records for it:" >&2
+    printf '%s\n' "$PIN_REPORT" | sed 's/^/  /' >&2
   fi
 fi
 
@@ -1035,7 +1035,7 @@ fi
 # Update submodules
 if [ "$DRY_RUN" = false ]; then
   echo "Updating submodules..."
-  (cd "$TARGET_DIR" && git submodule update --init --recursive 2>/dev/null) || echo "Note: Submodule update skipped"
+  (cd "$TARGET_DIR" && git submodule update --init --recursive 2>/dev/null) || echo "Note: Submodule update skipped" >&2
 fi
 
 echo ""
