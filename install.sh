@@ -119,11 +119,20 @@ if [ -n "$LOCAL_SRC" ] && [ -d "$LOCAL_SRC/.claude" ]; then
 else
   # Resolve latest tagged release; fall back to main (only needed for a network clone)
   step "Cloning repository..."
+  # A failed lookup must reach the fallback below: under set -e with pipefail a failing
+  # git ls-remote made this assignment fatal, so an unreachable upstream exited 128 with
+  # nothing on either stream, before the fallback to main could run.
   LATEST_TAG=$(git ls-remote --tags --sort=-v:refname "$REPO_URL" 'refs/tags/v*' 2>/dev/null \
-    | head -1 | sed 's|.*refs/tags/||; s|\^{}||')
+    | head -1 | sed 's|.*refs/tags/||; s|\^{}||') || LATEST_TAG=""
   BRANCH="${LATEST_TAG:-main}"
   # No submodules yet: only the skill packs this install keeps are fetched, below.
-  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$TEMP_DIR/repo" 2>&1 | tail -1 || true
+  # A failed clone stops here with git's whole error, instead of keeping its last line
+  # and carrying on into an install with nothing to copy.
+  if ! git clone -q --depth 1 --branch "$BRANCH" "$REPO_URL" "$TEMP_DIR/repo" 2>"$TEMP_DIR/clone.err"; then
+    fail "Could not clone $REPO_URL ($BRANCH)"
+    sed 's/^/  /' "$TEMP_DIR/clone.err" >&2
+    exit 1
+  fi
 fi
 
 # Read version from source

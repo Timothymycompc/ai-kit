@@ -71,4 +71,17 @@ assert_file_exists "$TEMP_DIR/.claude/bin/resync.sh" ".claude/bin/resync.sh exis
 assert_file_exists "$TEMP_DIR/.claude/bin/skills.sh" ".claude/bin/skills.sh exists for /add-skill"
 assert_file_exists "$TEMP_DIR/.claude/commands/add-skill.md" "/add-skill is installed"
 
+# An unreachable upstream used to exit 128 with nothing on either stream: under set -e
+# with pipefail the failing git ls-remote made its assignment fatal, so the fallback to
+# main never ran, and a failed clone was swallowed by `| tail -1 || true`. A file:// URL
+# to a path that does not exist fails at once and needs no network.
+echo "[unreachable upstream]"
+UNREACH="$(new_tmp)" || exit 1
+UNREACH_RC=0
+SOLANA_AI_KIT_UPSTREAM="file:///nonexistent/no-such-repo.git" \
+  bash "$SCRIPT_DIR/../install.sh" "$UNREACH" > "$UNREACH/out" 2> "$UNREACH/err" || UNREACH_RC=$?
+assert_eq "1" "$UNREACH_RC" "an unreachable upstream exits 1, not 128"
+assert_contains "$(cat "$UNREACH/err")" "Could not clone" "an unreachable upstream says why on stderr"
+assert_contains "$(cat "$UNREACH/err")" "(main)" "the fallback to main runs when the tag lookup fails"
+
 print_summary
