@@ -119,7 +119,7 @@ The kit pins no effort level and no agent teams; [docs/configuration.md](docs/co
 
 Each agent runs on Opus, Sonnet, or your own session model (never a pinned Fable). See [docs/agents-and-commands.md → Agents](docs/agents-and-commands.md#agents) for the routing.
 
-### 33 Slash Commands
+### 34 Slash Commands
 
 **Building:**
 - `/build-program` - Build Anchor or native programs
@@ -139,6 +139,7 @@ Each agent runs on Opus, Sonnet, or your own session model (never a pinned Fable
 - `/profile-cu` - CU profiling per instruction
 - `/benchmark` - CU benchmarks before/after
 - `/debug-user-tx` - Replay failing user tx, map error to source
+- `/inspect-mint` - Decode a mint's extensions and live authorities from raw bytes
 
 **Deployment & Migration:**
 - `/deploy` - Deploy to devnet/mainnet
@@ -223,7 +224,7 @@ your-project/
 ├── CLAUDE.md              # ← Main config (copied from CLAUDE-solana.md)
 ├── .claude/
 │   ├── agents/            # 15 specialized AI agents
-│   ├── commands/          # 33 slash commands
+│   ├── commands/          # 34 slash commands
 │   ├── skills/            # Progressive knowledge
 │   │   ├── SKILL.md           # Unified hub (start here)
 │   │   ├── ext/               # Skill packs: core by default, extensions as installed
