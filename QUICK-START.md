@@ -239,7 +239,7 @@ your-project/
 │   │   │   │                      # community-moderation, position-manager-skill,
 │   │   │   │                      # content-gen-skill, writer-style-skill, frontend-slides,
 │   │   │   │                      # superseo, expo, duckdb, crypto-legal, obsidian-skills,
-│   │   │   │                      # huggingface-skills, dune, circle, google,
+│   │   │   │                      # huggingface-skills, dune, circle,
 │   │   │   │                      # knowledge-work, mongodb, elevenlabs, light-protocol,
 │   │   │   │                      # gmgn, redis, resend, pulumi, meteora-invent,
 │   │   │   │                      # playwright-skill, gsap-skills, startup-builder
