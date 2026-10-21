@@ -971,7 +971,6 @@ if [ -f "$TEMP_DIR/repo/CLAUDE-solana.md" ]; then
   fi
 fi
 
-# Older --agents installs listed CLAUDE.md in the .gitignore config block; add AGENTS.md
 GITIGNORE="$TARGET_DIR/.gitignore"
 
 # Ignores added after an install may already exist: install.sh writes them for fresh
@@ -984,12 +983,27 @@ if [ "$DRY_RUN" = false ] && [ -f "$GITIGNORE" ]; then
     CHANGES="$CHANGES  [updated] .gitignore — $ignore added\n"
   done
 fi
-if [ "$INSTR_FILE" = "AGENTS.md" ] && [ "$DRY_RUN" = false ] && [ -f "$GITIGNORE" ] \
-  && grep -qF ">>> solana-ai-kit config" "$GITIGNORE" \
-  && ! sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$GITIGNORE" | grep -qxF "$INSTR_FILE"; then
-  awk -v f="$INSTR_FILE" '/^# <<< solana-ai-kit config <<</ { print f } { print }' "$GITIGNORE" > "$GITIGNORE.tmp" \
-    && cat "$GITIGNORE.tmp" > "$GITIGNORE" && rm -f "$GITIGNORE.tmp"
-  CHANGES="$CHANGES  [updated] .gitignore — $INSTR_FILE added to the kit config block\n"
+# --agents installs no longer gitignore AGENTS.md: Grok Build skips an instruction file
+# that .gitignore lists, so every --agents install made before that change gave Grok no
+# house rules. Take it out of the kit's marked block, and only out of a terminated one:
+# past a lost end marker the kit's lines and the user's cannot be told apart. An
+# AGENTS.md line the user wrote outside the block stays. awk exits 0 only when it
+# dropped a line, so a second run writes and reports nothing. install.sh does the same.
+if [ "$INSTR_FILE" = "AGENTS.md" ] && [ -f "$GITIGNORE" ] && awk -v f="$INSTR_FILE" '
+    !inblk && /^# >>> solana-ai-kit config/ { inblk = 1; n = 0; print; next }
+    inblk && /^# <<< solana-ai-kit config/ {
+      for (i = 1; i <= n; i++) { l = buf[i]; sub(/\r$/, "", l); if (l == f) gone++; else print buf[i] }
+      inblk = 0; print; next }
+    inblk { buf[++n] = $0; next }
+    { print }
+    END { if (inblk) { for (i = 1; i <= n; i++) print buf[i] }; exit !gone }
+  ' "$GITIGNORE" > "$TEMP_DIR/gitignore.unignored"; then
+  if [ "$DRY_RUN" = true ]; then
+    CHANGES="$CHANGES  [would update] .gitignore — $INSTR_FILE removed from the kit config block\n"
+  else
+    cat "$TEMP_DIR/gitignore.unignored" > "$GITIGNORE"
+    CHANGES="$CHANGES  [updated] .gitignore — $INSTR_FILE removed from the kit config block\n"
+  fi
 fi
 
 # safe-ai-skill project policy (Claude Code installs only; its hooks don't run under
