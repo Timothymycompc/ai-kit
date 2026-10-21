@@ -90,7 +90,7 @@ What matters is whether the link **resolves**, and the two cases behave complete
 | `cp -R src dst` | — | link preserved as a link |
 | `cp -R src/. dst/` | `install.sh`, `skills.sh` (both copy paths) | link preserved as a link |
 | `cp -r src dst` | **`update.sh:45` and `:89`**, the frozen copy loop | link **dereferenced into a real file**, exit 0 |
-| `cp -r src/. dst/` | **`update.sh:113`** (hooks) | link **dereferenced into a real file**, exit 0 |
+| `cp -r src/. dst/` | **`update.sh`'s `hooks/` copy**, just below the frozen range | link **dereferenced into a real file**, exit 0 |
 
 **On BSD/macOS `-r` is not an alias for `-R`, and the argument form makes no difference** — `-R` preserves a link in both forms, `-r` dereferences it in both. (A `src/.` copy into a destination that does not yet exist *appears* to preserve, because `cp` then takes a different path and creates the destination itself; every real call site copies into a directory that already exists, so that case is a measuring artifact rather than a safe form.) GNU coreutils preserves in both, so this is macOS-only. `UPDATE_DIRS` includes `skills` and `/update` clones with `--recurse-submodules`, so line 89 does copy pack trees: a `/update` on macOS turns a pinned pack's `CLAUDE.md -> AGENTS.md` into a real `CLAUDE.md` inside that pack, and the kit has **three** such sites, not one.
 

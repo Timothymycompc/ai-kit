@@ -82,6 +82,26 @@ assert_file_exists "$TEMP_DIR/.claude/rules/rust.md" "--dry-run leaves the retir
 assert_file_not_exists "$TEMP_DIR/.claude/rules/rust.md" "Retired kit rule removed by update"
 assert_file_exists "$TEMP_DIR/.claude/rules/team-api.md" "User-written rule kept by update"
 
+# --- A failed fetch stops the update instead of reporting success ---
+# The clone sits in update.sh's frozen range and swallows git's exit status, so a dead
+# upstream used to run every step below it and exit 0 with "Update complete!". A
+# file:// URL that does not exist fails at once and offline. The retired rule is the
+# first thing below the guard that writes to the project, so its surviving pins the
+# guard above every write, not just above the summary.
+echo "[failed fetch]"
+mkdir -p "$TEMP_DIR/.claude/rules"
+printf -- '---\nglobs:\n  - "**/*.rs"\n---\n# Rust Code Standards for Solana\n' > "$TEMP_DIR/.claude/rules/rust.md"
+DEAD_URL="file://$TEMP_DIR/no-such-upstream.git"
+FETCH_RC=0
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC='' SOLANA_CLAUDE_LOCAL_SRC='' SOLANA_AI_KIT_UPSTREAM="$DEAD_URL" \
+  bash .claude/bin/update.sh) > "$TEMP_DIR/fetch.out" 2> "$TEMP_DIR/fetch.err" || FETCH_RC=$?
+assert_eq "non-zero" "$([ "$FETCH_RC" -ne 0 ] && echo non-zero || echo "$FETCH_RC")" \
+  "update.sh exits non-zero when the upstream cannot be fetched"
+assert_file_contains "$TEMP_DIR/fetch.err" "could not fetch $DEAD_URL" "the failure is reported on stderr, naming the URL"
+assert_file_not_contains "$TEMP_DIR/fetch.out" "Update complete" "a failed fetch does not report success"
+assert_file_exists "$TEMP_DIR/.claude/rules/rust.md" "a failed fetch writes nothing to the project"
+rm -f "$TEMP_DIR/.claude/rules/rust.md" "$TEMP_DIR/fetch.out" "$TEMP_DIR/fetch.err"
+
 # --- Retired kit defaults: what kit <= 2.1.0 wrote into settings.json and .mcp.json ---
 echo "[retired kit defaults]"
 json_at() {  # json_at <file> <key>... -> the value (JSON for non-strings), or __MISSING__

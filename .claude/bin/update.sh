@@ -95,6 +95,17 @@ done
 # script by byte offset, so an older update.sh carries on with the new code from
 # here. Keep every byte above this comment unchanged; add new logic below it.
 
+# A failed fetch is invisible above: the frozen clone keeps only git's last line and
+# swallows its exit status, so the loop found nothing to copy. Stop before any step
+# below writes to the project or reports success. The local-source branch copies a
+# .claude/ only when one exists, so a SOLANA_AI_KIT_LOCAL_SRC run always passes this.
+# It protects only installs already on this code: a failed fetch overwrote nothing, so
+# an older update.sh runs on in its own code.
+if [ ! -d "$TEMP_DIR/repo/.claude" ]; then
+  echo "Error: could not fetch $REPO_URL ($BRANCH); nothing was updated." >&2
+  exit 1
+fi
+
 # hooks/ arrived after that frozen UPDATE_DIRS list, which cannot grow. Same
 # semantics as the loop: overwrite with upstream, but into a pre-created
 # directory so a symlinked hooks/ is followed and merged into, not replaced.
