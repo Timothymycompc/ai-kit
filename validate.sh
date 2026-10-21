@@ -245,10 +245,10 @@ check "Every core/extension registry entry records a 40-character commit" "$unpi
 
 # Some packs carry submodules of their own, pinned by their authors rather than by this
 # kit: auditor-skill -> trailofbits (CC-BY-SA-4.0), solana-game -> a second solana-dev at
-# a different commit, google -> a tree of Google-owned repos. The installers
-# deliberately do not recurse into them, so none reaches a user project; "vendored"
-# records the pins anyway so a bump of a pack moves a third-party pin here, in review,
-# instead of invisibly. Update it with the new SHA after reading what changed.
+# a different commit. The installers deliberately do not recurse into them, so none
+# reaches a user project; "vendored" records the pins anyway so a bump of a pack moves a
+# third-party pin here, in review, instead of invisibly. Update it with the new SHA after
+# reading what changed.
 #
 # Checked BOTH ways, because a record only guards what it cannot omit. Reading the record
 # and comparing each entry to its gitlink says nothing about a pack whose pins were never

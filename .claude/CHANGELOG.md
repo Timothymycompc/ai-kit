@@ -7,6 +7,9 @@ All notable changes to solana-ai-kit.
 ### Added
 - **`startup-builder` extension** (#218) — solanabr/startup-builder-skill pinned at `e02c5c2` under `go-to-market`: idea-sprint, pitch-deck and hackathon, which left the kit with no install route back, plus build-status, positioning, pricing, fundraising, launch, incident-comms and ecosystem-bd. Pinned under `ext/` so its 2,729 characters of descriptions (~680 tokens) cost nothing until read; routed from the hub and the `skill-packs` index, and `/plan-feature` now names it as the writer of `idea.md`.
 
+### Removed
+- **The `google` skill pack** — `google/skills` is no longer pinned under `ext/`, and its registry entry, hub route, Extensions-table row, work-to-pack row and submodules-table row are gone with it. It was an extension with `default_installed: false`, so nothing changes for anyone who never ran `skills.sh add google`; a project that did install it keeps the copy until the next `/update`, which drops a pack the registry no longer pins. The pack covered GKE, BigQuery, IAM, Cloud Monitoring and Agent Platform — the infrastructure under an indexer or RPC fleet, nothing on-chain — at 155 skills and 8.4 MB at the pinned commit, and carried 16 nested submodules of its own, against one each for the only four other packs that carry any (`auditor-skill`, `solana-game`, `counterparty-gate`, `expo`). Those sixteen were the shape that defeated `/update`'s line-oriented `vendored` parser and shipped unpruned third-party trees into projects, and the only pin whose nested record went stale on a bump. Install it from upstream yourself if you want it: <https://github.com/google/skills>.
+
 ## [2.4.0] - 2026-10-09
 
 ### Added
