@@ -20,9 +20,11 @@ source "$SCRIPT_DIR/helpers.sh"
 # project, and looks at what is left on disk. The fixture carries the three shapes that
 # matter and the decoys that must survive them:
 #
-#   multi-line-pack  a `vendored` object spanning several lines, as google's sixteen
-#                    entries do, and no submodule file of its own — the registry path
-#                    alone, and the exact shape that went unpruned
+#   multi-line-pack  a `vendored` object spanning several lines, as the google pack's
+#                    sixteen entries did before it was dropped from the kit, and no
+#                    submodule file of its own — the registry path alone, and the exact
+#                    shape that went unpruned. No pack the registry pins is written this
+#                    way today, so this fixture is the only cover that shape has
 #   inline-pack      a single-line `vendored` object — what the old parser did read, so
 #                    this is the regression guard on the case that already worked
 #   unrecorded-pack  a submodule file of its own and no `vendored` record at all, as

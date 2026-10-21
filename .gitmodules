@@ -112,9 +112,6 @@
 [submodule ".claude/skills/ext/pulumi"]
 	path = .claude/skills/ext/pulumi
 	url = https://github.com/pulumi/agent-skills
-[submodule ".claude/skills/ext/google"]
-	path = .claude/skills/ext/google
-	url = https://github.com/google/skills
 [submodule ".claude/skills/ext/knowledge-work"]
 	path = .claude/skills/ext/knowledge-work
 	url = https://github.com/anthropics/knowledge-work-plugins

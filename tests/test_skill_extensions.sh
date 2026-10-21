@@ -266,9 +266,10 @@ pack_check() {
 # pre-split install looked, minus the nested submodule content the registry records, which
 # is what update.sh drops after its own copy. install.sh never fetches a pack's submodules
 # (they are pinned by that pack's author, not here), so a fixture built from a developer's
-# --recursive checkout must not hand one back: one of google's nested packs carries three
-# symlinks named `skills`, and BSD cp refuses to copy a directory over one ("Not a
-# directory"), which killed this suite on macOS while GNU cp let CI pass.
+# --recursive checkout must not hand one back: a nested pack carrying a symlink where the
+# copy expects a directory makes BSD cp refuse it ("Not a directory"), which killed this
+# suite on macOS while GNU cp let CI pass. The google pack's nested tree did exactly that,
+# with three symlinks named `skills`, before the pack was dropped from the kit.
 vendor_ext() {
   cp -R "$REPO_ROOT/.claude/skills/ext/." "${1:?}/"
   local nested
