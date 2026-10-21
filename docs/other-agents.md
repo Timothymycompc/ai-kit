@@ -12,8 +12,11 @@ The kit's skills are [Agent Skills](https://agentskills.io) folders, which most 
 
 Grok Build caveats, per the [Grok Build docs](https://docs.x.ai/build/features/project-rules):
 
-- Grok skips instruction files that `.gitignore` lists, and the installer gitignores `CLAUDE.md` (or `AGENTS.md`) by default. Run `/commit-claude-config`, or take the file out of the kit's `.gitignore` block, so Grok loads the house rules. Skills and commands load either way.
+- Grok skips instruction files that `.gitignore` lists, and the installer gitignores `CLAUDE.md` (or `AGENTS.md`) by default. Run `/commit-claude-config`, or take the file out of the kit's `.gitignore` block, so Grok loads the house rules. Skills and commands load either way. (Checked against grok 1.0.62 on a default `--agents` install, `inspect` reported the gitignored `AGENTS.md` as loaded, so this may no longer hold — verify with `grok inspect` rather than assuming either way.)
 - Grok sends [hooks](https://docs.x.ai/build/features/hooks) camelCase JSON (`toolInput`) where Claude Code sends `tool_input`. The kit's hooks read both, so the secret-read, pre-commit and mainnet-deploy gates in `.claude/settings.json` do fire under Grok — but Grok is fail-open on malformed hook output, so a hook that errors permits rather than blocks, and no permission rule or sandbox entry applies at all. The project `CLAUDE.md` still tells agents on other runtimes to get an explicit go-ahead before any mainnet step.
+- `grok inspect` (add `--json`) prints the instruction files, skills, hooks and MCP servers Grok resolved for the current directory, without starting a session or signing in — the quickest way to see whether an install landed. In a folder you have not trusted it reports no project instructions and no project skills and still exits 0, so check the `Project trusted` line before believing an empty result.
+
+CI pins Codex and Grok Build and gates every change on both discovering an `--agents` install (`agents-mode-clients` in `.github/workflows/ci.yml`). The other clients in the table read the same `AGENTS.md` and `.agents/skills/`; nothing here is pinned to prove it on each commit.
 
 Gemini CLI reads `GEMINI.md` unless you add `AGENTS.md` to `context.fileName` in its `settings.json`.
 
