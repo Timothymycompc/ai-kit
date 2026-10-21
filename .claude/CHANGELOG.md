@@ -5,6 +5,7 @@ All notable changes to solana-ai-kit.
 ## [Unreleased]
 
 ### Added
+- **`/inspect-mint`** — decodes a token mint from raw account bytes and reports its extensions, its live authorities and what accepting it costs an integrator. Not a wrapper around `spl-token display`: Agave RPC nodes before 4.2 decode with `spl-token-2022-interface` 2.x, and for a mint carrying PermissionedBurn they return **no `extensions` field at all**, so a permanent delegate or a transfer hook on that same mint is invisible to `jsonParsed` — and to `spl-token` 5.5.0 and a `--locked` 5.6.1 build, which share the decoder. The command decodes with `@solana-program/token-2022` 0.19 on `@solana/kit` ^8.3 (the peer range that client declares), carries the script inline rather than shipping a loose `.mjs`, and routes meanings and venue policy to the `token-extensions` skill. Salvaged from the closed #72; the rest of that PR is superseded by that skill. Commands: 33 → 34.
 - **`startup-builder` extension** (#218) — solanabr/startup-builder-skill pinned at `e02c5c2` under `go-to-market`: idea-sprint, pitch-deck and hackathon, which left the kit with no install route back, plus build-status, positioning, pricing, fundraising, launch, incident-comms and ecosystem-bd. Pinned under `ext/` so its 2,729 characters of descriptions (~680 tokens) cost nothing until read; routed from the hub and the `skill-packs` index, and `/plan-feature` now names it as the writer of `idea.md`.
 
 ## [2.4.0] - 2026-10-09

@@ -40,7 +40,7 @@ assert_eq "15" "$AGENT_COUNT" "Agent count is 15"
 
 # Count commands
 CMD_COUNT=$(find "$TEMP_DIR/.claude/commands" -name "*.md" | wc -l | tr -d ' ')
-assert_eq "33" "$CMD_COUNT" "Command count is 33"
+assert_eq "34" "$CMD_COUNT" "Command count is 34"
 
 # The firewall ships its tier record and its generator; without both, a fresh install has
 # a policy nothing can describe or lower.
