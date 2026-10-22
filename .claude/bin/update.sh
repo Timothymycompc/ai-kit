@@ -126,17 +126,40 @@ if [ -d "$HOOKS_SRC" ]; then
 fi
 
 # The kit no longer ships rules/. Its old rule files used `globs:`, which Claude Code
-# ignores, so they loaded into every session. Remove those copies; rules the user
-# wrote are left alone.
+# ignores, so they loaded into every session. Remove a copy only when it is
+# byte-identical (CRs aside) to a version the kit shipped: a copy the user edited may
+# hold their own corrections, so it stays, and the report says how to stop it loading
+# everywhere. Rules the user wrote under other names are never touched.
+# Git blob ids of every version of these five files on the kit's main branch:
+RETIRED_RULE_BLOBS="135d6aa47fa4bb5cf2e044e4d4f8b60a4115b8f5  anchor.md
+32e283d1d9b1563621392dd62bfca8244d7120be  anchor.md
+9351ed3d061dbef752d92e502706fefd5331e776  anchor.md
+b931bb756abd028a6558ffd53c39608d468fb3cd  anchor.md
+3c320826944cf435d73620c943404194fac9f7b1  dotnet.md
+d9e67d7bbab7c6f2d83ef2ec0d725b64354c78cc  dotnet.md
+6ceeac0b95382723df0103b3773094c130610ac7  pinocchio.md
+73fc2e574335100d0fa22c605e76163030113fd2  pinocchio.md
+790d1256996708f0bef6b321801c67ff40c67a9d  pinocchio.md
+5561da5078508953a2f7da6e918ecfde0216a1eb  rust.md
+5ac6b12aba6525145c2aadd8ca2b27171cfa7857  rust.md
+7f360ec5b348d0900bb838951033a257e5ddf921  rust.md
+172c29d66991430fb70c29c03327d51da342da2e  typescript.md
+3782341db02b7a2b29679cce41ce2d839b0199eb  typescript.md
+428c505173f42a7c587a34ecce2626e7c4deb83d  typescript.md
+641730f22240df48dddfe6d6f828387f580328d6  typescript.md"
 for f in anchor.md dotnet.md pinocchio.md rust.md typescript.md; do
   OLD="$TARGET_DIR/$CONFIG_NAME/rules/$f"
-  if [ -f "$OLD" ] && grep -q '^globs:' "$OLD"; then
+  [ -f "$OLD" ] || continue
+  blob="$(tr -d '\r' < "$OLD" | git hash-object --stdin 2>/dev/null)" || blob=""
+  if [ -n "$blob" ] && printf '%s\n' "$RETIRED_RULE_BLOBS" | awk '{print $1}' | grep -qxF "$blob"; then
     if [ "$DRY_RUN" = true ]; then
       CHANGES="$CHANGES  [would remove] $CONFIG_NAME/rules/$f (retired kit rule)\n"
     else
       rm "$OLD"
       CHANGES="$CHANGES  [removed] $CONFIG_NAME/rules/$f (retired kit rule)\n"
     fi
+  elif grep -q '^globs:' "$OLD"; then
+    CHANGES="$CHANGES  [notice] $CONFIG_NAME/rules/$f was edited after install, so it was kept. Claude Code ignores its globs: key and loads it in every session: rename globs: to paths:, or delete it\n"
   fi
 done
 [ "$DRY_RUN" = true ] || rmdir "$TARGET_DIR/$CONFIG_NAME/rules" 2>/dev/null || true
