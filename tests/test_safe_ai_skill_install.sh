@@ -36,10 +36,14 @@ case "$*" in
 esac
 EOF
 chmod +x "$BIN/claude"
-# Git Bash on native Windows, where safe-ai-skill has no engine build.
+# Git Bash on native Windows, and 32-bit ARM Linux: safe-ai-skill has no engine build
+# for either.
 WINBIN="$TEMP_DIR/winbin" && mkdir -p "$WINBIN"
 printf '#!/bin/sh\n[ "$1" = -s ] && echo MINGW64_NT-10.0-26100 || echo x86_64\n' > "$WINBIN/uname"
 chmod +x "$WINBIN/uname"
+ARMBIN="$TEMP_DIR/armbin" && mkdir -p "$ARMBIN"
+printf '#!/bin/sh\n[ "$1" = -s ] && echo Linux || echo armv7l\n' > "$ARMBIN/uname"
+chmod +x "$ARMBIN/uname"
 
 N=0
 # run_install [VAR=value ...] -- [install.sh args]: installs into a fresh project and sets
@@ -93,11 +97,16 @@ assert_eq "" "$(calls)" "--no-safe-ai-skill skips the plugin install"
 assert_contains "$OUT" "safe-ai-skill skipped" "...and the closing box says so, with the command"
 run_install SOLANA_AI_KIT_SAFE_AI_SKILL=0 --
 assert_eq "" "$(calls)" "SOLANA_AI_KIT_SAFE_AI_SKILL=0 skips it too"
+run_install SOLANA_AI_KIT_SAFE_AI_SKILL=false --
+assert_eq "" "$(calls)" "...and so does =false"
 
 echo "[unsupported platform]"
 run_install SOLANA_AI_KIT_SAFE_AI_SKILL=1 PATH="$WINBIN:$BIN:$PATH" --
 assert_eq "" "$(calls)" "On native Windows, where it would block every tool call, it is not installed"
-assert_contains "$OUT" "has no engine build for MINGW64_NT-10.0-26100" "...and install.sh says why"
+assert_contains "$OUT" "has no engine build for MINGW64_NT-10.0-26100/x86_64" "...and install.sh says why"
+run_install SOLANA_AI_KIT_SAFE_AI_SKILL=1 PATH="$ARMBIN:$BIN:$PATH" --
+assert_eq "" "$(calls)" "On a CPU it ships no build for (32-bit ARM Linux), it is not installed either"
+assert_contains "$OUT" "has no engine build for Linux/armv7l" "...and install.sh names the platform"
 
 echo "[--agents]"
 run_install SOLANA_AI_KIT_SAFE_AI_SKILL=1 -- --agents

@@ -42,6 +42,11 @@ for arg in "$@"; do
     *) TARGET_ARG="$arg" ;;
   esac
 done
+case "$SAS_MODE" in
+  0|false|no|off|FALSE|NO|OFF|False|No|Off) SAS_MODE=0 ;;
+  1|true|yes|on|TRUE|YES|ON|True|Yes|On) SAS_MODE=1 ;;
+  *) SAS_MODE=auto ;;
+esac
 case "$TIER" in
   off|relaxed|medium|high) ;;
   *) printf 'install.sh: unknown --tier "%s" (expected off, relaxed, medium or high)\n' "$TIER" >&2; exit 1 ;;
@@ -467,8 +472,9 @@ fi
 
 # The safe-ai-skill plugin itself. settings.json enables it, but Claude Code installs a
 # plugin from an external source only when each user runs the install, so a full install
-# runs it here. Skipped where its engine has no build (native Windows, musl): it fails
-# closed there and would block every tool call (solanabr/safe-ai-skill#6).
+# runs it here. Skipped where its engine has no build: it fails closed there and would
+# block every tool call (solanabr/safe-ai-skill#6). The platforms below mirror its
+# launcher's, which ships binaries for exactly these four; musl Linux cannot run them.
 SAS_ID="safe-ai-skill@stbr"
 SAS_CMD="claude plugin install $SAS_ID --scope project"
 SAS_STATE=""
@@ -489,10 +495,11 @@ sys.exit(1)
 PY
 }
 if [ "$AGENTS_ONLY" = false ]; then
-  case "$(uname -s 2>/dev/null || true)" in
-    Darwin) SAS_PLATFORM=ok ;;
-    Linux) case "$(ldd --version 2>&1 || true)" in *musl*) SAS_PLATFORM="musl Linux" ;; *) SAS_PLATFORM=ok ;; esac ;;
-    *) SAS_PLATFORM="$(uname -s 2>/dev/null || echo unknown)" ;;
+  SAS_PLATFORM="$(uname -s 2>/dev/null || echo unknown)/$(uname -m 2>/dev/null || echo unknown)"
+  case "$SAS_PLATFORM" in
+    Darwin/arm64|Darwin/aarch64|Darwin/x86_64|Darwin/amd64) SAS_PLATFORM=ok ;;
+    Linux/x86_64|Linux/amd64|Linux/aarch64|Linux/arm64)
+      case "$(ldd --version 2>&1 || true)" in *musl*) SAS_PLATFORM="musl Linux" ;; *) SAS_PLATFORM=ok ;; esac ;;
   esac
   if [ "$SAS_MODE" = 0 ]; then
     SAS_STATE=skipped
