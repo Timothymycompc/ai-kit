@@ -961,6 +961,22 @@ if [ -f "$TEMP_DIR/repo/.env.example" ]; then
   fi
 fi
 
+# varlock schema (.env.schema), in both modes: added when missing and never touched
+# after, as install.sh does. Merging new keys in is deliberately not done: a project's
+# own schema has its own root defaults, under which they could become required. The
+# frozen local-source copy above predates the file, hence the fallback.
+SCHEMA_SRC="$TEMP_DIR/repo/.env.schema"
+[ -f "$SCHEMA_SRC" ] || SCHEMA_SRC="${LOCAL_SRC:+$LOCAL_SRC/.env.schema}"
+if [ -n "$SCHEMA_SRC" ] && [ -f "$SCHEMA_SRC" ] \
+  && [ ! -e "$TARGET_DIR/.env.schema" ] && [ ! -L "$TARGET_DIR/.env.schema" ]; then
+  if [ "$DRY_RUN" = true ]; then
+    CHANGES="$CHANGES  [would create] .env.schema\n"
+  else
+    cp "$SCHEMA_SRC" "$TARGET_DIR/.env.schema"
+    CHANGES="$CHANGES  [created] .env.schema\n"
+  fi
+fi
+
 # Instruction file (CLAUDE.md, or AGENTS.md for --agents) — don't overwrite,
 # offer the upstream version for manual merge
 if [ -f "$TEMP_DIR/repo/CLAUDE-solana.md" ]; then

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The varlock .env.schema: shipped at the kit root, copied into a project by install.sh in
+# both modes when absent, added by /update when missing, never overwritten or merged into,
+# and never gitignored, since it holds no values and is meant to be committed. Its key
+# parity with .env.example is checked in tests/test_env_keys.sh.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+source "$SCRIPT_DIR/helpers.sh"
+
+SCHEMA=".env.schema"
+TEMP_DIR="$(new_tmp)" || exit 1
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+echo "[test_env_schema] varlock .env.schema template"
+echo ""
+
+new_project() { mkdir -p "$TEMP_DIR/$1" && git -C "$TEMP_DIR/$1" init -q && echo "$TEMP_DIR/$1"; }
+install_kit() { SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$REPO_ROOT/install.sh" "$@" > "$QUIET_LOG" 2>&1 || quiet_fail "install.sh $*"; }
+# update_kit <dir> <config dir> [args] — runs the project's own copy of update.sh
+update_kit() {
+  local dir="$1" cfg="$2"
+  shift 2
+  (cd "$dir" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$cfg/bin/update.sh" "$@" 2>&1)
+}
+# ignore_status <dir> <path> — git check-ignore's exit status there: 0 ignored, 1 not,
+# 128 not a work tree. Assert the number: 128 fails too and proves nothing about the
+# .gitignore. Global and system git config are shut out, so a developer's own
+# core.excludesFile cannot decide the result.
+ignore_status() {
+  local rc=0
+  (cd "$1" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 XDG_CONFIG_HOME="$TEMP_DIR/no-xdg" \
+    git check-ignore -q "$2") || rc=$?
+  echo "$rc"
+}
+same() { diff "$1" "$2" > /dev/null 2>&1 && echo same || echo differs; }
+
+# A project that already uses varlock, with its own root defaults and keys. Merging the
+# kit's keys into it would make them required there, so it must come through untouched.
+printf '# @defaultRequired=true\n# ---\nMY_APP_KEY=\n' > "$TEMP_DIR/own-schema"
+
+assert_file_exists "$REPO_ROOT/$SCHEMA" "The kit ships $SCHEMA"
+
+# check_mode <label> <config dir> [--agents]
+check_mode() {
+  local label="$1" cfg="$2" out p
+  shift 2
+  echo "[install.sh${1:+ $1}]"
+  p="$(new_project "$label-fresh")"
+  install_kit "$@" "$p"
+  assert_file_exists "$p/$SCHEMA" "install.sh${1:+ $1} writes $SCHEMA"
+  assert_eq "same" "$(same "$REPO_ROOT/$SCHEMA" "$p/$SCHEMA")" "...as a copy of the kit's template"
+  assert_eq "1" "$(ignore_status "$p" "$SCHEMA")" "...and does not gitignore it (git check-ignore exits 1)"
+  assert_eq "0" "$(ignore_status "$p" .env)" "...while .env beside it is ignored, so the check can see an ignore"
+  printf '# edited by the user\n' >> "$p/$SCHEMA"
+  cp "$p/$SCHEMA" "$TEMP_DIR/edited"
+  install_kit "$@" "$p"
+  assert_eq "same" "$(same "$TEMP_DIR/edited" "$p/$SCHEMA")" "Re-running install.sh${1:+ $1} keeps an edited $SCHEMA byte for byte"
+
+  p="$(new_project "$label-own")"
+  cp "$TEMP_DIR/own-schema" "$p/$SCHEMA"
+  install_kit "$@" "$p"
+  assert_eq "same" "$(same "$TEMP_DIR/own-schema" "$p/$SCHEMA")" "install.sh${1:+ $1} leaves a project's own $SCHEMA alone, kit keys not merged in"
+
+  echo "[update.sh${1:+ $1}]"
+  rm -f "$p/$SCHEMA"
+  out="$(update_kit "$p" "$cfg" --dry-run)" || true
+  assert_contains "$out" "[would create] $SCHEMA" "update.sh --dry-run reports the missing $SCHEMA"
+  assert_file_not_exists "$p/$SCHEMA" "...and writes nothing"
+  out="$(update_kit "$p" "$cfg")" || true
+  assert_contains "$out" "[created] $SCHEMA" "update.sh adds $SCHEMA to an install that lacks it"
+  assert_eq "same" "$(same "$REPO_ROOT/$SCHEMA" "$p/$SCHEMA")" "...as a copy of the kit's template"
+  assert_eq "1" "$(ignore_status "$p" "$SCHEMA")" "...and does not gitignore it"
+  cp "$TEMP_DIR/own-schema" "$p/$SCHEMA"
+  out="$(update_kit "$p" "$cfg")" || true
+  assert_eq "same" "$(same "$TEMP_DIR/own-schema" "$p/$SCHEMA")" "update.sh keeps an existing $SCHEMA byte for byte"
+  assert_eq "" "$(printf '%s\n' "$out" | grep -F "$SCHEMA" || true)" "...and does not mention it"
+}
+
+check_mode claude .claude
+check_mode agents .agents --agents
+
+print_summary
