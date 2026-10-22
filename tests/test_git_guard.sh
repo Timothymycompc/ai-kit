@@ -6,14 +6,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 source "$SCRIPT_DIR/helpers.sh"
 
-# Regression corpus for egress-guard's two git gates, driven by synthetic PreToolUse
+# Regression corpus for egress-guard's three git gates, driven by synthetic PreToolUse
 # payloads on stdin — no live tool call, no real config written and no file deleted
-# anywhere. Both gates exist because every git deny is a glob, and a glob cannot see
+# anywhere. All three exist because every git deny is a glob, and a glob cannot see
 # either of the two things git does with its own syntax: fold the case of a config key,
 # and accept a run of global options in front of a subcommand.
 #
 #   GITEXEC      a `git config` write to a key that makes git run a command later
 #   GITDESTRUCT  a destructive subcommand reached behind a git-level option
+#   GITCFG       `-c` or `--config-env` reached behind another git-level option
 #
 # ── GITEXEC ────────────────────────────────────────────────────────────────────────
 # What it guards. `git config alias.z '!git clean -fdx'` is an ordinary config write and
@@ -44,8 +45,17 @@ source "$SCRIPT_DIR/helpers.sh"
 # here: it fires only on the PREFIXED spelling (the unprefixed one is already decided at
 # the permission layer), and never wider than the rule it mirrors. So the unprefixed
 # corpus below must come back silent — a hook that started deciding those would be the
-# failure, not the fix — and the excluded subcommands (`branch -D`, `gc --prune`) must
-# come back silent even prefixed.
+# failure, not the fix — and the excluded subcommand (`branch -D`) and the reads beside
+# the included ones (`reflog show`, `gc --auto`, `fetch --prune`) must come back silent
+# even prefixed.
+#
+# ── GITCFG ─────────────────────────────────────────────────────────────────────────
+# `git -c core.fsmonitor=/tmp/x.sh status` is arbitrary code execution, and
+# `git --config-env=core.fsmonitor=X status` is the same with the value read from $X.
+# Both rules are anchored on the first token after `git`, so `git --no-pager -c …`
+# walked past `Bash(git -c *)` before this gate existed, and `--config-env` had no rule
+# at all. Same mirror, same scope: the first-position spelling is the rules' and must
+# stay silent here, and a message or a pattern that merely names either option is data.
 #
 # ── both ───────────────────────────────────────────────────────────────────────────
 # Every expectation is paired with a MUTATION CONTROL at the bottom: the same corpus is
@@ -53,7 +63,7 @@ source "$SCRIPT_DIR/helpers.sh"
 # the verdict flips. An assertion that passes against a guard with its key table emptied
 # is not testing the guard. The exclusions get controls too, in the other direction: a
 # subcommand is ADDED to the destructive set and the silent expectation has to flip.
-echo "[test_git_guard] egress-guard's two git gates: the config keys and prefixed subcommands no glob can reach, and everything ordinary they must leave alone"
+echo "[test_git_guard] egress-guard's three git gates: the config keys, prefixed subcommands and prefixed config options no glob can reach, and everything ordinary they must leave alone"
 echo ""
 
 WORK="$(new_tmp)" || exit 1
@@ -293,10 +303,22 @@ expect relaxed DENY "reset --hard"                   "git --no-pager reset --har
 expect relaxed DENY "reset --ha, the abbreviation git accepts" "git --no-pager reset --ha HEAD~3"
 expect relaxed DENY "reflog expire — the one that makes history unrecoverable" \
   "git --no-pager reflog expire --expire=now --all"
+expect relaxed DENY "reflog delete — removes chosen entries, the record expire takes away" \
+  "git --no-pager reflog delete HEAD@{1}"
+expect relaxed DENY "reflog delete --rewrite --updateref, -P prefix" \
+  "git -P reflog delete --rewrite --updateref refs/stash@{0}"
+expect relaxed DENY "reflog drop --all — removes whole reflogs" "git --no-pager reflog drop --all"
+expect relaxed DENY "reflog drop <ref>, --git-dir <dir> prefix" \
+  "git --git-dir .git reflog drop refs/heads/main"
 expect relaxed DENY "prune — Bash(git prune *) denies it at every tier, so the prefixed spelling is denied to match" \
   "git --no-pager prune"
 expect relaxed DENY "prune --expire=now, -P prefix"   "git -P prune --expire=now"
 expect relaxed DENY "prune behind a wrapper"          "env git --no-pager prune"
+expect relaxed DENY "gc --prune=now — what prune deletes, reached through gc" \
+  "git --no-pager gc --prune=now"
+expect relaxed DENY "gc --prune=all, -P prefix"       "git -P gc --prune=all"
+expect relaxed DENY "gc --prune with no date"         "git --no-pager gc --prune"
+expect relaxed DENY "gc --prune after another gc flag" "git --no-pager gc --aggressive --prune=now"
 expect relaxed DENY "push --mirror"                  "git --no-pager push --mirror origin"
 expect relaxed DENY "push --receive-pack=<prog>"     "git --no-pager push --receive-pack=/tmp/x.sh origin main"
 expect relaxed DENY "push --exec=<prog>"             "git --no-pager push --exec=/tmp/x.sh origin main"
@@ -322,6 +344,8 @@ expect relaxed DENY "bare clean with clean.requireForce turned off in the same l
 expect relaxed DENY "bare restore"                   "git -P restore"
 expect relaxed DENY "bare checkout --"               "git --no-pager checkout --"
 expect relaxed DENY "bare reflog expire"             "git -P reflog expire"
+expect relaxed DENY "bare reflog delete"             "git -P reflog delete"
+expect relaxed DENY "bare reflog drop"               "git --no-pager reflog drop"
 
 echo ""
 echo "[UNPREFIXED: the glob rules own these, and the hook stays out of the way]"
@@ -332,6 +356,9 @@ expect relaxed PASS "restore"        "git restore ."
 expect relaxed PASS "checkout --"    "git checkout -- ."
 expect relaxed PASS "reset --hard"   "git reset --hard HEAD~3"
 expect relaxed PASS "reflog expire"  "git reflog expire --expire=now --all"
+expect relaxed PASS "reflog delete"  "git reflog delete HEAD@{1}"
+expect relaxed PASS "reflog drop"    "git reflog drop --all"
+expect relaxed PASS "gc --prune"     "git gc --prune=now"
 expect relaxed PASS "push --mirror"  "git push --mirror origin"
 expect relaxed PASS "fetch --upload-pack" "git fetch --upload-pack=/tmp/x.sh ."
 
@@ -351,17 +378,34 @@ echo ""
 echo "[excluded on purpose, and ordinary git, both prefixed]"
 # branch -D/-f is OUT: reflog-recoverable, and -D against a safe -d plus -f clustered in
 # -Df is the worst parsing surface in the set. `--sort=-date` already tripped a -d matcher
-# in this same guard once. gc --prune is OUT too, as a recorded gap rather than a verdict
-# that it is safe — it deletes the same unreachable set prune does.
+# in this same guard once.
 expect relaxed PASS "branch -d, the safe delete"  "git --no-pager branch -d old-branch"
 expect relaxed PASS "branch -D, excluded as reflog-recoverable" "git --no-pager branch -D old-branch"
 expect relaxed PASS "branch --sort=-date"         "git --no-pager branch --sort=-date"
-expect relaxed PASS "gc --prune, a recorded gap"  "git --no-pager gc --prune=now"
-# prune is IN, as the subcommand only. These four share the word and are other commands.
+# prune is IN, as the subcommand only, and gc only with a --prune token. These share
+# the word and are other commands, or gc doing its ordinary repack.
 expect relaxed PASS "worktree prune"              "git --no-pager worktree prune"
 expect relaxed PASS "remote prune"                "git -P remote prune origin"
 expect relaxed PASS "prune-packed"                "git --no-pager prune-packed"
 expect relaxed PASS "fetch --prune"               "git --no-pager fetch --prune"
+expect relaxed PASS "plain gc"                    "git --no-pager gc"
+expect relaxed PASS "gc --auto"                   "git -P gc --auto"
+expect relaxed PASS "gc --aggressive"             "git --no-pager gc --aggressive"
+expect relaxed PASS "gc --no-prune, which Bash(git gc *--prune*) does not match either" \
+  "git --no-pager gc --no-prune"
+expect relaxed PASS "gc --prune named in a --grep" "git --no-pager log --grep=\"gc --prune\""
+# reflog is IN only as expire, delete and drop, the word right after `reflog`. The rest
+# of it reads.
+expect relaxed PASS "bare reflog, prefixed"        "git --no-pager reflog"
+expect relaxed PASS "bare reflog"                  "git reflog"
+expect relaxed PASS "reflog list, prefixed"        "git --no-pager reflog list"
+expect relaxed PASS "reflog list"                  "git reflog list"
+expect relaxed PASS "reflog show <ref>, prefixed"  "git -P reflog show --date=iso HEAD"
+expect relaxed PASS "reflog show"                  "git reflog show"
+expect relaxed PASS "reflog exists, prefixed"      "git --no-pager reflog exists refs/heads/main"
+expect relaxed PASS "reflog exists"                "git reflog exists refs/heads/main"
+expect relaxed PASS "reflog drop named in a message" \
+  "git --no-pager commit -m \"reflog drop and reflog delete are denied now\""
 expect relaxed PASS "stash"                       "git --no-pager stash"
 expect relaxed PASS "status"                      "git --no-pager status"
 expect relaxed PASS "switch"                      "git --no-pager switch main"
@@ -383,8 +427,116 @@ expect relaxed PASS "checkout <tree-ish> -- <path>, open in both layers" \
 expect relaxed PASS "checkout --force -- ., open in both layers" \
   "git --no-pager checkout --force -- ."
 
+# ── -c and --config-env behind another git-level option ─────────────────────
+# Both rules are anchored on the first token after `git`, so any other option in front
+# walks past them. Measured on main before this gate: `git --no-pager -c
+# core.fsmonitor=/tmp/x.sh status` reached neither a rule nor the hook.
+echo ""
+echo "[GITCFG: -c and --config-env behind another git-level option]"
+for pfx in "--no-pager" "-P" "--git-dir=.git" "--git-dir .git" "--bare" \
+           "--literal-pathspecs" "--namespace ns"; do
+  expect relaxed DENY "git $pfx --config-env=<k>=<var>" "git $pfx --config-env=core.fsmonitor=X status"
+  expect relaxed DENY "git $pfx --config-env <k>=<var>, the spaced spelling" \
+    "git $pfx --config-env core.fsmonitor=X status"
+  expect relaxed DENY "git $pfx -c <k>=<prog>" "git $pfx -c core.fsmonitor=/tmp/x.sh status"
+done
+expect relaxed DENY "behind a VAR=value"          "X=/tmp/x.sh git --no-pager --config-env=core.fsmonitor=X status"
+expect relaxed DENY "behind env"                  "env X=/tmp/x.sh git -P --config-env=core.fsmonitor=X status"
+expect relaxed DENY "inside sh -c"                "sh -c \"git --no-pager --config-env=core.fsmonitor=X status\""
+expect relaxed DENY "second statement"            "echo hi; git -P -c core.pager=evil log"
+expect relaxed DENY "absolute path to git"        "/usr/bin/git --no-pager --config-env=core.fsmonitor=X status"
+expect relaxed DENY "with no subcommand after it" "git --no-pager --config-env=core.fsmonitor=X"
+expect relaxed DENY "a one-command alias"         "git --no-pager -c alias.x='!evil' x"
+expect relaxed DENY "a second -c, after the first one the rule denies" \
+  "git -c user.name=x -c core.fsmonitor=/tmp/x.sh status"
+expect relaxed DENY "beside a destructive subcommand, which also fires" \
+  "git --no-pager --config-env=clean.requireForce=RF clean"
+
+echo ""
+echo "[UNPREFIXED config options: the rules own these, and the hook stays out of the way]"
+expect relaxed PASS "--config-env=<k>=<var> first" "git --config-env=core.fsmonitor=X status"
+expect relaxed PASS "--config-env <k>=<var> first" "git --config-env core.fsmonitor=X status"
+expect relaxed PASS "behind a VAR=value, which a deny rule matches past" \
+  "X=/tmp/x.sh git --config-env=core.fsmonitor=X status"
+expect relaxed PASS "-c first"                     "git -c core.fsmonitor=/tmp/x.sh status"
+
+echo ""
+echo "[the two options named as data: a message, a pattern, an echo]"
+expect relaxed PASS "in a commit message"          "git commit -m \"block git --config-env and git -c\""
+expect relaxed PASS "the prefixed form quoted in a prefixed message" \
+  "git --no-pager commit -m \"git --no-pager --config-env=core.pager=x log\""
+expect relaxed PASS "-c in a prefixed message"     "git --no-pager commit -m \"-c core.pager=x\""
+expect relaxed PASS "as a --grep pattern"          "git log --grep=--config-env"
+expect relaxed PASS "as a prefixed --grep pattern" "git --no-pager log --grep=\"--config-env=core.pager=x\""
+expect relaxed PASS "as a -S pickaxe"              "git --no-pager log -S \"--config-env\""
+expect relaxed PASS "in an echo"                   "echo \"git --no-pager --config-env=core.pager=x log\""
+expect relaxed PASS "as a grep pattern"            "grep -rn -- \"--config-env\" docs/"
+expect relaxed PASS "in a heredoc body"            "cat <<'EOF'
+git --no-pager -c core.fsmonitor=/tmp/x.sh status
+EOF"
+
+# ── the walk itself: options that take a word, and options that end git ───────
+# Three ways the walk used to land on the wrong token, each found in review and each
+# reproduced on main before the fix: an undocumented git-level option that takes an
+# operand, a wrapper option that takes one, and an option after which git runs no
+# subcommand at all. The first two were misses; the third was a false positive.
+echo ""
+echo "[--shallow-file takes the next word, so the subcommand after it is still found]"
+expect relaxed DENY "clean"          "git --shallow-file x clean -fdx"
+expect relaxed DENY "config core.hooksPath" "git --shallow-file x config core.hooksPath .evil"
+expect relaxed DENY "reflog expire"  "git --shallow-file x reflog expire --expire=now --all"
+expect relaxed DENY "push --mirror"  "git --shallow-file x push --mirror origin"
+expect relaxed DENY "prune"          "git --shallow-file x prune"
+expect relaxed DENY "reset --hard"   "git --shallow-file x reset --hard HEAD~3"
+expect relaxed DENY "a later --config-env" "git --shallow-file x --config-env=core.fsmonitor=X status"
+expect relaxed PASS "status"         "git --shallow-file x status --short"
+
+echo ""
+echo "[wrapper options that take a word: the command after them is still git]"
+expect relaxed DENY "nice -n 5"             "nice -n 5 git --no-pager clean -fdx"
+expect relaxed DENY "nice -n 5, config"     "nice -n 5 git config core.hooksPath .evil"
+expect relaxed DENY "timeout -s KILL 5"     "timeout -s KILL 5 git --no-pager clean -fdx"
+expect relaxed DENY "timeout -s KILL 5, config" "timeout -s KILL 5 git config core.hooksPath .evil"
+expect relaxed DENY "timeout -k 5 10"       "timeout -k 5 10 git --no-pager reflog expire --expire=now --all"
+expect relaxed DENY "xargs -n 1"            "xargs -n 1 git --no-pager prune"
+expect relaxed DENY "stdbuf -o 0"           "stdbuf -o 0 git --no-pager clean -fdx"
+expect relaxed DENY "exec -a x"             "exec -a x git --no-pager clean -fdx"
+expect relaxed DENY "env -u HOME"           "env -u HOME git --no-pager clean -fdx"
+expect relaxed DENY "sudo -u me"            "sudo -u me git --no-pager clean -fdx"
+expect relaxed DENY "nice -n 5, GITCFG"     "nice -n 5 git -P --config-env=core.fsmonitor=X status"
+expect relaxed PASS "nice -n 5 git status"  "nice -n 5 git status"
+expect relaxed PASS "timeout -s KILL 5, prefixed status" "timeout -s KILL 5 git --no-pager status"
+
+echo ""
+echo "[help, version and path queries: git prints and stops, so nothing runs]"
+# `git --help clean` is `git help clean`, which no rule denies; denying it made the
+# hook stricter than the glob it mirrors.
+expect relaxed PASS "--help clean"            "git --help clean"
+expect relaxed PASS "--help prune"            "git --help prune"
+expect relaxed PASS "--help restore"          "git --help restore"
+expect relaxed PASS "--help clean -fdx"       "git --help clean -fdx"
+expect relaxed PASS "-h clean"                "git -h clean"
+expect relaxed PASS "-h prune, -P first"      "git -P -h prune"
+expect relaxed PASS "--help clean, --no-pager first" "git --no-pager --help clean"
+expect relaxed PASS "--help config <key> <value>" "git --no-pager --help config core.hooksPath .evil"
+expect relaxed PASS "-v"                      "git -v"
+expect relaxed PASS "--version clean"         "git --version clean"
+expect relaxed PASS "--html-path"             "git --html-path"
+expect relaxed PASS "--man-path"              "git --man-path"
+expect relaxed PASS "--info-path"             "git --info-path"
+expect relaxed PASS "--list-cmds=main"        "git --list-cmds=main"
+expect relaxed PASS "a bare --exec-path"      "git --exec-path"
+expect relaxed PASS "a bare --exec-path, words after it ignored" "git --exec-path /tmp clean"
+expect relaxed DENY "--exec-path=<dir> sets the path and runs the subcommand" "git --exec-path=/tmp clean -fdx"
+# git help reads config (man.<tool>.cmd, web.browser), so a -c ahead of --help counts.
+expect relaxed DENY "a -c behind another option, ahead of --help" "git --no-pager -c man.viewer=x --help clean"
+
 echo ""
 echo "[tiers: the deny does not ladder, and holds headless]"
+expect off     PASS "Off disables GITCFG too"    "git --no-pager --config-env=core.fsmonitor=X status"
+expect medium  DENY "GITCFG at Medium"           "git --no-pager --config-env=core.fsmonitor=X status"
+expect high    DENY "GITCFG at High"             "git -P -c core.pager=evil log"
+KIT_TEST_HEADLESS=1 expect relaxed DENY "GITCFG headless" "git -P -c core.pager=evil log"
 expect off     PASS "Off disables this pass too" "git --no-pager clean -fdx"
 expect medium  DENY "Medium"                     "git --no-pager clean -fdx"
 expect high    DENY "High"                       "git --no-pager clean -fdx"
@@ -444,7 +596,20 @@ new_mut() {
 # controls reported a guard that had never been broken.
 mutate() {
   local dir; dir="$(new_mut "mutate-$1")"
-  python3 - "$dir/.claude/hooks/egress-guard.awk" "$1" "$2" <<'PY'
+  mutate_file "$dir/.claude/hooks/egress-guard.awk" "$1" "$2"
+  printf '%s' "$dir"
+}
+
+# mutate_lib <find> <replace> -> fixture dir, the same on lib-tokenize.awk, which holds
+# the wrapper tables the git walk reaches through cmdword_x.
+mutate_lib() {
+  local dir; dir="$(new_mut "mutate-lib-$1")"
+  mutate_file "$dir/.claude/hooks/lib-tokenize.awk" "$1" "$2"
+  printf '%s' "$dir"
+}
+
+mutate_file() { # mutate_file <path> <find> <replace>
+  python3 - "$1" "$2" "$3" <<'PY'
 import sys
 path, find, repl = sys.argv[1:4]
 lines = open(path, encoding="utf-8").read().split("\n")
@@ -454,7 +619,6 @@ if len(hits) != 1:
 lines[hits[0]] = lines[hits[0]].replace(find, repl)
 open(path, "w", encoding="utf-8").write("\n".join(lines))
 PY
-  printf '%s' "$dir"
 }
 
 # drop_key <key> -> fixture dir with that key removed from the guard's own key table.
@@ -610,5 +774,57 @@ flips "an argument required after clean again, so the bare prefixed form walks p
   "$M" "git --no-pager clean" DENY PASS
 flips "...while clean with an argument still fires, so only the bare form broke" \
   "$M" "git --no-pager clean -fd" DENY DENY
+
+# 11. GITCFG: each option, switched off on its own, and the prefixed-only scope.
+M="$(mutate 'o == "--config-env")) GW_CFG = o' 'o == "--config-env-NOT")) GW_CFG = o')"
+flips "--config-env dropped from GITCFG, so the prefixed spelling walks past" \
+  "$M" "git --no-pager --config-env=core.fsmonitor=X status" DENY PASS
+flips "...while a prefixed -c still fires, so only --config-env broke" \
+  "$M" "git --no-pager -c core.fsmonitor=/tmp/x.sh status" DENY DENY
+M="$(mutate '(o == "-c" ||' '(o == "-c-NOT" ||')"
+flips "-c dropped from GITCFG, so git --no-pager -c walks past again" \
+  "$M" "git --no-pager -c core.fsmonitor=/tmp/x.sh status" DENY PASS
+M="$(mutate 'if (k > 0 && GW_CFG' 'if (k >= 0 && GW_CFG')"
+flips "GITCFG's prefixed-only scope removed, so the hook starts deciding what the rule owns" \
+  "$M" "git --config-env=core.fsmonitor=X status" PASS DENY
+
+# 12. reflog delete and drop, each switched off, and the read boundary beside them:
+#     `reflog show` staying silent is only worth something if adding it would show.
+M="$(mutate 'T[i] == "delete"' 'T[i] == "delete-NOT"')"
+flips "reflog delete switched off" "$M" "git --no-pager reflog delete HEAD@{1}" DENY PASS
+M="$(mutate 'T[i] == "drop")' 'T[i] == "drop-NOT")')"
+flips "reflog drop switched off" "$M" "git --no-pager reflog drop --all" DENY PASS
+M="$(mutate 'T[i] == "drop")' 'T[i] == "drop" || T[i] == "show")')"
+flips "reflog show added to the destructive set, so a read is gated" \
+  "$M" "git --no-pager reflog show" PASS DENY
+
+# 13. gc --prune: switched off; cut loose from the gc subcommand, which is the substring
+#     hazard prune-packed once posed; and loosened to the bare word, which --no-prune
+#     carries while never beginning `--prune`.
+M="$(mutate 'GW_SUB == "gc"' 'GW_SUB == "gc-NOT"')"
+flips "gc --prune switched off" "$M" "git --no-pager gc --prune=now" DENY PASS
+M="$(mutate 'GW_SUB == "gc"' 'GW_SUB != ""')"
+flips "the --prune test cut loose from gc, so fetch --prune is gated" \
+  "$M" "git --no-pager fetch --prune" PASS DENY
+M="$(mutate 'T[i] ~ /^--prune/' 'T[i] ~ /prune/')"
+flips "the --prune test loosened to the word prune, so gc --no-prune is gated" \
+  "$M" "git --no-pager gc --no-prune" PASS DENY
+
+# 14. The walk. --shallow-file out of the operand list puts its operand in subcommand
+#     position; the help/version stop removed brings back #254's false positive; and
+#     the wrapper option table unconsulted puts nice's "5" where git should be.
+M="$(mutate '|| o == "--shallow-file")' ')')"
+flips "--shallow-file dropped from the operand list, so the walk loses the subcommand" \
+  "$M" "git --shallow-file x clean -fdx" DENY PASS
+M="$(mutate 'if (o == "-h" || o == "--help"' 'if (o == "-h-NOT" || o == "--help-NOT"')"
+flips "the help stop removed, so git --help clean is read as a prefixed clean" \
+  "$M" "git --help clean" PASS DENY
+flips "...while the version and path queries still stop, so only help broke" \
+  "$M" "git --version clean" PASS PASS
+M="$(mutate_lib 'if (operands && ci < n && kit_wrapper_optarg(w, T[ci])) ci++' 'ci = ci')"
+flips "the wrapper option table unconsulted, so nice -n 5 hides git" \
+  "$M" "nice -n 5 git --no-pager clean -fdx" DENY PASS
+flips "...while a wrapper with no option still fires, so only the table broke" \
+  "$M" "nice git --no-pager clean -fdx" DENY DENY
 
 print_summary

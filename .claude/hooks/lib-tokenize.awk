@@ -61,6 +61,23 @@ function is_wrapper(c) {
        || c == "watch" || c == "noglob" || c == "eval")
 }
 
+# kit_wrapper_optarg — a wrapper OPTION that swallows the next word, so the word
+# is not mistaken for the command: env -u HOME, xargs -I {}, nice -n 5,
+# sudo -u me, timeout -s KILL 5.  Skipping the flag alone left `nice -n 5 git
+# --no-pager clean -fdx` with "5" in command position and every git gate silent.
+# Moved here from onchain-guard.awk, which had it first and still uses it; only
+# callers passing operands=1 to cmdword_x get it there, beside kit_wrapper_operand.
+# Short options only, as before: an attached value (-n5) or a GNU long option with
+# `=` is one token already, and a spaced long option (--signal KILL) still misses.
+function kit_wrapper_optarg(b, f) {
+  return (b == "env" && f ~ /^(-u|-C|--unset|--chdir)$/) \
+      || (b == "xargs" && f ~ /^(-I|-L|-n|-P|-s|-d|-E|-a|-J|-R|-S)$/) \
+      || ((b == "sudo" || b == "doas") && f ~ /^-[ugphCDrtTU]$/) \
+      || (b == "nice" && f == "-n") || (b == "timeout" && f ~ /^-[sk]$/) \
+      || (b == "stdbuf" && f ~ /^-[ioe]$/) || (b == "exec" && f == "-a") \
+      || (b == "time" && f ~ /^-[fo]$/)
+}
+
 # kit_wrapper_operand — a wrapper taking a POSITIONAL operand before the command
 # it runs.  This is the bug that bit twice: skipping a wrapper's OPTIONS alone
 # leaves `timeout 5 npx -y evil` with "5" in command position, so the gate never
@@ -142,7 +159,8 @@ function first_word(T, n,   i) {
 #                `env FOO=1 cat x` yields "cat".  0: skip them once at the front
 #                only, so the same command yields "FOO=1" and the path lands in
 #                argument position instead.  Both shipped; both are preserved.
-#   operands  1: also skip a wrapper's positional operand (kit_wrapper_operand).
+#   operands  1: also skip a wrapper's positional operand (kit_wrapper_operand)
+#                and the word an option of it swallows (kit_wrapper_optarg).
 #
 # CWI is left untouched when reskip is 1 and nothing was found, because that copy
 # never assigned it there and a caller may still be reading the previous value.
@@ -156,7 +174,10 @@ function cmdword_x(T, n, reskip, operands,   ci, w) {
     w = base(T[ci])
     if (!kit_wrapper(w)) { CWI = ci; return w }
     ci++
-    while (ci <= n && T[ci] ~ /^-/) ci++
+    while (ci <= n && T[ci] ~ /^-/) {
+      if (operands && ci < n && kit_wrapper_optarg(w, T[ci])) ci++
+      ci++
+    }
     if (operands && ci <= n && kit_wrapper_operand(w, T[ci])) ci++
   }
   if (!reskip) CWI = n + 1
