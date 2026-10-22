@@ -174,6 +174,37 @@ set -e
 assert_eq "0" "$DEF_RC" "no argument reads ./.env"
 assert_contains "$DEF_OUT" "A_KEY set" "the default path is ./.env"
 
+# ── .env.schema mirrors .env.example ────────────────────────────────────────
+# The varlock schema is the agent-readable twin of .env.example: the same keys in the same
+# order, with no values. Order is asserted, not just membership, so a key added to one file
+# only, or out of place, fails here. The count guards the producer: two files that both
+# stopped matching ^KEY= would otherwise compare equal at zero keys.
+echo "[.env.schema mirrors .env.example]"
+SCHEMA="$REPO_ROOT/.env.schema"
+assert_file_exists "$SCHEMA" ".env.schema ships next to .env.example"
+if [ -f "$SCHEMA" ]; then
+  EXAMPLE_KEYS="$(grep -oE '^[A-Z_][A-Z0-9_]*=' "$REPO_ROOT/.env.example" | sed 's/=$//' || true)"
+  SCHEMA_KEYS="$(grep -oE '^[A-Z_][A-Z0-9_]*=' "$SCHEMA" | sed 's/=$//' || true)"
+  KEY_COUNT="$(printf '%s\n' "$EXAMPLE_KEYS" | grep -c . || true)"
+  assert_cmd_success "[ $KEY_COUNT -gt 0 ]" ".env.example has KEY= lines to compare ($KEY_COUNT found)"
+  assert_eq "$EXAMPLE_KEYS" "$SCHEMA_KEYS" ".env.schema declares exactly .env.example's keys, in the same order"
+  assert_eq "" "$(grep -nE '^[A-Z_][A-Z0-9_]*=.' "$SCHEMA" || true)" "...each with an empty value: the schema holds no values"
+  # Each key states its own sensitivity and that it is optional, so its block means the
+  # same pasted into a schema with other root defaults. As in env-spec, a blank line or a
+  # divider ends a block, and plain comment lines may sit between decorator lines.
+  UNDECLARED="$(awk '
+    /^[[:space:]]*$/ || /^#[[:space:]]*(---|===)/ { dec = ""; next }
+    /^#[[:space:]]*@/ { dec = dec " " $0; next }
+    /^#/ { next }
+    /^[A-Z_][A-Z0-9_]*=/ {
+      k = $0; sub(/=.*/, "", k)
+      if (dec !~ /@sensitive/) print k " has no @sensitive or @sensitive=false"
+      if (dec !~ /@optional/) print k " is not @optional"
+      dec = ""
+    }' "$SCHEMA")"
+  assert_eq "" "$UNDECLARED" "every .env.schema key declares @sensitive (or @sensitive=false) and @optional"
+fi
+
 # ── installed by install.sh ─────────────────────────────────────────────────
 echo "[install]"
 INSTALL_TMP="$(new_tmp)" || INSTALL_TMP=""

@@ -1,10 +1,10 @@
 # Configuration
 
-What the kit configures for you, what it leaves to you, the MCP servers that are not on by default, and the Claude Code plugins alongside them — the four a standard install adds, and the ones worth considering after that.
+What the kit configures for you, what it leaves to you, the MCP servers that are not on by default, the recommended way to manage their keys, and the Claude Code plugins alongside them — the four a standard install adds, and the ones worth considering after that.
 
 ## MCP servers
 
-Four servers are on by default in `.mcp.json` (API keys go in `.env`). Claude Code asks once per project before it starts them, so approve the ones you want. `/setup-mcp` walks through the Helius API key and offers the optional servers below.
+Four servers are on by default in `.mcp.json` (API keys go in `.env`, ideally managed [with varlock](#secrets-with-varlock)). Claude Code asks once per project before it starts them, so approve the ones you want. `/setup-mcp` walks through the Helius API key and offers the optional servers below.
 
 | Server | Capabilities |
 |--------|-------------|
@@ -55,6 +55,42 @@ And the kit already pins a `cloudflare` **skill** pack ([skill-packs.md](skill-p
 **Playwright's three arbitrary tools are denied by name at Medium and High.** `browser_run_code_unsafe` runs caller-supplied code in the Playwright process, `browser_network_request` is an arbitrary HTTP client, and `browser_evaluate` runs arbitrary JavaScript in the page: [Medium and High deny the first two, High also the third](firewall.md#what-the-tiers-do-not-do). `browser_navigate`, `browser_snapshot`, clicking and typing keep working everywhere. Like Cloudflare's, these are tool-name denies and nothing else — the hooks' matcher (`Bash|mcp__context-mode__.*`) does not cover this server either, so at Off and Relaxed attaching it voids the egress guarantee, and the denies match the server *name*, so add it as `playwright` (as above) for the rules to apply.
 
 **Phantom is the one opt-in server that acts on your funds rather than reporting on them**, and the 29 tools are worth reading before you attach it. `solana_sign`/`solana_send` and `evm_sign`/`evm_send` land signed transactions. `buy`, `pay`, `transfer`, `wallet_rebalance`, `withdraw_from_hyperliquid_spot` and nine `perps_*` tools (open, close, leverage, deposit, withdraw) move real funds. Authentication is `phantom_login`, which keeps the session on disk, so no key goes in a config file — and equally, nothing re-prompts between an attached server and a trade. No firewall tier denies its tools by name, though the kit's mainnet and value-movement hooks do not reach an MCP server either (`Bash|mcp__context-mode__.*` is the matcher), so at every tier the boundary is what the logged-in wallet holds. Attach it when you want the agent transacting — a bot, a payment flow, a position you are managing — and fund the wallet accordingly.
+
+## Secrets with varlock
+
+**This is the recommended way to manage the keys.** [varlock](https://varlock.dev) checks `.env` against a committed schema and can resolve values from a secret manager instead of a plaintext file. The kit ships the schema, `.env.schema`. `.env.example`, `.env` and `/setup-mcp` work exactly as before, so adopting varlock is an addition, not a migration.
+
+**`.env.schema`** declares the same keys as `.env.example`, in the same order, each with what it is for, its type and whether it is secret: every key is `@sensitive` except `THEGRID_GRAPHQL_ENDPOINT`, and every key is `@optional`, since each one is opt-in. It holds no values, so commit it; an agent can read it to learn what the project expects without opening `.env`. `install.sh` copies it in both install modes when the file is absent, and `/update` adds it when missing. Neither overwrites or merges into an existing one: a schema you already had keeps its own root defaults, under which the kit's keys could become required. Copy the kit's blocks into yours by hand instead — each states its own `@sensitive` and `@optional`, so it means the same in your file. The installer never gitignores the schema, but your own `.gitignore` may: create-next-app's template ignores `.env*`. If yours does, add `!.env.schema` below that line. When a kit update adds a key, `/update` appends it to `.env.example` and `.env` but not to an existing `.env.schema`.
+
+Install varlock as a dev dependency (`npm i -D varlock`, run as `npx varlock`; Node 22.3 or later) or as its [standalone binary](https://varlock.dev/getting-started/installation/), then:
+
+```bash
+varlock load                          # validate .env against the schema; secrets print redacted
+varlock run --inject vars -- claude   # start Claude Code with the validated values
+```
+
+- **`varlock load`** exits non-zero on a bad value or a missing required one; a `QUICKNODE_WSS_URL` that is not `wss://` fails, for example. One trap: varlock applies `@defaultRequired` per file, so a key that appears only in `.env` counts as required, and an empty leftover such as an old `COLOSSEUM_COPILOT_PAT=` fails the load. Delete it, or declare it in the schema with `@optional`.
+- **`varlock run --inject vars -- claude`** puts the validated values in Claude Code's environment. That is where Claude Code expands `${HELIUS_API_KEY}` in `.mcp.json` from, and helius-mcp reads its key from that variable. With a [varlock plugin](https://varlock.dev/plugins/overview/) for 1Password, a cloud secret manager or the macOS keychain, the values need never sit in a plaintext `.env` at all. `--inject vars` is varlock's own advice for an agent: plain `varlock run` also sets `__VARLOCK_ENV`, a JSON copy of the whole resolved config, secrets included.
+
+**Neither hides a value from the agent.** Under `varlock run` the values are in Claude Code's environment, so every command it runs inherits them. And wherever varlock is installed, the agent can run it too: `varlock printenv <KEY>` and `varlock load --format env` print raw values, and safe-ai-skill does not see that read, because varlock opens `.env`, or asks the secret manager, in its own process. To keep a key out of the agent's shell, hand it to the one server that needs it: varlock's [Claude Code guide](https://varlock.dev/guides/ai-tools/claude/#local-stdio-servers-wrap-the-command) wraps a stdio server's command in `varlock run --filter <KEY> --inject vars`. Remove that key from the entry's `env` block when you do: `.mcp.json` passes `HELIUS_API_KEY` as `${HELIUS_API_KEY:-}`, and an inherited empty value overrides the one in `.env`.
+
+**`varlock proxy run -- claude`** goes further. The agent, and everything it starts, sees placeholders, and the proxy swaps the real value in on the wire, over HTTPS, only toward the hosts a key is bound to; re-running `varlock printenv` inside the session returns the placeholder. It is an **early preview** in varlock's own words: its flags, decorators and behaviour may change in minor releases, so pin the varlock version if you rely on it. Read [its limitations](https://varlock.dev/guides/proxy/#limitations) first; the ones that matter here:
+
+- **The shipped schema binds nothing.** A secret with no `@proxy(domain=...)` becomes a placeholder injected nowhere, so the Helius server and the skill CLIs stop working until you bind each key you use. helius-mcp sends its key as an `api-key=` query parameter, so its binding goes on the line above `HELIUS_API_KEY=` as `# @proxy(domain=["*.helius.xyz", "*.helius-rpc.com"], substituteIn=["query:api-key"])`.
+- **Interception is HTTP/1.1 only**, so WebSockets and gRPC fail on a bound host. Gzip- or brotli-compressed responses, and any over 2 MB, are not scrubbed of a real value the upstream echoes back. A client also has to honour `HTTPS_PROXY` and trust varlock's CA: Node 24+ `fetch`, curl and most Python builds do; on macOS, Go, .NET and many Rust builds do not.
+- **It is not a sandbox.** It runs as your user, beside the agent, and raises the bar rather than drawing a boundary; varlock's own `--sandbox` flag is the part meant to close that.
+- **It is untested behind Claude Code's sandbox network proxy**, which routes the kit's sandboxed Bash commands through itself.
+
+**safe-ai-skill blocks the schema unless the policy allows it.** Its default policy, at the commit the kit pins, denies reading `**/.env` and `**/.env.*` and allows only `**/.env.example`, so `.env.schema` is refused through the Read, Grep and Glob tools and through `cat`-style Bash reads. The kit's `.safe-ai-skill/policy.yaml` sets `secrets.allow_read_globs: ["**/.env.example", "**/.env.schema"]`. An allow glob wins over a deny, and a list replaces the default's rather than merging, which is why `.env.example` is listed again; `.env` itself stays denied. **Only fresh installs get that line**: `/update` adds the policy file only when it is missing, so a project installed earlier keeps the one it has. Add the two lines to its `.safe-ai-skill/policy.yaml` yourself — the firewall denies the agent edits to that file at every tier:
+
+```yaml
+secrets:
+  allow_read_globs: ["**/.env.example", "**/.env.schema"]
+```
+
+[solanabr/safe-ai-skill#14](https://github.com/solanabr/safe-ai-skill/issues/14) asks for `.env.schema` in the default allow list, which would reach every project without this step.
+
+varlock sends anonymous usage telemetry by default; `varlock telemetry disable`, `VARLOCK_TELEMETRY_DISABLED=true` or `DO_NOT_TRACK=1` turns it off ([what it collects](https://varlock.dev/guides/telemetry/)).
 
 ## Claude Code plugins worth installing
 

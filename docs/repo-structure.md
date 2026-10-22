@@ -11,6 +11,7 @@ What is in the kit repository, which parts reach an installed project, and the w
 ├── docs/                        # Full spec (this directory) — not copied by install.sh
 ├── .mcp.json                    # MCP server configurations (project root)
 ├── .safe-ai-skill/policy.yaml   # safe-ai-skill project policy (install.sh copies it)
+├── .env.schema                  # varlock schema for .env.example's keys (install.sh copies it)
 ├── install.sh                   # One-liner installer
 ├── validate.sh                  # Config integrity checker
 ├── LICENSE                      # MIT
@@ -72,7 +73,7 @@ What is in the kit repository, which parts reach an installed project, and the w
     └── settings.json            # Sandbox, permissions, hooks, stbr marketplace + safe-ai-skill@stbr
 ```
 
-An install copies the named `.claude/` subdirectories (`agents`, `skills`, `commands`, `bin`, `hooks`) plus `VERSION`, `settings.json`, `security.json`, `.mcp.json`, `.safe-ai-skill/policy.yaml` (Claude Code installs only) and `CLAUDE-solana.md` → `CLAUDE.md`. Everything else above — `docs/`, `tests/`, `install.sh`, `validate.sh`, the workflows — stays in the kit repository.
+An install copies the named `.claude/` subdirectories (`agents`, `skills`, `commands`, `bin`, `hooks`) plus `VERSION`, `settings.json`, `security.json`, `.mcp.json`, `.safe-ai-skill/policy.yaml` (Claude Code installs only), `.env.schema` (only when absent) and `CLAUDE-solana.md` → `CLAUDE.md`. Everything else above — `docs/`, `tests/`, `install.sh`, `validate.sh`, the workflows — stays in the kit repository.
 
 ## DX Scripts
 

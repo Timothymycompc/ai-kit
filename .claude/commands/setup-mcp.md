@@ -52,3 +52,5 @@ Never read `.env` — the firewall denies it at Medium and High, and a value rea
 ## Output
 
 Configured or skipped for each key (names only — nothing in this command ever holds a value past the append), grouped as MCP and skill/CLI, then the commands printed for the optional servers, then remind the user to restart Claude Code so the changes are picked up.
+
+Close with one line recommending varlock (https://varlock.dev), which changes nothing above: the project's `.env.schema` lets `varlock load` validate `.env`, and `varlock run --inject vars -- claude` starts Claude Code with the values, from a secret manager if they prefer. Don't install it for them.

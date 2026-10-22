@@ -257,6 +257,7 @@ your-project/
 │   └── settings.json      # Permissions, sandbox and hooks, generated from the tier
 ├── .mcp.json              # MCP server configs (project root)
 ├── .safe-ai-skill/        # safe-ai-skill project policy
+├── .env.schema            # varlock schema: key names and which are secret (commit it)
 ├── programs/              # Your Solana programs
 ├── app/                   # Your frontend
 └── ...
@@ -327,7 +328,7 @@ Run `/firewall` to switch tier, then restart Claude Code — permission and sand
 
 ### Configure MCP Servers
 
-Edit `.env` to add API keys for MCP servers (Helius). Run `/setup-mcp` for guided setup and the optional servers.
+Edit `.env` to add API keys for MCP servers (Helius). Run `/setup-mcp` for guided setup and the optional servers. For the keys themselves we recommend varlock: the installed `.env.schema` lets it validate `.env` and start Claude Code with the values, from a secret manager if you like — [docs/configuration.md → Secrets with varlock](docs/configuration.md#secrets-with-varlock).
 
 ---
 
