@@ -152,7 +152,7 @@ assert_eq "" "$(config_block "$PREV" | grep -xF 'CLAUDE.md' || true)" \
 echo "[unreachable upstream]"
 UNREACH="$(new_tmp)" || exit 1
 UNREACH_RC=0
-SOLANA_AI_KIT_UPSTREAM="file:///nonexistent/no-such-repo.git" \
+SOLANA_AI_KIT_LOCAL_SRC= SOLANA_CLAUDE_LOCAL_SRC= SOLANA_AI_KIT_UPSTREAM="file:///nonexistent/no-such-repo.git" \
   bash "$SCRIPT_DIR/../install.sh" "$UNREACH" > "$UNREACH/out" 2> "$UNREACH/err" || UNREACH_RC=$?
 assert_eq "1" "$UNREACH_RC" "an unreachable upstream exits 1, not 128"
 assert_contains "$(cat "$UNREACH/err")" "Could not clone" "an unreachable upstream says why on stderr"
@@ -162,7 +162,7 @@ assert_contains "$(cat "$UNREACH/err")" "(main)" "the fallback to main runs when
 # log through our own message; git already keeps it out of its own.
 echo "[upstream credentials]"
 CREDS="$(new_tmp)" || exit 1
-SOLANA_AI_KIT_UPSTREAM="file://tok3n-s3cr3t@/nonexistent/no-such-repo.git" \
+SOLANA_AI_KIT_LOCAL_SRC= SOLANA_CLAUDE_LOCAL_SRC= SOLANA_AI_KIT_UPSTREAM="file://tok3n-s3cr3t@/nonexistent/no-such-repo.git" \
   bash "$SCRIPT_DIR/../install.sh" "$CREDS" > "$CREDS/out" 2> "$CREDS/err" || true
 assert_contains "$(cat "$CREDS/err")" "Could not clone file:///nonexistent/no-such-repo.git" "the failure names the upstream without its credentials"
 assert_file_not_contains "$CREDS/err" "tok3n-s3cr3t" "no credential from the upstream URL reaches stderr"
@@ -180,5 +180,68 @@ assert_eq "1" "$NOSRC_RC" "a local source without .claude/ exits 1"
 assert_contains "$(cat "$NOSRC/err")" "SOLANA_AI_KIT_LOCAL_SRC=$NOSRC/src has no .claude/" "the refusal names the local source"
 assert_file_not_contains "$NOSRC/err" "Could not clone" "it refuses before trying the network"
 assert_dir_not_exists "$NOSRC/target/.claude" "nothing is installed"
+# The legacy variable is the one named when it is the one set, and a refused install
+# leaves nothing behind, not even the target directory.
+SOLANA_AI_KIT_LOCAL_SRC= SOLANA_CLAUDE_LOCAL_SRC="$NOSRC/src" SOLANA_AI_KIT_UPSTREAM="file:///nonexistent/no-such-repo.git" \
+  bash "$SCRIPT_DIR/../install.sh" "$NOSRC/target" > /dev/null 2> "$NOSRC/err2" || true
+assert_contains "$(cat "$NOSRC/err2")" "SOLANA_CLAUDE_LOCAL_SRC=$NOSRC/src has no .claude/" "the refusal names the legacy variable when that is the one set"
+SOLANA_AI_KIT_LOCAL_SRC="$NOSRC/src" SOLANA_AI_KIT_UPSTREAM="file:///nonexistent/no-such-repo.git" \
+  bash "$SCRIPT_DIR/../install.sh" "$NOSRC/never-made" > /dev/null 2>&1 || true
+assert_dir_not_exists "$NOSRC/never-made" "a refused install does not create the target"
+
+# A repo can ship .gitignore.tmp as a symlink. The installer's scratch copy must never
+# be written through it: the repo's .gitignore text, its author's, would land there.
+echo "[.gitignore scratch file]"
+VICTIM="$WORK/victim.txt"; printf 'PRECIOUS\n' > "$VICTIM"
+grep -vxF '.safe-ai-skill/' "$TEMP_DIR/.gitignore" > "$WORK/gi" && cat "$WORK/gi" > "$TEMP_DIR/.gitignore"
+ln -s "$VICTIM" "$TEMP_DIR/.gitignore.tmp"
+SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$REPO_ROOT/install.sh" "$TEMP_DIR" > /dev/null 2>&1
+assert_eq "PRECIOUS" "$(cat "$VICTIM")" "a re-install never writes through a planted .gitignore.tmp symlink"
+rm -f "$TEMP_DIR/.gitignore.tmp"
+
+# A last line with no newline would be glued to the next append: `.env.local` then
+# `.memsearch/` became `.env.local.memsearch/`, and .env.local stopped being ignored.
+echo "[.gitignore without a final newline]"
+grep -vxF '.env.local' "$TEMP_DIR/.gitignore" | grep -vxF '.memsearch/' > "$WORK/gi"
+{ cat "$WORK/gi"; printf '.env.local'; } > "$TEMP_DIR/.gitignore"
+SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$REPO_ROOT/install.sh" "$TEMP_DIR" > /dev/null 2>&1
+assert_eq "1" "$(grep -cxF '.env.local' "$TEMP_DIR/.gitignore")" "a last line without a newline stays its own line after a re-install"
+assert_eq "0" "$(grep -c 'env\.local\.memsearch' "$TEMP_DIR/.gitignore")" "...instead of being glued to the next append"
+
+echo "[.gitignore with CRLF endings]"
+# Start from known lines, .memsearch/ among them, so the second assertion can fail too.
+{ tr -d '\r' < "$TEMP_DIR/.gitignore" | awk '$0 != ".memsearch/"'; printf '.memsearch/\n'; } | sed 's/$/\r/' > "$WORK/gi"
+cat "$WORK/gi" > "$TEMP_DIR/.gitignore"
+SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$REPO_ROOT/install.sh" "$TEMP_DIR" > /dev/null 2>&1
+assert_eq "1" "$(tr -d '\r' < "$TEMP_DIR/.gitignore" | grep -cxF '.env')" "a re-install over a CRLF .gitignore adds no second .env line"
+assert_eq "1" "$(tr -d '\r' < "$TEMP_DIR/.gitignore" | grep -cxF '.memsearch/')" "...nor a second .memsearch/ line"
+
+# grep -q stopping at an early match used to kill `tr` with SIGPIPE under pipefail, so a
+# large .gitignore whose match came first read as "not found" and got a second line.
+echo "[a large .gitignore]"
+{ printf '.env.local\n'; seq 1 4000 | sed 's|.*|generated/path-&/|'; tr -d '\r' < "$TEMP_DIR/.gitignore" | awk '$0 != ".env.local"'; } > "$WORK/gi"
+cat "$WORK/gi" > "$TEMP_DIR/.gitignore"
+SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$REPO_ROOT/install.sh" "$TEMP_DIR" > /dev/null 2>&1
+assert_eq "1" "$(grep -cxF '.env.local' "$TEMP_DIR/.gitignore")" "a re-install over a large .gitignore whose match comes first adds no second line"
+
+# install.sh, update.sh and skills.sh each print an upstream URL; their redaction must
+# not drift apart, and skills.sh's fetch line must not carry credentials either.
+echo "[redact_url]"
+DEFS="$(for f in install.sh .claude/bin/update.sh .claude/bin/skills.sh; do grep -h '^redact_url()' "$REPO_ROOT/$f" || true; done)"
+assert_eq "3" "$(printf '%s\n' "$DEFS" | grep -c '^redact_url()' || true)" "install.sh, update.sh and skills.sh each define redact_url"
+assert_eq "1" "$(printf '%s\n' "$DEFS" | sort -u | wc -l | tr -d ' ')" "...identically"
+# The two helpers install.sh and update.sh both carry must not drift apart either.
+fn_def() {  # fn_def <file> <name>: a one-line definition, or the block up to its closing }
+  awk -v f="$2" 'index($0, f "() {") == 1 { print; if ($0 ~ /; }$/) exit; on = 1; next }
+    on { print; if ($0 ~ /^}/) exit }' "$1"
+}
+for fn in end_with_newline missing_schema_blocks; do
+  ONE="$(fn_def "$REPO_ROOT/install.sh" "$fn")"
+  assert_contains "$ONE" "$fn() {" "install.sh defines $fn"
+  assert_eq "$ONE" "$(fn_def "$REPO_ROOT/.claude/bin/update.sh" "$fn")" "...and update.sh defines it identically"
+done
+SK_OUT="$(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC= SOLANA_CLAUDE_LOCAL_SRC= SOLANA_AI_KIT_UPSTREAM="file://tok3n-s3cr3t@/nonexistent/no-such-repo.git" bash .claude/bin/skills.sh add jupiter 2>&1 || true)"
+assert_contains "$SK_OUT" "Fetching the pinned packs from file:///nonexistent/no-such-repo.git" "skills.sh names the upstream without its credentials"
+assert_eq "0" "$(printf '%s' "$SK_OUT" | grep -c 'tok3n-s3cr3t')" "...and never prints them"
 
 print_summary

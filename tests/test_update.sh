@@ -163,6 +163,10 @@ mkdir -p "$TEMP_DIR/empty-src"
   bash .claude/bin/update.sh) > "$TEMP_DIR/fetch.out" 2> "$TEMP_DIR/fetch.err" || true
 assert_file_contains "$TEMP_DIR/fetch.err" "SOLANA_AI_KIT_LOCAL_SRC=$TEMP_DIR/empty-src has no .claude/" \
   "a local source without .claude/ is named when the fallback fetch fails"
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC='' SOLANA_CLAUDE_LOCAL_SRC="$TEMP_DIR/empty-src" SOLANA_AI_KIT_UPSTREAM="$DEAD_URL" \
+  bash .claude/bin/update.sh) > "$TEMP_DIR/fetch.out" 2> "$TEMP_DIR/fetch.err" || true
+assert_file_contains "$TEMP_DIR/fetch.err" "SOLANA_CLAUDE_LOCAL_SRC=$TEMP_DIR/empty-src has no .claude/" \
+  "...under the legacy variable's name when that is the one set"
 rm -rf "$TEMP_DIR/empty-src"; rm -f "$TEMP_DIR/fetch.out" "$TEMP_DIR/fetch.err"
 
 # --- Retired kit defaults: what kit <= 2.1.0 wrote into settings.json and .mcp.json ---
@@ -499,5 +503,85 @@ for _ in 1 2; do
 done
 assert_eq "1" "$(tr -d '\r' < "$TEMP_DIR/.gitignore" | grep -cxF '.memsearch/')" "a CRLF .gitignore keeps one .memsearch/ line across two updates"
 assert_eq "1" "$(tr -d '\r' < "$TEMP_DIR/.gitignore" | grep -cxF '.claude/worktrees/')" "a CRLF .gitignore keeps one .claude/worktrees/ line across two updates"
+
+# grep -q stopping at an early match used to kill `tr` with SIGPIPE under pipefail, so a
+# large .gitignore whose match came first read as "not found" and got a second line.
+{ printf '.memsearch/\n'; seq 1 4000 | sed 's|.*|generated/path-&/|'; tr -d '\r' < "$TEMP_DIR/.gitignore" | awk '$0 != ".memsearch/"'; } > "$FW_DIR/gi"
+cat "$FW_DIR/gi" > "$TEMP_DIR/.gitignore" && rm -f "$FW_DIR/gi"
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
+assert_eq "1" "$(grep -cxF '.memsearch/' "$TEMP_DIR/.gitignore")" "an update over a large .gitignore whose match comes first adds no second line"
+
+# --- .gitignore: no glued last line, no write through a planted scratch file ---
+# A last line without a newline would be glued to the next append (`.env.local` then
+# `.memsearch/` became `.env.local.memsearch/`, un-ignoring .env.local). And the scratch
+# copy that edits the kit block must never go through a .gitignore.tmp a repo shipped as
+# a symlink, since the repo's .gitignore text would land wherever it points.
+echo "[gitignore appends and scratch file]"
+# A kit block without .safe-ai-skill/ makes the update edit the block through its
+# scratch file; a final `.env.local` with no newline is what the next append meets.
+{
+  printf '# >>> solana-ai-kit config — gitignored by default; run /commit-claude-config to version it >>>\n'
+  printf '.gitmodules\n.claude/\n.mcp.json\n'
+  printf '# <<< solana-ai-kit config <<<\n'
+  printf '.env.local'
+} > "$TEMP_DIR/.gitignore"
+printf 'PRECIOUS\n' > "$FW_DIR/victim"
+ln -s "$FW_DIR/victim" "$TEMP_DIR/.gitignore.tmp"
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
+assert_eq "1" "$(grep -cxF '.env.local' "$TEMP_DIR/.gitignore")" "a last line without a newline stays its own line after an update"
+assert_eq "PRECIOUS" "$(cat "$FW_DIR/victim")" "update.sh never writes through a planted .gitignore.tmp symlink"
+assert_eq "1" "$(sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$TEMP_DIR/.gitignore" | grep -cxF '.safe-ai-skill/')" \
+  "...while the edit that uses the scratch file ran: .safe-ai-skill/ is back in the kit block"
+rm -f "$TEMP_DIR/.gitignore.tmp"
+
+# The JSON rewrites went through fixed names as well, so a repo could plant a link at
+# any of them. A fresh install's first /update rewrites security.json and settings.json,
+# and a firewall apply rewrites them again.
+echo "[json scratch files]"
+JP="$(new_tmp)" || exit 1
+SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$REPO_ROOT/install.sh" "$JP" > "$QUIET_LOG" 2>&1 || quiet_fail "install.sh"
+PLANTED="security.json.firewall.tmp settings.json.mcp.tmp security.json.hooks.tmp settings.json.hooks.tmp .settings.json.firewall.tmp .security.json.firewall.tmp"
+for n in $PLANTED; do printf 'PRECIOUS\n' > "$FW_DIR/victim-$n"; ln -s "$FW_DIR/victim-$n" "$JP/.claude/$n"; done
+(cd "$JP" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
+(cd "$JP" && CLAUDE_PROJECT_DIR="$JP" bash .claude/bin/firewall.sh apply relaxed) > "$QUIET_LOG" 2>&1 || quiet_fail "firewall.sh apply"
+HIT=""
+for n in $PLANTED; do [ "$(cat "$FW_DIR/victim-$n")" = PRECIOUS ] || HIT="$HIT $n"; done
+assert_eq "" "$HIT" "neither /update nor firewall.sh writes through a link planted at a fixed scratch-file name"
+rm -rf "$JP"
+
+# --- .env.schema: an existing schema gets the kit's missing keys ---
+# .env receives every kit key, and varlock treats a key its schema does not declare as
+# required, so a schema that lacks one breaks `varlock load`. Dropping the last block
+# stands in for a key a newer kit adds.
+echo "[.env.schema merge]"
+cp "$REPO_ROOT/.env.schema" "$TEMP_DIR/.env.schema"
+python3 - "$TEMP_DIR/.env.schema" <<'EOF'
+import sys
+p = sys.argv[1]
+head = open(p).read().rstrip("\n").rpartition("\n\n")[0]
+open(p, "w").write(head + "\n")
+EOF
+LAST_KEY="$(grep -E '^[A-Z_]+=' "$REPO_ROOT/.env.schema" | tail -1 | cut -d= -f1)"
+DRY_SCHEMA="$(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh --dry-run 2>&1)"
+assert_contains "$DRY_SCHEMA" "[would update] .env.schema — kit keys added: $LAST_KEY" "--dry-run reports the kit key the schema lacks"
+assert_eq "0" "$(grep -c "^$LAST_KEY=" "$TEMP_DIR/.env.schema")" "...and writes nothing"
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
+assert_eq "1" "$(grep -c "^$LAST_KEY=" "$TEMP_DIR/.env.schema")" "update.sh appends the kit key the schema lacks"
+assert_eq "1" "$(grep -c '^# ---' "$TEMP_DIR/.env.schema")" "...without copying the kit's header again"
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
+assert_eq "1" "$(grep -c "^$LAST_KEY=" "$TEMP_DIR/.env.schema")" "...and a second run adds nothing"
+# A symlinked schema points somewhere the project does not own: never written through.
+cp "$TEMP_DIR/.env.schema" "$FW_DIR/shared.schema"
+python3 - "$FW_DIR/shared.schema" <<'EOF'
+import sys
+p = sys.argv[1]
+head = open(p).read().rstrip("\n").rpartition("\n\n")[0]
+open(p, "w").write(head + "\n")
+EOF
+cp "$FW_DIR/shared.schema" "$FW_DIR/shared.before"
+rm -f "$TEMP_DIR/.env.schema" && ln -s "$FW_DIR/shared.schema" "$TEMP_DIR/.env.schema"
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
+assert_eq "" "$(diff "$FW_DIR/shared.before" "$FW_DIR/shared.schema" 2>&1 || true)" "update.sh never writes through a symlinked .env.schema"
+rm -f "$TEMP_DIR/.env.schema"
 
 print_summary
