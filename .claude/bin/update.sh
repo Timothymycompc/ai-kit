@@ -95,6 +95,17 @@ done
 # script by byte offset, so an older update.sh carries on with the new code from
 # here. Keep every byte above this comment unchanged; add new logic below it.
 
+# A failed fetch is invisible above: the frozen clone keeps only git's last line and
+# swallows its exit status, so the loop found nothing to copy. Stop before any step
+# below writes to the project or reports success. The local-source branch copies a
+# .claude/ only when one exists, so a SOLANA_AI_KIT_LOCAL_SRC run always passes this.
+# It protects only installs already on this code: a failed fetch overwrote nothing, so
+# an older update.sh runs on in its own code.
+if [ ! -d "$TEMP_DIR/repo/.claude" ]; then
+  echo "Error: could not fetch $REPO_URL ($BRANCH); nothing was updated." >&2
+  exit 1
+fi
+
 # hooks/ arrived after that frozen UPDATE_DIRS list, which cannot grow. Same
 # semantics as the loop: overwrite with upstream, but into a pre-created
 # directory so a symlinked hooks/ is followed and merged into, not replaced.
@@ -301,8 +312,8 @@ if [ "$DRY_RUN" = false ] && [ -f "$TEMP_DIR/repo/.claude/bin/skills.sh" ]; then
   PIN_SRC="$TEMP_DIR/repo"
   [ -n "$LOCAL_SRC" ] && PIN_SRC="$LOCAL_SRC"
   if ! PIN_REPORT="$(bash "$TEMP_DIR/repo/.claude/bin/skills.sh" pins "$PIN_SRC" 2>&1)"; then
-    echo "Note: a skill pack is not at the commit skill-registry.json records for it:"
-    printf '%s\n' "$PIN_REPORT" | sed 's/^/  /'
+    echo "Note: a skill pack is not at the commit skill-registry.json records for it:" >&2
+    printf '%s\n' "$PIN_REPORT" | sed 's/^/  /' >&2
   fi
 fi
 
@@ -971,7 +982,6 @@ if [ -f "$TEMP_DIR/repo/CLAUDE-solana.md" ]; then
   fi
 fi
 
-# Older --agents installs listed CLAUDE.md in the .gitignore config block; add AGENTS.md
 GITIGNORE="$TARGET_DIR/.gitignore"
 
 # Ignores added after an install may already exist: install.sh writes them for fresh
@@ -984,12 +994,27 @@ if [ "$DRY_RUN" = false ] && [ -f "$GITIGNORE" ]; then
     CHANGES="$CHANGES  [updated] .gitignore — $ignore added\n"
   done
 fi
-if [ "$INSTR_FILE" = "AGENTS.md" ] && [ "$DRY_RUN" = false ] && [ -f "$GITIGNORE" ] \
-  && grep -qF ">>> solana-ai-kit config" "$GITIGNORE" \
-  && ! sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$GITIGNORE" | grep -qxF "$INSTR_FILE"; then
-  awk -v f="$INSTR_FILE" '/^# <<< solana-ai-kit config <<</ { print f } { print }' "$GITIGNORE" > "$GITIGNORE.tmp" \
-    && cat "$GITIGNORE.tmp" > "$GITIGNORE" && rm -f "$GITIGNORE.tmp"
-  CHANGES="$CHANGES  [updated] .gitignore — $INSTR_FILE added to the kit config block\n"
+# --agents installs no longer gitignore AGENTS.md: Grok Build skips an instruction file
+# that .gitignore lists, so every --agents install made before that change gave Grok no
+# house rules. Take it out of the kit's marked block, and only out of a terminated one:
+# past a lost end marker the kit's lines and the user's cannot be told apart. An
+# AGENTS.md line the user wrote outside the block stays. awk exits 0 only when it
+# dropped a line, so a second run writes and reports nothing. install.sh does the same.
+if [ "$INSTR_FILE" = "AGENTS.md" ] && [ -f "$GITIGNORE" ] && awk -v f="$INSTR_FILE" '
+    !inblk && /^# >>> solana-ai-kit config/ { inblk = 1; n = 0; print; next }
+    inblk && /^# <<< solana-ai-kit config/ {
+      for (i = 1; i <= n; i++) { l = buf[i]; sub(/\r$/, "", l); if (l == f) gone++; else print buf[i] }
+      inblk = 0; print; next }
+    inblk { buf[++n] = $0; next }
+    { print }
+    END { if (inblk) { for (i = 1; i <= n; i++) print buf[i] }; exit !gone }
+  ' "$GITIGNORE" > "$TEMP_DIR/gitignore.unignored"; then
+  if [ "$DRY_RUN" = true ]; then
+    CHANGES="$CHANGES  [would update] .gitignore — $INSTR_FILE removed from the kit config block\n"
+  else
+    cat "$TEMP_DIR/gitignore.unignored" > "$GITIGNORE"
+    CHANGES="$CHANGES  [updated] .gitignore — $INSTR_FILE removed from the kit config block\n"
+  fi
 fi
 
 # safe-ai-skill project policy (Claude Code installs only; its hooks don't run under
@@ -1024,7 +1049,7 @@ fi
 # Update submodules
 if [ "$DRY_RUN" = false ]; then
   echo "Updating submodules..."
-  (cd "$TARGET_DIR" && git submodule update --init --recursive 2>/dev/null) || echo "Note: Submodule update skipped"
+  (cd "$TARGET_DIR" && git submodule update --init --recursive 2>/dev/null) || echo "Note: Submodule update skipped" >&2
 fi
 
 echo ""

@@ -99,7 +99,7 @@ Already installed? `bash .claude/bin/update.sh`, or `/update` inside Claude Code
 
 ### Config is gitignored by default
 
-To keep your project clean, the installer adds `.claude/`, `CLAUDE.md`, `.mcp.json`, `.gitmodules` and `.safe-ai-skill/` to `.gitignore` — the kit reads as ignorable infrastructure, not your app code (the `ext/` skill packs are ignored too; `bash .claude/bin/update.sh` re-fetches the core packs and the project's extensions).
+To keep your project clean, the installer adds `.claude/`, `CLAUDE.md`, `.mcp.json`, `.gitmodules` and `.safe-ai-skill/` to `.gitignore` — the kit reads as ignorable infrastructure, not your app code (the `ext/` skill packs are ignored too; `bash .claude/bin/update.sh` re-fetches the core packs and the project's extensions). An `--agents` install ignores `.agents/`, `.mcp.json` and `.gitmodules` the same way but not `AGENTS.md`, because [Grok Build skips an instruction file that `.gitignore` lists](docs/other-agents.md).
 
 Want the config tracked in git (team setup, reproducible config)? Run `/commit-claude-config` — it un-ignores those files and commits them (or edit `.gitignore` by hand). If your project already commits `.claude/` or its own `.gitmodules`, the new ignore lines are a no-op — git keeps tracking files it already tracks.
 

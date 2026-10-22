@@ -95,6 +95,24 @@ export SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" NO_COLOR=1
 # install_agents <dir> — returns install.sh's exit code; output goes to $WORK/last.log
 install_agents() { bash "$REPO_ROOT/install.sh" --agents "$1" >"$WORK/last.log" 2>&1; }
 
+# config_block <dir> — the kit's marked .gitignore block, CRs dropped
+config_block() { sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$1/.gitignore" 2>/dev/null | tr -d '\r'; }
+# ignore_status <dir> <path> — git check-ignore's exit status there: 0 ignored, 1 not,
+# 128 not a work tree. Assert the number, never "it failed": 128 fails too, and proves
+# nothing about the .gitignore. The machine's global and system git config are shut out,
+# so a developer's own core.excludesFile cannot decide the result.
+ignore_status() {
+  local rc=0
+  (cd "$1" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 XDG_CONFIG_HOME="$WORK/no-xdg" \
+    git check-ignore -q "$2") || rc=$?
+  echo "$rc"
+}
+# add_to_block <dir> <entry> — write <entry> into the kit's block, as an older install did
+add_to_block() {
+  awk -v e="$2" '/^# <<< solana-ai-kit config <<</ { print e } { print }' "$1/.gitignore" > "$WORK/gi" \
+    && cat "$WORK/gi" > "$1/.gitignore"
+}
+
 # Project-relative .claude/ paths would dangle in an agents-mode install (this mode
 # never creates .claude/). Intentional ones are skipped: ~/.claude/ and $HOME/.claude/
 # (user-global), paths inside the vendored ext/ repos, bin/ (scripts resolve their own
@@ -236,8 +254,16 @@ assert_eq "### Recurring Issues|### Fix Patterns|### Config Conventions" \
   "AGENTS.md keeps the Project Learnings subsections after comment stripping"
 assert_eq "" "$(grep -nE "$CLAUDE_REF" "$TEMP_DIR/AGENTS.md" | grep -v '\.agents/' || true)" \
   "AGENTS.md has no dangling .claude/ path"
-assert_eq "AGENTS.md" "$(sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$TEMP_DIR/.gitignore" | grep -x 'AGENTS.md' || true)" \
-  ".gitignore config block lists AGENTS.md"
+# Grok Build skips an instruction file that .gitignore lists, so an --agents install
+# that ignored AGENTS.md gave Grok no house rules. Asked of git rather than of the block,
+# since check-ignore applies every rule that matches: a stray AGENTS.md line anywhere
+# fails it. .mcp.json is the control — still ignored, so the 1 is not a missing file.
+assert_eq "" "$(config_block "$TEMP_DIR" | grep -xF 'AGENTS.md' || true)" \
+  ".gitignore config block does not list AGENTS.md"
+assert_eq "1" "$(ignore_status "$TEMP_DIR" AGENTS.md)" \
+  "git does not ignore AGENTS.md (Grok Build skips an ignored instruction file)"
+assert_eq "0" "$(ignore_status "$TEMP_DIR" .mcp.json)" \
+  "...while the rest of the kit config stays ignored (.mcp.json)"
 assert_no_dangling_refs "$TEMP_DIR" "no dangling .claude/ references in the installed tree"
 assert_eq "$BOTH_MODE_EXPECTED" "$(both_mode_files "$TEMP_DIR")" \
   "only the known both-mode files keep a .claude/ path (new ones need classifying)"
@@ -357,15 +383,16 @@ assert_contains "$RESYNC_OUT" "Not a git repository" "resync.sh explains it skip
 assert_dir_not_exists "$NOGIT/.claude" "nothing written under .claude/ outside git"
 
 # ── Upgrade an install made by an older --agents installer ──────────────────
-# Older installers wrote CLAUDE.md, kept .claude/skills/ext/ paths in .gitmodules,
-# copied dangling submodule gitfiles and shipped the Claude-Code-only /cleanup.
+# Older installers wrote CLAUDE.md (and listed it in the gitignore block), kept
+# .claude/skills/ext/ paths in .gitmodules, copied dangling submodule gitfiles and
+# shipped the Claude-Code-only /cleanup.
 echo "[upgrade from an older --agents install]"
 for OLD in "$WORK/old-update" "$WORK/old-reinstall"; do
   mkdir -p "$OLD"; git -C "$OLD" init -q
   install_agents "$OLD" || true
   mv "$OLD/AGENTS.md" "$OLD/CLAUDE.md" 2>/dev/null || true
   sed 's#\.agents/skills/ext/#.claude/skills/ext/#g' "$OLD/.gitmodules" > "$WORK/gm" && cat "$WORK/gm" > "$OLD/.gitmodules"
-  sed 's#^AGENTS\.md$#CLAUDE.md#' "$OLD/.gitignore" > "$WORK/gi" && cat "$WORK/gi" > "$OLD/.gitignore"
+  add_to_block "$OLD" CLAUDE.md
   echo "gitdir: ../../../../.git/modules/.claude/skills/ext/solana-dev" > "$OLD/.agents/skills/ext/solana-dev/.git" 2>/dev/null || true
   cp "$REPO_ROOT/.claude/commands/cleanup.md" "$OLD/.agents/commands/cleanup.md"
 done
@@ -377,10 +404,58 @@ for OLD in "$WORK/old-update" "$WORK/old-reinstall"; do
   NAME="$(basename "$OLD")"
   assert_file_not_exists "$OLD/.agents/commands/cleanup.md" "$NAME: the older install's /cleanup is removed"
   assert_file_exists "$OLD/AGENTS.md" "$NAME: AGENTS.md created"
-  assert_eq "AGENTS.md" "$(sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$OLD/.gitignore" | grep -x 'AGENTS.md' || true)" \
-    "$NAME: AGENTS.md added to the .gitignore config block"
+  assert_eq "" "$(config_block "$OLD" | grep -xF 'AGENTS.md' || true)" \
+    "$NAME: AGENTS.md is not added to the .gitignore config block"
+  assert_eq "1" "$(ignore_status "$OLD" AGENTS.md)" "$NAME: git does not ignore the AGENTS.md it created"
   assert_submodules_under_agents "$OLD" "$NAME"
 done
+
+# ── An --agents install that still lists AGENTS.md in the gitignore block ─────
+# Every --agents install made before AGENTS.md left the block still lists it there, so
+# Grok Build gets no house rules until it goes. /update and a re-install take it out of
+# the marked block only: an AGENTS.md line the user wrote outside it is theirs to keep,
+# and a block that lost its end marker is not a block.
+echo "[AGENTS.md leaves an existing --agents install's gitignore block]"
+for PREV in "$WORK/prev-update" "$WORK/prev-reinstall"; do
+  mkdir -p "$PREV"; git -C "$PREV" init -q
+  install_agents "$PREV" || true
+  add_to_block "$PREV" AGENTS.md
+done
+PREV="$WORK/prev-update"
+assert_eq "0" "$(ignore_status "$PREV" AGENTS.md)" "setup: the earlier install's block makes git ignore AGENTS.md"
+cp "$PREV/.gitignore" "$WORK/gitignore.prev"
+UPD_OUT="$(cd "$PREV" && bash .agents/bin/update.sh --dry-run 2>&1)" || true
+assert_contains "$UPD_OUT" "[would update] .gitignore — AGENTS.md removed from the kit config block" \
+  "update.sh --dry-run reports taking AGENTS.md out of the block"
+assert_cmd_success "cmp -s '$WORK/gitignore.prev' '$PREV/.gitignore'" "...and writes nothing"
+UPD_OUT="$(cd "$PREV" && bash .agents/bin/update.sh 2>&1)" || true
+assert_contains "$UPD_OUT" "[updated] .gitignore — AGENTS.md removed from the kit config block" \
+  "update.sh takes AGENTS.md out of the block"
+assert_eq "1" "$(ignore_status "$PREV" AGENTS.md)" "...so git no longer ignores AGENTS.md"
+assert_eq "" "$(grep -vxF 'AGENTS.md' "$WORK/gitignore.prev" | diff - "$PREV/.gitignore" || true)" \
+  "...and that line is the only change to .gitignore"
+cp "$PREV/.gitignore" "$WORK/gitignore.once"
+UPD_OUT="$(cd "$PREV" && bash .agents/bin/update.sh 2>&1)" || true
+assert_eq "" "$(printf '%s\n' "$UPD_OUT" | grep -F 'AGENTS.md removed' || true)" "a second update.sh has nothing to remove"
+assert_cmd_success "cmp -s '$WORK/gitignore.once' '$PREV/.gitignore'" "...and leaves .gitignore as it was"
+# The user's own AGENTS.md line below the block, on a CRLF checkout (Git for Windows)
+add_to_block "$PREV" AGENTS.md
+printf '# mine\nAGENTS.md\n' >> "$PREV/.gitignore"
+awk '{ printf "%s\r\n", $0 }' "$PREV/.gitignore" > "$WORK/gi" && cat "$WORK/gi" > "$PREV/.gitignore"
+(cd "$PREV" && bash .agents/bin/update.sh > "$QUIET_LOG" 2>&1) || quiet_fail "update.sh over a CRLF .gitignore" || true
+assert_eq "" "$(config_block "$PREV" | grep -xF 'AGENTS.md' || true)" "update.sh takes a CRLF AGENTS.md line out of the block"
+assert_eq "1" "$(tr -d '\r' < "$PREV/.gitignore" | grep -cxF 'AGENTS.md' || true)" \
+  "...and keeps the user's own AGENTS.md line outside it"
+# No end marker, so no block: everything after the opening line could be the user's
+printf '# >>> solana-ai-kit config — gitignored by default; run /commit-claude-config to version it >>>\n.agents/\nAGENTS.md\n' > "$PREV/.gitignore"
+(cd "$PREV" && bash .agents/bin/update.sh > "$QUIET_LOG" 2>&1) || quiet_fail "update.sh over an unterminated block" || true
+assert_eq "1" "$(grep -cxF 'AGENTS.md' "$PREV/.gitignore" || true)" "update.sh leaves AGENTS.md alone when the block has no end marker"
+PREV="$WORK/prev-reinstall"
+install_agents "$PREV" || true
+assert_file_contains "$WORK/last.log" "Removed AGENTS.md from the gitignore config block" \
+  "install.sh --agents re-install reports taking AGENTS.md out of the block"
+assert_eq "" "$(config_block "$PREV" | grep -xF 'AGENTS.md' || true)" "...takes it out"
+assert_eq "1" "$(ignore_status "$PREV" AGENTS.md)" "...so git no longer ignores AGENTS.md"
 
 # ── Reinstall into a git worktree keeps real submodule gitfiles ──────────────
 # A submodule's gitdir lives under the repo's git COMMON dir, which sits outside
@@ -411,7 +486,8 @@ bash "$REPO_ROOT/install.sh" "$DUAL" >/dev/null 2>&1 || true
 install_agents "$DUAL" || true
 DUAL_BLOCK="$(sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$DUAL/.gitignore")"
 assert_contains "$DUAL_BLOCK" ".agents/" "dual install gitignores .agents/ too"
-assert_contains "$DUAL_BLOCK" "AGENTS.md" "dual install gitignores AGENTS.md too"
+assert_eq "" "$(config_block "$DUAL" | grep -xF 'AGENTS.md' || true)" "dual install leaves AGENTS.md out of the block"
+assert_eq "1" "$(ignore_status "$DUAL" AGENTS.md)" "...so git does not ignore it"
 assert_eq "" "$(cd "$DUAL" && git status --porcelain --untracked-files=normal | grep '\.agents' || true)" \
   "dual install leaves no untracked .agents/ tree"
 rm -rf "$DUAL"
@@ -421,12 +497,15 @@ echo "[dual install gitignore, --agents first]"
 REV="$WORK/dual-agents-first"; mkdir -p "$REV"; git -C "$REV" init -q
 install_agents "$REV" || true
 bash "$REPO_ROOT/install.sh" "$REV" >/dev/null 2>&1 || true
-for entry in .claude/ CLAUDE.md .agents/ AGENTS.md; do
+for entry in .claude/ CLAUDE.md .agents/; do
   assert_eq "1" "$(sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$REV/.gitignore" | grep -cxF "$entry" || true)" \
     "--agents first: $entry is listed once in the gitignore config block"
 done
-assert_eq "" "$(cd "$REV" && git status --porcelain --untracked-files=normal | grep -E '\.claude|CLAUDE\.md|\.agents|AGENTS\.md' || true)" \
-  "--agents first: no kit path left untracked"
+assert_eq "0" "$(config_block "$REV" | grep -cxF 'AGENTS.md' || true)" \
+  "--agents first: AGENTS.md is not in the gitignore config block"
+assert_eq "" "$(cd "$REV" && git status --porcelain --untracked-files=normal | grep -E '\.claude|CLAUDE\.md|\.agents' || true)" \
+  "--agents first: no kit path left untracked but AGENTS.md"
+assert_eq "1" "$(ignore_status "$REV" AGENTS.md)" "--agents first: git does not ignore AGENTS.md"
 cp "$REV/.gitignore" "$WORK/gitignore.before"
 bash "$REPO_ROOT/install.sh" "$REV" >/dev/null 2>&1 || true
 install_agents "$REV" || true
@@ -442,5 +521,9 @@ awk '{ printf "%s\r\n", $0 }' "$REV/.gitignore" > "$WORK/gitignore.crlf" && cat 
 bash "$REPO_ROOT/install.sh" "$REV" >/dev/null 2>&1 || true
 assert_eq "1" "$(sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$REV/.gitignore" | tr -d '\r' | grep -cxF '.claude/' || true)" \
   "a CRLF .gitignore gets no second .claude/ entry on re-install"
+add_to_block "$REV" $'AGENTS.md\r'
+install_agents "$REV" || true
+assert_eq "" "$(config_block "$REV" | grep -xF 'AGENTS.md' || true)" \
+  "an --agents re-install takes a CRLF AGENTS.md line out of the block"
 
 print_summary
