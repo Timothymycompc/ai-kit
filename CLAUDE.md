@@ -76,6 +76,7 @@ When X changes, also update Y. A row that is wrong is worse than absent, because
 - Path renames upstream ripple into every agent and command referencing a skill file. Grep the old path before committing.
 - `install.sh` skips submodule init with a warning when the target is not a git repo — intentional.
 - Submodule bump PRs are never auto-merged: a person reads the `Submodule review` job summary (hooks, scripts, new hosts, installers, credential names, licence changes) first, because agents read and may run what a pack ships.
+- **Don't enable safe-ai-skill while working in this repo.** Its session-start sweep scans every `ext/` submodule and *moves* any with a high-severity heuristic finding into `~/.safe-ai-skill/quarantine/`, out of the checkout. On a fresh `git clone --recursive` with all 45 packs at their pins, it moved 38 of them plus `skill-packs` (measured 2026-10-22 at safe-ai-skill `2997280e`). Move them back from that directory to restore. A project made by `install.sh` was measured unaffected, because its packs are copies, not submodules. Upstream solanabr/safe-ai-skill#5 and #9 track the behaviour.
 
 ## Plugin Layout
 
