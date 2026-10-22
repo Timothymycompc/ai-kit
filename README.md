@@ -7,6 +7,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Solana](https://img.shields.io/badge/Solana-black?logo=solana)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-powered-orange)
+[![Website](https://img.shields.io/badge/website-ai.superteam.codes-14f195)](https://ai.superteam.codes)
 
 **Claude Code, set up to ship on Solana.** Not programs alone — the whole lifecycle: validating the idea, building the program and the app around it, shipping it, and the launch and growth work that follows. One command installs 15 specialized agents, 34 workflow commands, skill packs pinned — and scanned — at a commit from the ecosystem's own repositories, 4 MCP servers for on-chain data, live docs and context compression, and a firewall that gates mainnet deploys, secret reads and destructive commands. Almost none of it loads until a task needs it.
 
@@ -15,6 +16,8 @@ curl -fsSL https://aikit.superteam.codes | bash
 ```
 
 Run it from your project's root — it installs into the current directory. Everything this README links out to lives in [`docs/`](docs/), which stays in this repository and is never copied into yours.
+
+Browse every agent, command and skill pack at **[ai.superteam.codes](https://ai.superteam.codes)**. Each page is also plain Markdown at the same path plus `.md`, for agents, indexed at [`/llms.txt`](https://ai.superteam.codes/llms.txt).
 
 ## What This Is
 
