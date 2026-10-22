@@ -5,7 +5,7 @@ model: sonnet
 
 Walk the user through filling in `.env`. Secrets go in `.env`, never in `.mcp.json`.
 
-Never read `.env` — High denies it, and at every tier a value read into the transcript has already left the machine. Appending is the only contact this command has with the file.
+Never read `.env` — safe-ai-skill denies it while it is on, High denies it regardless, and at every tier a value read into the transcript has already left the machine. Appending is the only contact this command has with the file.
 
 ## Steps
 

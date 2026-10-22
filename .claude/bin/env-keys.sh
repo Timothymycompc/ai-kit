@@ -6,8 +6,9 @@
 # key -- "NAME set" or "NAME empty" -- and never prints a value.
 #
 # There is deliberately no flag, env var or argument that makes it print a
-# value, and adding one would defeat the firewall tier that allows this
-# script while denying .env reads. Keep it that way.
+# value, and adding one would turn the one channel that answers without the
+# value into one that leaks it. Keep it that way. At the High tier the sandbox
+# denies this script the file too, and it exits with HELPER_UNAVAILABLE.
 #
 # Usage: env-keys.sh [path]        (default: .env)
 # Exit:  0 with one line per key; 1 when the file cannot be read, with

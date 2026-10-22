@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # The safe-ai-skill project policy (.safe-ai-skill/policy.yaml): shipped, installed
-# once, never overwritten, added by /update when missing, and gitignored with the
-# rest of the kit config.
+# once, added by /update when missing and refreshed while it is an unedited copy, never
+# written through a link, and gitignored with the rest of the kit config.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -41,17 +41,12 @@ else
   assert_eq "0" "$status" "$POLICY parses as YAML"
   assert_eq "True" "$(printf '%s' "$JSON" | python3 -c 'import json, sys; d = json.load(sys.stdin); print(sorted(d) == ["secrets", "supply_chain"] and d["supply_chain"] == {"verify_skills_dirs": [".claude/skills"]} and sorted(d["secrets"]) == ["allow_read_globs"])')" \
     "It sets only supply_chain.verify_skills_dirs, to [.claude/skills], and secrets.allow_read_globs"
-  # The dotenv allows hand the .env decision to the firewall tier, so they must name
-  # exactly the files firewall.sh's DENY_ENV_WRITE and DENY_ENV_READ name: a file allowed
-  # here but missing there would be readable even at High.
-  SYNC="$(printf '%s' "$JSON" | REPO_ROOT="$REPO_ROOT" python3 -c '
-import json, os, re, sys
-allow = json.load(sys.stdin)["secrets"]["allow_read_globs"]
-src = open(os.path.join(os.environ["REPO_ROOT"], ".claude/bin/firewall.sh")).read()
-env_files = re.findall(r"\"([^\"]+)\"", re.search(r"ENV_FILES = \[(.*?)\]", src, re.S).group(1))
-dotenv = [a for a in allow if a not in ("**/.env.example", "**/.env.schema")]
-print("in-sync" if dotenv == env_files else "allow=%s fw=%s" % (dotenv, env_files))')"
-  assert_eq "in-sync" "$SYNC" "the dotenv allows name exactly firewall.sh's ENV_FILES, in order"
+  # An allow glob matches a path anywhere on the machine, not just in this project:
+  # allowing **/.env here made the pinned engine defer on ~/.env and on other projects'
+  # .env too, which nothing else gates below High. So only the two files that never
+  # carry a value are listed.
+  assert_eq '["**/.env.example", "**/.env.schema"]' "$(printf '%s' "$JSON" | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)["secrets"]["allow_read_globs"]))')" \
+    "secrets.allow_read_globs lists only .env.example and .env.schema, never a file that holds values"
   # The default's deny_read_globs has **/.env.*, which matches .env.schema; an allow glob
   # wins over it. A list replaces the default's instead of merging, so .env.example has to
   # be restated or the override would make it unreadable.
@@ -100,9 +95,13 @@ assert_contains "$(config_block "$P4")" ".safe-ai-skill/" "...and gitignores it 
 printf 'supply_chain:\n  verify_skills_dirs: []\n' > "$P4/$POLICY"
 OUT="$(update_kit "$P4")"
 assert_file_contains "$P4/$POLICY" "verify_skills_dirs: []" "update.sh keeps an edited policy"
-assert_contains "$OUT" "[notice] $POLICY was edited or is a link, so it was kept" "...and says safe-ai-skill still denies .env there"
+assert_contains "$OUT" "[notice] $POLICY was edited, so it was kept" "...and says so"
+assert_contains "$OUT" 'add "**/.env.schema" to secrets.allow_read_globs' "...naming the line that lets safe-ai-skill read .env.schema"
+printf 'supply_chain:\n  verify_skills_dirs: []\nsecrets:\n  allow_read_globs: ["**/.env.schema"]\n' > "$P4/$POLICY"
+OUT="$(update_kit "$P4")"
+assert_eq "" "$(printf '%s\n' "$OUT" | grep -F "$POLICY" || true)" "An edited policy that already allows .env.schema gets no notice"
 # An unedited copy of a version the kit shipped earlier is still kit-owned, so /update
-# refreshes it: how the dotenv allows reach existing installs. Needs the old blob.
+# refreshes it: how a later policy change reaches existing installs. Needs the old blob.
 if OLD_POLICY="$(git -C "$REPO_ROOT" cat-file -p 636f1003bb0228e11136f8d78c284d8ce3181eec 2>/dev/null)"; then
   printf '%s\n' "$OLD_POLICY" > "$P4/$POLICY"
   DRY="$(update_kit "$P4" --dry-run)"
@@ -120,9 +119,42 @@ if OLD_POLICY="$(git -C "$REPO_ROOT" cat-file -p 636f1003bb0228e11136f8d78c284d8
   OUT="$(update_kit "$P4")"
   assert_eq "$(printf '%s\n' "$OLD_POLICY")" "$(cat "$OUTSIDE")" "update.sh never writes through a symlinked policy"
   assert_eq "link" "$([ -L "$P4/$POLICY" ] && echo link || echo replaced)" "...leaves the link itself in place"
-  assert_contains "$OUT" "[notice] $POLICY was edited or is a link, so it was kept" "...and says why it kept it"
+  assert_contains "$OUT" "[notice] $POLICY or its directory is a link, so it was left alone" "...and says why it kept it"
 else
   echo "  SKIP: the old-policy refresh needs the kit's git history (shallow clone)"
+fi
+# Nor does it write through a link to create the file: a dangling link would put the
+# kit's policy wherever it points, and a linked .safe-ai-skill/ would fill another
+# directory.
+rm -rf "$P4/.safe-ai-skill" && mkdir -p "$P4/.safe-ai-skill" "$TEMP_DIR/elsewhere"
+ln -s "$TEMP_DIR/elsewhere/policy.yaml" "$P4/$POLICY"
+OUT="$(update_kit "$P4")"
+assert_file_not_exists "$TEMP_DIR/elsewhere/policy.yaml" "update.sh does not create the policy through a dangling link"
+assert_contains "$OUT" "[notice] $POLICY or its directory is a link, so it was left alone" "...and says so"
+rm -rf "$P4/.safe-ai-skill" && mkdir -p "$TEMP_DIR/shared-dir" && ln -s "$TEMP_DIR/shared-dir" "$P4/.safe-ai-skill"
+DRY="$(update_kit "$P4" --dry-run)"
+assert_eq "" "$(printf '%s\n' "$DRY" | grep -F "[would create] $POLICY" || true)" "update.sh --dry-run does not offer to create the policy inside a linked .safe-ai-skill/"
+OUT="$(update_kit "$P4")"
+assert_file_not_exists "$TEMP_DIR/shared-dir/policy.yaml" "update.sh does not create the policy inside a linked .safe-ai-skill/"
+assert_contains "$OUT" "[notice] $POLICY or its directory is a link, so it was left alone" "...and says so"
+rm -f "$P4/.safe-ai-skill"
+
+# update.sh's list of earlier policy versions is pasted by hand. Every version the file
+# has had in the kit's history must be on it, or an unedited copy of the missing one
+# would be kept as if the user had edited it. Extra entries are harmless: a squash merge
+# drops a PR branch's versions from main's history. Needs full history.
+if [ "$(git -C "$REPO_ROOT" rev-parse --is-shallow-repository 2>/dev/null)" = false ]; then
+  CURRENT="$(tr -d '\r' < "$REPO_ROOT/$POLICY" | git hash-object --stdin)"
+  LISTED=" $(grep -E '^ *SHIPPED_POLICY_BLOBS="' "$REPO_ROOT/.claude/bin/update.sh" | grep -oE '[0-9a-f]{40}' | tr '\n' ' ')"
+  MISSING=""
+  for c in $(git -C "$REPO_ROOT" rev-list HEAD -- "$POLICY"); do
+    b="$(git -C "$REPO_ROOT" rev-parse -q --verify "$c:$POLICY" 2>/dev/null)" || continue
+    [ "$b" = "$CURRENT" ] && continue
+    case "$LISTED" in *" $b "*) ;; *) MISSING="$MISSING $b" ;; esac
+  done
+  assert_eq "" "$MISSING" "update.sh's SHIPPED_POLICY_BLOBS lists every earlier version of $POLICY"
+else
+  echo "  SKIP: the shipped-policy list check needs full git history (shallow clone)"
 fi
 
 print_summary

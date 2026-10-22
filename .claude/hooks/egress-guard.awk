@@ -252,10 +252,9 @@ function git_global_operand(o) {
 # All three git passes below run off this one walk.
 function git_walk(T, n,   i, o, k) {
   GW_SUB = ""; GW_I = 0; GW_PREFIXED = 0; GW_CFG = ""
-  # cmdword_x's fourth argument (skip a wrapper's positional operand) is asked
-  # for here where the egress passes below decline it: `timeout 5 git config
-  # alias.z '!x'` leaves "5" in command position otherwise, and the globs miss
-  # that spelling too, so there is no verdict to keep identical.
+  # cmdword_x's fourth argument skips a wrapper's positional operand, as cmdword
+  # does for the egress passes: `timeout 5 git config alias.z '!x'` would leave
+  # "5" in command position otherwise.
   if (cmdword_x(T, n, 1, 1) != "git") return 0
   i = CWI + 1; k = 0
   while (i <= n && substr(T[i], 1, 1) == "-" && T[i] != "-" && T[i] != "--") {

@@ -356,14 +356,15 @@ ALLOW = [
 # a tier cannot take it back out. Most tier variation therefore lives in a
 # sandbox.filesystem path or a hook decision.
 #
-# Six groups are exceptions, and they are safe for the same reason: firewall.sh owns
+# Eight groups are exceptions, and they are safe for the same reason: firewall.sh owns
 # one file and subtracts exactly the strings recorded in enforced.ruleIds, so a descent
 # does remove them. The relaxed -> high -> relaxed and high -> medium byte-identity
 # tests are the proof. The groups are DENY_SELF_PROTECTION and DENY_GIT_CONFIG_AND_HOOKS
 # (High only), DENY_MCP_ARBITRARY_EXECUTION and DENY_MCP_PLAYWRIGHT_EXECUTION (Medium
-# and High), and DENY_MCP_CLOUDFLARE_EXECUTION and DENY_MCP_PLAYWRIGHT_EVALUATE (High
-# only). The residual is unchanged: a block hand-copied into user or managed scope stops
-# tracking the tier, and those denies then cannot be lifted.
+# and High), DENY_MCP_CLOUDFLARE_EXECUTION and DENY_MCP_PLAYWRIGHT_EVALUATE (High
+# only), and DENY_ENV_WRITE (Medium only) and DENY_ENV_READ (High only). The residual
+# is unchanged: a block hand-copied into user or managed scope stops tracking the tier,
+# and those denies then cannot be lifted.
 #
 # Two matcher facts the patterns below are built around:
 #   * A `*` with a space on BOTH sides cannot be empty, because runs of spaces collapse
@@ -405,9 +406,10 @@ DENY_POLICY_ESCAPE = [
     # talk its way out of. Editing them needs root anyway; the rule costs nothing.
     "Edit(//**/managed-settings.json)",
     # safe-ai-skill deep-merges the whole file over its default policy, so an edit here
-    # could loosen any of its gates, spend caps included, not just supply_chain. It is a
-    # third-party security tool's policy rather than Claude Code's own configuration, so
-    # it is not part of the installation Medium and below hand back.
+    # could loosen at least its spend caps, secret globs, installer gate and supply-chain
+    # scan scope; its mainnet and authority asks hold. It is a third-party security tool's
+    # policy rather than Claude Code's own configuration, so it is not part of the
+    # installation Medium and below hand back.
     "Edit(/.safe-ai-skill/**)",
 ]
 
@@ -515,10 +517,13 @@ DENY_GIT_CONFIG_AND_HOOKS = [
 # that a secret will not *additionally* reach a third party, which the egress gates
 # keep. Medium denies writes: nothing in a Solana build legitimately rewrites .env, and
 # an ask there is walked around by `python3 -c`, `perl -pi` or `sed -i`. High denies
-# reads instead and leaves writes open, since the model can no longer read the file
-# back. Both project into the sandbox (an Edit deny becomes a write deny, a Read deny a
-# read deny), so at High a sandboxed build that loads .env through dotenv cannot read
-# it either: High is for a repo you distrust, whose own scripts should not see it.
+# reads instead. A Read deny also stops the Edit and Write tools on the path, so only a
+# shell append (/setup-mcp's `>> .env`) still writes it, which is safe once the model
+# cannot read the file back. Both project into the sandbox: a Read deny becomes a read
+# deny on every platform, so at High a sandboxed build that loads .env through dotenv
+# cannot read it either (High is for a repo you distrust, whose own scripts should not
+# see it); an Edit deny becomes a write deny on macOS only, since on Linux and WSL2 the
+# sandbox skips a write entry that contains a wildcard.
 # Named files rather than `.env.*`: a permission deny cannot carve out an exception, and
 # `.env.example` and varlock's `.env.schema` carry no values and stay readable.
 ENV_FILES = [
