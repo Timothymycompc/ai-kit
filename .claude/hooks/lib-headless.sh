@@ -219,6 +219,25 @@ ctx_index, or run it through Bash where the OS sandbox also applies."
   fi
 }
 
+# kit_size_cap — a Bash command too large for the guards to read in time is refused,
+# as kit_mcp_normalize refuses an MCP payload past 32 KB.  Every guard is registered
+# with timeout 10 and a hook that times out does not block the call, so padding a
+# command would otherwise wave it past every gate, the irreversible set included.
+# Measured before this cap: 117 KB on one line kept egress-guard busy 8.1 s, and 234 KB
+# of line continuations 17.2 s.  A heredoc body the shell does not run is copied, not
+# parsed (433 KB: under a second in every guard), so only the code outside such
+# bodies counts toward the 32 KB, where the slowest shape measured, 16,000
+# `;`-separated statements, took egress-guard 2.4 s.  Past 1 MB in all, the whole
+# command is refused unread.  A failed measurement refuses too: unread is not safe.
+kit_size_cap() {
+  [ ${#KIT_CMD} -gt 32768 ] || return 0
+  if [ ${#KIT_CMD} -le 1048576 ]; then
+    _code=$(printf '%s' "$KIT_CMD" | awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/kit-code-size.awk" 2>/dev/null) || _code=
+    case $_code in '' | *[!0-9]*) ;; *) [ "$_code" -gt 32768 ] || return 0 ;; esac
+  fi
+  kit_deny "This command is too large for the firewall hooks to read within their timeout: past 32 KB of shell code outside heredoc bodies, or 1 MB in all (${#KIT_CMD} bytes). A hook that times out does not block the call, so it is refused rather than waved through. Put large data in a heredoc body or a file written with the Write tool, or split the command."
+}
+
 # kit_parse — fills KIT_CMD, KIT_PERMISSION_MODE, KIT_CWD from $KIT_INPUT.
 #
 # One jq invocation, not one per field: jq costs ~25 ms to start and three
@@ -249,6 +268,7 @@ kit_parse() {
   [ -n "$KIT_CMD" ] || KIT_CMD=$(kit_field command 2>/dev/null) || KIT_CMD=
   case $KIT_CMD in null) KIT_CMD= ;; esac
   case $KIT_PERMISSION_MODE in null) KIT_PERMISSION_MODE= ;; esac
+  [ -z "$KIT_CMD" ] || kit_size_cap
   [ -n "$KIT_CWD" ] && [ -d "$KIT_CWD" ] || KIT_CWD=$PWD
 
   # MCP tools are named mcp__<server>__<tool>.  `command` is not their field, so

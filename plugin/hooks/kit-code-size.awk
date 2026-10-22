@@ -1,0 +1,1 @@
+../../.claude/hooks/kit-code-size.awk

@@ -586,11 +586,15 @@ body = "\n".join("print(%d); d = {\"k\": [1,2,3]}" % i for i in range(2000))
 print(json.dumps({"language": "python", "code": body + "\nos.system(\"solana balance\")"}))')"
 run_mcp "$M_CHAIN" relaxed mcp__context-mode__ctx_execute "$BIG_OVER_CHAIN"
 assert_eq "deny" "$DECISION" "an oversize payload that does carry an on-chain verb is refused"
-# Bash is deliberately exempt: a pattern miss there still meets the OS sandbox, so there
-# is no fail-open to protect against and capping it would break legitimate long scripts.
+# Bash is capped too (kit_size_cap; see [size cap] below). The sandbox backs a pattern
+# miss on files and the network, but not the gates only a hook enforces, and Off has no
+# sandbox. A script this long belongs in a file the agent writes and then runs.
 run_bash "$M_SECRETS" relaxed "$(python3 -c '
 print("\n".join("echo %d" % i for i in range(4000)))')"
-assert_eq "silent" "$DECISION" "a long Bash command is not size-capped (the sandbox backs it up)"
+assert_eq "deny" "$DECISION" "a 39 KB inline Bash script is refused, past the 32 KB of code the guards read in time"
+run_bash "$M_SECRETS" relaxed "$(python3 -c '
+print("\n".join("echo %d" % i for i in range(3000)))')"
+assert_eq "silent" "$DECISION" "a 29 KB one is still read, and passes"
 
 # --- No false positives. Prose fields are prose, and ordinary work stays silent.
 for G in "$M_SECRETS" "$M_CHAIN" "$M_EGRESS"; do
@@ -1096,6 +1100,92 @@ if [ "$SQ_OUT" != "echo 'a$BS${NL}b'" ]; then
   PASS=$((PASS + 1))
 else
   echo "  FAIL: planted failure NOT caught (sq): single-quoted backslash-newline still kept"
+  FAIL=$((FAIL + 1))
+fi
+
+
+# --- Size cap: a command too large to read in time is refused, not waved through ---
+# Every guard runs with timeout 10, and a hook that times out does not block the call.
+# Measured before the cap: 234 KB of line continuations kept egress-guard busy 17 s,
+# and a 240 KB body fed to bash kept secrets-guard 14 s. lib-headless.sh's
+# kit_size_cap holds code outside file-writing heredoc bodies to 32 KB and the whole
+# command to 1 MB, so a large `cat > f <<EOF` still writes its file.
+echo "[size cap]"
+SZ="$WORK/size"; mkdir -p "$SZ"
+python3 - "$SZ" <<'PY'
+import json, sys
+d = sys.argv[1]
+def fill(unit, k, head=""):
+    s = head
+    while len(s) < k:
+        s += unit
+    return s[:k]
+cases = {
+    "line40k": fill("ab ", 40000, "echo "),
+    "line30k": fill("ab ", 30000, "echo "),
+    "final": "solana program set-upgrade-authority PID --final" + fill(" \\\n  x", 234000),
+    "cat433k": "cat > f.txt <<'EOF'\n" + "some ordinary line of file text here\n" * 12000 + "EOF",
+    "bash40k": "bash <<'EOF'\n" + "x;" * 20000 + "\nsolana program deploy --url mainnet-beta ./t.so\nEOF",
+    "huge": "cat > f.txt <<'EOF'\n" + "some ordinary line of file text here\n" * 31000 + "EOF",
+}
+for name, cmd in cases.items():
+    with open(d + "/" + name + ".json", "w") as f:
+        json.dump({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}, f)
+PY
+# run_payload <hook> <tier> <payload file> [project] — run_bash for a payload too big
+# to pass as an argument.
+run_payload() {
+  set +e
+  OUT="$(cd "$WORK" && PATH="$WORK/bin:$PATH" CLAUDE_PROJECT_DIR="${4:-$REPO_ROOT}" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugin" KIT_FIREWALL_TIER="$2" KIT_FIREWALL_HEADLESS=0 \
+    sh -c "$1" < "$3" 2>"$WORK/err")"
+  set -e
+  case "$OUT" in *'"deny"'*) DECISION=deny ;; *'"ask"'*) DECISION=ask ;; *) DECISION=silent ;; esac
+}
+for g in "$M_SECRETS" "$M_EGRESS"; do
+  run_payload "$g" relaxed "$SZ/line40k.json"
+  assert_eq deny "$DECISION" "40 KB of shell code is refused rather than read past the timeout"
+  assert_contains "$OUT" "too large for the firewall hooks to read" "...saying why"
+  run_payload "$g" relaxed "$SZ/line30k.json"
+  assert_eq silent "$DECISION" "30 KB of ordinary shell code is still read, and passes"
+done
+for t in off relaxed high; do
+  run_payload "$M_CHAIN" "$t" "$SZ/final.json"
+  assert_eq deny "$DECISION" "[$t] --final padded with 234 KB of continuations is still refused"
+done
+for g in "$M_CHAIN" "$M_SECRETS" "$M_EGRESS"; do
+  run_payload "$g" relaxed "$SZ/bash40k.json"
+  assert_eq deny "$DECISION" "a 40 KB body fed to bash counts as code and is refused"
+done
+for g in "$M_CHAIN" "$M_SECRETS" "$M_EGRESS"; do
+  for t in relaxed high; do
+    run_payload "$g" "$t" "$SZ/cat433k.json"
+    assert_eq silent "$DECISION" "[$t] a 433 KB heredoc written to a file with cat is not code, and passes"
+  done
+done
+run_payload "$M_SECRETS" relaxed "$SZ/huge.json"
+assert_eq deny "$DECISION" "a command past 1 MB is refused unread, file-writing heredoc or not"
+MUT_SIZE="$(mutant size lib-headless.sh '[ -z "$KIT_CMD" ] || kit_size_cap' '[ -z "$KIT_CMD" ] || :')" || MUT_SIZE=
+MUT_SIZECAT="$(mutant sizecat kit-code-size.awk 'skip = (hw == "cat" || hw == "tee")' 'skip = 0')" || MUT_SIZECAT=
+for pair in "$MUT_SIZE|line40k|deny" "$MUT_SIZECAT|cat433k|silent"; do
+  mdir="${pair%%|*}"; rest="${pair#*|}"; payload="${rest%%|*}"; was="${rest#*|}"
+  run_payload "$M_EGRESS" relaxed "$SZ/$payload.json" "$mdir"
+  TOTAL=$((TOTAL + 1))
+  if [ -n "$mdir" ] && [ "$DECISION" != "$was" ]; then
+    echo "  PASS: planted failure caught (${mdir##*/mut-}: $was -> $DECISION): $payload"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: planted failure NOT caught (${mdir##*/mut-} still $DECISION): $payload"
+    FAIL=$((FAIL + 1))
+  fi
+done
+# The plugin resolves hooks under CLAUDE_PLUGIN_ROOT; kit_size_cap reads this file.
+TOTAL=$((TOTAL + 1))
+if [ -e "$REPO_ROOT/plugin/hooks/kit-code-size.awk" ]; then
+  echo "  PASS: plugin/hooks/kit-code-size.awk resolves"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: plugin/hooks/kit-code-size.awk is missing, so a plugin install refuses every large command"
   FAIL=$((FAIL + 1))
 fi
 
