@@ -87,15 +87,16 @@ function hd_interp(w) {
        || w == "Rscript" || w == "lua" || w == "tclsh")
 }
 function hd_shell(w) { return (is_shell(w) || w == "ash") }
-# hd_cmd — index of the command word, past assignments and non-shell wrappers.
+# hd_cmd — index of the command word, past assignments, reserved words
+# (`then bash <<'EOF'`) and non-shell wrappers with the words their options take.
 function hd_cmd(T, n,   ci, w) {
   ci = 1
   while (ci <= n) {
-    while (ci <= n && T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) ci++
+    while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
     if (ci > n) break
     w = base(T[ci]); if (!is_wrapper(w) || w == "eval") break
     ci++
-    while (ci <= n && T[ci] ~ /^-/) ci++
+    while (ci <= n && T[ci] ~ /^-/) { if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++; ci++ }
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
   }
   return ci
@@ -254,11 +255,17 @@ END {
 
   # Heredoc BODIES go first: a document that merely names a credential path must
   # never fire.  A body that something runs is code and is inspected (hd_strip).
-  text = split_cmd(hd_strip(raw))
+  # Continuations are joined before that, so a head split over two lines
+  # (`bash \<newline><<'EOF'`) is still read as one.
+  text = split_cmd(hd_strip(kit_shell_text(raw, 0)))
   if (HD_HIT != "") { print "DENY a heredoc fed to " HD_WHO " reads a credential path: " unmark(HD_HIT); exit }
-  nst = split(text, ST, "\001")
+  # Regex separators: macOS's awk also splits a one-character string separator
+  # on newline, which cut a multi-line quoted argument into statements there.
+  # A shell's -c string adds its own statements after them (kit_expand_code).
+  nst = split(text, ST, /\001/)
+  nst = kit_expand_code(ST, nst)
   for (q = 1; q <= nst; q++) {
-    nstg = split(ST[q], STG, "\002")
+    nstg = split(ST[q], STG, /\002/)
 
     # Unwrap one level of `sh -c "<inner>"` / `eval "<inner>"`: the quoted
     # string is code, so it becomes a stage of its own.

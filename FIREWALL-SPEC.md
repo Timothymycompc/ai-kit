@@ -113,6 +113,8 @@ The user-scope half is an enumeration of the **policy surface** — what Claude 
 
 The error was conflating two layers that match differently. **Every guard must normalise each statement before matching** — drop the wrapper, keep `VAR=` assignments so `ANCHOR_PROVIDER_URL=` still resolves, collapse whitespace — and the matching regex itself stays unchanged. Fixed in PR #138; a reader of this section before that merge would have concluded no defence was needed.
 
+PR #138 fixed the wrappers and not the control-flow bodies in the same list. A reserved word in command position (`if true; then anchor deploy …; fi`, `! solana program deploy …`) reached every hook as the command word, and a backslash-newline continuation, which the shell deletes before it splits words, stayed in the text the hooks read — so both spellings were silent on every gate only a hook enforces, a mainnet deploy at High included. The permission layer's denies were not affected. The guards now skip a reserved word where a command starts in code (`kit_reserved`) and join continuations outside single quotes (`kit_shell_text`, `split_cmd`). Still open in the regex-matched gates: a `case` arm (`a) anchor deploy …;;`) and a function body (`f() { anchor deploy …; }`), where the verb follows a `)` that the anchored pattern does not read as a statement start.
+
 ---
 
 ## 3. Per-tier, as implementable rules

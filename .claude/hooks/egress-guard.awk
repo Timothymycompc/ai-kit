@@ -159,8 +159,7 @@ function firstword(T, n,   ci) { ci = first_word(T, n); return (ci <= n) ? base(
 function unwrap(STG, nstg,   g, n, T, ci, i) {
   for (g = 1; g <= nstg && nstg < 64; g++) {
     n = tokenize(STG[g], T); if (n == 0) continue
-    ci = 1
-    while (ci <= n && T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) ci++
+    ci = first_word(T, n)
     if (ci > n) continue
     # kit_wrapper, not the library's is_wrapper: this exists to reach inside
     # `sh -c "<inner>"`, so it must look past shells too.
@@ -556,10 +555,18 @@ BEGIN {
 }
 { raw = raw $0 "\n" }
 END {
+  # ---- the text egress-guard.sh's position-anchored publish and git patterns
+  # read, instead of a verdict: continuations joined and the reserved words that
+  # lead a command dropped, quotes and heredoc bodies left alone (kit_shell_text).
+  if (ENVIRON["KIT_SHELL_TEXT"] != "") { printf "%s", kit_shell_text(raw, 1); exit }
+
   # ---- strip heredoc BODIES: a doc that merely SHOWS a curl must never fire.
-  # Exception: an UNQUOTED delimiter feeding a shell or interpreter is code.
+  # Exception: an UNQUOTED delimiter feeding a shell or interpreter is code.  The
+  # command it feeds is the one the head's last statement ends on, so neither
+  # `cd x; bash <<EOF` nor `if true; then bash <<EOF` hides the shell; and a head
+  # continued from the line before is one head, since raw is joined first.
   text = ""; delim = ""
-  nl = split(raw, L, "\n")
+  nl = split(kit_shell_text(raw, 0), L, "\n")
   for (k = 1; k <= nl; k++) {
     l = L[k]
     if (delim != "") {
@@ -573,14 +580,21 @@ END {
     if (RSTART > 0) {
       d = substr(l, RSTART, RLENGTH)
       sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
-      hn = tokenize(split_cmd(substr(l, 1, RSTART - 1)), HT); hw = firstword(HT, hn)
+      hs = split(split_cmd(substr(l, 1, RSTART - 1)), HS, "\001"); hd = HS[hs]
+      hs = split(hd, HS, "\002"); hn = tokenize(HS[hs], HT); hw = firstword(HT, hn)
       if (quoted || !(is_shell(hw) || is_interp(hw))) delim = d
     }
     text = text l "\n"
   }
 
   text = split_cmd(text)
-  nst = split(text, ST, "\001")
+  # A regex, not "\001": the awk macOS ships splits on newline as well when the
+  # separator is a one-character string, so a newline inside a quoted argument
+  # (a multi-line commit message) became a statement boundary there and nowhere
+  # else, and a body line reading `then git config core.hooksPath x` a command.
+  # A shell's -c string adds its own statements after them (kit_expand_code).
+  nst = split(text, ST, /\001/)
+  nst = kit_expand_code(ST, nst)
 
   # ---- pass 0, over EVERY statement before any other pass reaches a verdict:
   # the three git denies — a config write that arms an execution for later, a
@@ -591,7 +605,7 @@ END {
   for (q = 1; q <= nst; q++) {
     stmt = ST[q]
     if (stmt !~ /[^ \t\002]/) continue
-    nstg = split(stmt, STG, "\002")
+    nstg = split(stmt, STG, /\002/)
     nstg = unwrap(STG, nstg)
     for (g = 1; g <= nstg; g++) {
       why = gc_scan(STG[g])
@@ -606,7 +620,7 @@ END {
   for (q = 1; q <= nst; q++) {
     stmt = ST[q]
     if (stmt !~ /[^ \t\002]/) continue
-    nstg = split(stmt, STG, "\002")
+    nstg = split(stmt, STG, /\002/)
 
     # unwrap one level of `sh -c "<inner>"` / eval: the inner string is code
     nstg = unwrap(STG, nstg)

@@ -216,6 +216,75 @@ for c in "${PASS_CASES[@]}"; do
   done
 done
 
+# ── where the command word is ─────────────────────────────────────────────────
+# A wrapper option that takes a word (`nice -n 5`, `timeout -s KILL 5`): #260 made the
+# library consume that word, so "5" stops standing in for the command, and these went
+# from passing to denied at High with nothing pinning them. A spaced GNU long option
+# (`--signal KILL`, `--adjustment 5`) is the same option and gets the same verdict. A
+# reserved word in command position (`if`, `!`, `while … do`) is grammar and never the
+# command, and a backslash-newline is deleted by the shell before it reads words; both
+# used to hide the runner. The planted failures at the end prove each verdict is the
+# mechanism's doing.
+BS='\'
+WRAP_CASES=(
+  "nice -n 5 npx -y cowsay hi"
+  "timeout -s KILL 5 npx -y cowsay"
+  "xargs -n 1 npx -y cowsay"
+  "stdbuf -o 0 npx -y cowsay"
+  "nice -n 5 uvx ruff"
+  "nice -n 5 pipx run black"
+  "nice -n 5 cargo install ripgrep"
+)
+LONG_CASES=(
+  "timeout --signal KILL 5 npx -y some-random-cli"
+  "timeout --kill-after 3 5 npx -y some-random-cli"
+  "nice --adjustment 5 npx -y some-random-cli"
+  "nice --adj 5 uvx some-random-cli"
+  "stdbuf --output 0 npx -y some-random-cli"
+  "xargs --max-args 1 npx -y some-random-cli"
+  "sudo --user me npx -y some-random-cli"
+)
+KW_CASES=(
+  "if true; then npx -y some-random-cli; fi"
+  "! npx -y some-random-cli"
+  "while true; do uvx some-random-cli; done"
+  "if true; then cargo install some-random-crate; fi"
+  "if true; then sh -c 'npx -y some-random-cli'; fi"
+)
+CONT_CASES=(
+  "cargo $BS${NL}install some-random-crate"
+  "npm $BS${NL}exec -y some-random-cli"
+  "uv tool $BS${NL}run some-random-cli"
+  "np$BS${NL}x -y some-random-cli"
+)
+# Every statement of a shell's -c string, not only the first.
+CODE_CASES=(
+  "sh -c 'if true; then npx -y some-random-cli; fi'"
+  "sh -c 'cd /tmp; npx -y some-random-cli'"
+  "sh -c \"echo hi${NL}npx -y some-random-cli\""
+  "xargs -I{} sh -c 'echo {}; uvx some-random-cli'"
+)
+for c in "${WRAP_CASES[@]}" "${LONG_CASES[@]}" "${KW_CASES[@]}" "${CONT_CASES[@]}" "${CODE_CASES[@]}"; do
+  run relaxed "$c"
+  assert_eq "note|0" "$DECISION|$RC" "relaxed reports and passes: ${c//$NL/\\n}"
+  run high "$c"
+  assert_eq "deny|2" "$DECISION|$RC" "high denies: ${c//$NL/\\n}"
+done
+# Reserved words that are only text, and documents, stay silent.
+for c in "echo 'if true; then npx -y some-random-cli; fi'" \
+         "git commit -m \"if true; then npx -y some-random-cli; fi\"" \
+         "cat > README.md <<'EOF'${NL}if true; then npx -y some-random-cli; fi${NL}EOF" \
+         "git commit -m \"subject${NL}then npx -y some-random-cli\"" \
+         "if [ -d node_modules ]; then npm ci; fi" \
+         "nice git commit -m \"refresh; npx -y some-random-cli\"" \
+         "bash ./x.sh \"a; npx -y some-random-cli\"" \
+         "sh -c 'cd app && npm ci'"; do
+  for t in relaxed high; do
+    run "$t" "$c"
+    assert_eq "silent|0" "$DECISION|$RC" "$t stays silent: ${c//$NL/\\n}"
+  done
+done
+
 # ── tiers ────────────────────────────────────────────────────────────────────
 echo "[tiers]"
 run off "npx -y some-random-cli my-app"
@@ -431,6 +500,70 @@ assert_eq "note|0" "$DECISION|$RC" \
   "planted matcher: a prefix test lets a suffixed name through (so exactness is what denies it)"
 run high "npx -y @colosseum-org/copilot-connect-evil"
 assert_eq "note|0" "$DECISION|$RC" "planted matcher: and lets every other suffixed name through too"
+UNDER_TEST="$GUARD"
+
+# M3..M7 — the command-word verdicts above, each against the shipped hooks with the
+# mechanism behind it planted back out. Every case must fall silent at High, where the
+# shipped guard denies it; one that still denies was never that mechanism's doing.
+# plant <file> <find> <replace> — on a fresh copy in $MUT, on exactly one code line.
+plant() {
+  python3 - "$MUT/$1" "$2" "$3" <<'PY'
+import sys
+path, find, repl = sys.argv[1:4]
+lines = open(path, encoding="utf-8").read().split("\n")
+hits = [i for i, l in enumerate(lines) if find in l and not l.lstrip().startswith("#")]
+if len(hits) != 1:
+    sys.exit("mutation target %r matched %d non-comment lines, wanted 1" % (find, len(hits)))
+lines[hits[0]] = lines[hits[0]].replace(find, repl)
+open(path, "w", encoding="utf-8").write("\n".join(lines))
+PY
+}
+# planted <label> <case>… — every case silent at High under the current $MUT.
+planted() {
+  local label="$1" c; shift
+  UNDER_TEST="$MUT/fetch-exec-guard.sh"
+  for c in "$@"; do
+    run high "$c"
+    assert_eq "silent|0" "$DECISION|$RC" "planted $label: ${c//$NL/\\n} is no longer denied"
+  done
+  UNDER_TEST="$GUARD"
+}
+# M3 — the wrapper option table unconsulted, as before #260: "5" is the command again.
+cp "$REPO_ROOT"/.claude/hooks/* "$MUT/"
+plant lib-tokenize.awk 'if (operands && ci < n && kit_wrapper_optarg(w, T[ci])) ci++' 'ci = ci'
+planted "option table unconsulted" "${WRAP_CASES[@]}"
+# M4 — the spaced long forms unread: the operand lands in command position again.
+cp "$REPO_ROOT"/.claude/hooks/* "$MUT/"
+plant lib-tokenize.awk 'if (f !~ /^--[A-Za-z]/ || index(f, "=") > 0) return 0' 'return 0'
+planted "long options unread" "${LONG_CASES[@]}"
+# M5 — reserved words read as the command word again.
+cp "$REPO_ROOT"/.claude/hooks/* "$MUT/"
+plant lib-tokenize.awk 'return (t == "!" || t == "if"' 'return 0 && (t == "!" || t == "if"'
+planted "reserved words unskipped" "${KW_CASES[@]}"
+# M6 — both readers of a continuation planted back out: split_cmd keeps the pair as
+# text and kit_shell_text stops joining. Either alone still catches these.
+cp "$REPO_ROOT"/.claude/hooks/* "$MUT/"
+plant lib-tokenize.awk 'if (c == "\n") continue' 'if (0) continue'
+plant lib-tokenize.awk 'if (substr(s, i, 1) != "\n") out = out substr(s, i, 1)' 'out = out substr(s, i, 1)'
+plant lib-tokenize.awk 'if (!kw && index(raw, "\\\n") == 0) return raw' 'return raw'
+planted "continuations kept as text" "${CONT_CASES[@]}"
+# M7 — the pre-filter's continuation arm removed: `np\<newline>x` names no runner it
+# knows, so the guard leaves before it ever parses the command.
+cp "$REPO_ROOT"/.claude/hooks/* "$MUT/"
+plant fetch-exec-guard.sh " | *'\\\\\\n'*) ;;" ') ;;'
+planted "pre-filter blind to continuations" "np$BS${NL}x -y some-random-cli"
+# M8 — a -c string's statements no longer expanded: only its first command is seen.
+cp "$REPO_ROOT"/.claude/hooks/* "$MUT/"
+plant lib-tokenize.awk 'if ((p = kit_inline_code(T, n)) == 0) continue' 'continue'
+planted "-c strings unexpanded" "${CODE_CASES[@]}"
+# M9 — the other way: every wrapped command's last argument read as code, so the
+# commit message below becomes a command and a gate fires on it. The message
+# carries "sh" (refresh) to get past kit_expand_code's cheap pre-check.
+cp "$REPO_ROOT"/.claude/hooks/* "$MUT/"
+plant lib-tokenize.awk 'if (!is_wrapper(w)) return 0' 'if (!is_wrapper(w)) return n'
+UNDER_TEST="$MUT/fetch-exec-guard.sh"
+run high "nice git commit -m \"refresh; npx -y some-random-cli\""
+assert_eq "deny|2" "$DECISION|$RC" "planted: a wrapped command's argument read as code turns a message into a fetch"
 UNDER_TEST="$GUARD"
 
 # ── headless ─────────────────────────────────────────────────────────────────
