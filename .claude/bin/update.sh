@@ -989,7 +989,9 @@ GITIGNORE="$TARGET_DIR/.gitignore"
 # kit config block, since a user may have removed that block with /commit-claude-config.
 if [ "$DRY_RUN" = false ] && [ -f "$GITIGNORE" ]; then
   for ignore in ".memsearch/" "$CONFIG_NAME/worktrees/"; do
-    grep -qxF "$ignore" "$GITIGNORE" && continue
+    # Git for Windows checks a tracked .gitignore out with CRLF: match without the CR,
+    # or every run appends the line again.
+    tr -d '\r' < "$GITIGNORE" | grep -qxF "$ignore" && continue
     printf '%s\n' "$ignore" >> "$GITIGNORE"
     CHANGES="$CHANGES  [updated] .gitignore — $ignore added\n"
   done

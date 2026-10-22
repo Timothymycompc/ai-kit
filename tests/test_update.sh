@@ -426,4 +426,15 @@ UPDATE_AGENTS="$(cd "$AGENTS_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .
 assert_contains "$UPDATE_AGENTS" "[removed] .agents/commands/cleanup.md" "update reports removing /cleanup"
 assert_file_not_exists "$AGENTS_DIR/.agents/commands/cleanup.md" "update removes /cleanup from an --agents install"
 
+# --- .gitignore backfill on a CRLF file adds nothing twice ---
+# Git for Windows checks a tracked .gitignore out with CRLF endings. The backfill's
+# exact-line check has to ignore the CR, or every /update appends .memsearch/ again.
+echo "[gitignore backfill, CRLF]"
+printf '.memsearch/\r\n.claude/worktrees/\r\n' > "$TEMP_DIR/.gitignore"
+for _ in 1 2; do
+  (cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
+done
+assert_eq "1" "$(tr -d '\r' < "$TEMP_DIR/.gitignore" | grep -cxF '.memsearch/')" "a CRLF .gitignore keeps one .memsearch/ line across two updates"
+assert_eq "1" "$(tr -d '\r' < "$TEMP_DIR/.gitignore" | grep -cxF '.claude/worktrees/')" "a CRLF .gitignore keeps one .claude/worktrees/ line across two updates"
+
 print_summary
