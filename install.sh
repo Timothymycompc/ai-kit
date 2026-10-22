@@ -112,6 +112,7 @@ if [ -n "$LOCAL_SRC" ] && [ -d "$LOCAL_SRC/.claude" ]; then
   cp "$LOCAL_SRC/CLAUDE-solana.md" "$TEMP_DIR/repo/CLAUDE-solana.md"
   [ -f "$LOCAL_SRC/.mcp.json" ] && cp "$LOCAL_SRC/.mcp.json" "$TEMP_DIR/repo/.mcp.json"
   [ -f "$LOCAL_SRC/.env.example" ] && cp "$LOCAL_SRC/.env.example" "$TEMP_DIR/repo/.env.example"
+  [ -f "$LOCAL_SRC/.env.schema" ] && cp "$LOCAL_SRC/.env.schema" "$TEMP_DIR/repo/.env.schema"
   [ -f "$LOCAL_SRC/.gitmodules" ] && cp "$LOCAL_SRC/.gitmodules" "$TEMP_DIR/repo/.gitmodules"
   [ -f "$LOCAL_SRC/.claude/VERSION" ] && cp "$LOCAL_SRC/.claude/VERSION" "$TEMP_DIR/repo/.claude/VERSION"
   [ -f "$LOCAL_SRC/.safe-ai-skill/policy.yaml" ] && cp -R "$LOCAL_SRC/.safe-ai-skill" "$TEMP_DIR/repo/.safe-ai-skill"
@@ -564,7 +565,8 @@ else
   rm -f "$GITIGNORE.tmp"
 fi
 
-# 3) Local-only — never committed (.env holds API keys once filled; .env.example stays tracked)
+# 3) Local-only — never committed (.env holds API keys once filled; .env.example and
+#    .env.schema stay tracked, so nothing here may match them: no .env.* line)
 if ! grep -qF "# solana-ai-kit local-only" "$GITIGNORE"; then
   printf '\n# solana-ai-kit local-only (never committed)\n' >> "$GITIGNORE"
 fi
@@ -590,6 +592,15 @@ if [ -f "$TEMP_DIR/repo/.env.example" ]; then
     # Append new keys (with empty values) to existing .env
     merge_env_file "$TEMP_DIR/repo/.env.example" "$TARGET_DIR/.env"
   fi
+fi
+
+# varlock schema: key names, types and which are secret, no values. Both modes, since
+# varlock is harness-agnostic. Copied only when nothing is there, and never merged into:
+# a project's own schema has its own root defaults, under which the kit's keys could
+# become required.
+if [ -f "$TEMP_DIR/repo/.env.schema" ] && [ ! -e "$TARGET_DIR/.env.schema" ] && [ ! -L "$TARGET_DIR/.env.schema" ]; then
+  cp "$TEMP_DIR/repo/.env.schema" "$TARGET_DIR/.env.schema"
+  ok "Created .env.schema (varlock: key names and which are secret, no values; commit it)"
 fi
 
 echo ""
