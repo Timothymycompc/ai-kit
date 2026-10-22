@@ -142,7 +142,10 @@ SECURITY = os.path.join(TARGET, SECURITY_REL)
 #           every tier; and DENY_GIT_CONFIG_AND_HOOKS denies the file tools' writes to a
 #           repository's .git/config and .git/hooks/ at High only, including a linked
 #           worktree's common dir when that sits outside the project.
-RULE_SET_VERSION = 7
+#   7 -> 8: the project's dotenv files follow the tier, as the docs always said they
+#           did and no rule ever made true: DENY_ENV_WRITE at Medium, DENY_ENV_READ at
+#           High. Off and Relaxed are unchanged.
+RULE_SET_VERSION = 8
 TIERS = ("off", "relaxed", "medium", "high")
 RANK = {t: i for i, t in enumerate(TIERS)}
 MARK = "@@KIT-GROUP@@"          # serializes to a blank line; never the last element
@@ -506,6 +509,29 @@ DENY_GIT_CONFIG_AND_HOOKS = [
     "Edit(**/.git/hooks)",
     "Edit(**/.git/hooks/**)",
 ]
+
+# The project's dotenv files, by tier. Off and Relaxed leave them open: on your own
+# machine and repo, reading or editing .env is everyday work, and Relaxed's promise is
+# that a secret will not *additionally* reach a third party, which the egress gates
+# keep. Medium denies writes: nothing in a Solana build legitimately rewrites .env, and
+# an ask there is walked around by `python3 -c`, `perl -pi` or `sed -i`. High denies
+# reads instead and leaves writes open, since the model can no longer read the file
+# back. Both project into the sandbox (an Edit deny becomes a write deny, a Read deny a
+# read deny), so at High a sandboxed build that loads .env through dotenv cannot read
+# it either: High is for a repo you distrust, whose own scripts should not see it.
+# Named files rather than `.env.*`: a permission deny cannot carve out an exception, and
+# `.env.example` and varlock's `.env.schema` carry no values and stay readable.
+ENV_FILES = [
+    "**/.env",
+    "**/.env.local",
+    "**/.env.*.local",
+    "**/.env.development",
+    "**/.env.production",
+    "**/.env.staging",
+    "**/.env.test",
+]
+DENY_ENV_WRITE = [f"Edit({p})" for p in ENV_FILES]
+DENY_ENV_READ = [f"Read({p})" for p in ENV_FILES]
 
 DENY_CREDENTIALS = [
     # Both the bare and the /** form for every directory: a /** pattern does not match
@@ -1384,8 +1410,11 @@ def plan(tier):
     if high:
         deny_extra.append(DENY_SELF_PROTECTION)
         deny_extra.append(DENY_GIT_CONFIG_AND_HOOKS + git_common_edit_deny())
+        deny_extra.append(DENY_ENV_READ)
     if medium_up:
         deny_extra.append(DENY_GH_API)
+    if tier == "medium":
+        deny_extra.append(DENY_ENV_WRITE)
 
     lists = {
         "permissions.allow": ALLOW,
@@ -1397,9 +1426,10 @@ def plan(tier):
         # permissionDecision "ask"; every hard block is a deny rule or hook exit 2.
         # It is also what keeps Relaxed CI-safe: an ask is a hard failure under -p.
         "permissions.ask": [],
-        # Tier-varying deny groups, all of them: DENY_SELF_PROTECTION and
-        # DENY_GIT_CONFIG_AND_HOOKS at High, DENY_GH_API at Medium and High, and the four
-        # MCP groups appended after the Off early-return below.
+        # Tier-varying deny groups, all of them: DENY_SELF_PROTECTION,
+        # DENY_GIT_CONFIG_AND_HOOKS and DENY_ENV_READ at High, DENY_ENV_WRITE at Medium
+        # alone, DENY_GH_API at Medium and High, and the four MCP groups appended after
+        # the Off early-return below.
         #
         # DENY_GH_API is the ONLY Bash rule in the whole corpus that varies by tier, and
         # it carries the residual the other tier-varying groups carry: /firewall subtracts
