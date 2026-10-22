@@ -146,6 +146,25 @@ assert_file_not_contains "$TEMP_DIR/fetch.out" "Update complete" "a failed fetch
 assert_file_exists "$TEMP_DIR/.claude/rules/rust.md" "a failed fetch writes nothing to the project"
 rm -f "$TEMP_DIR/.claude/rules/rust.md" "$TEMP_DIR/fetch.out" "$TEMP_DIR/fetch.err"
 
+# A token in SOLANA_AI_KIT_UPSTREAM must not reach stderr through our message. Only
+# stderr is ours here: the clone's last line on stdout is printed by the frozen range.
+CRED_URL="file://tok3n-s3cr3t@$TEMP_DIR/no-such-upstream.git"
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC='' SOLANA_CLAUDE_LOCAL_SRC='' SOLANA_AI_KIT_UPSTREAM="$CRED_URL" \
+  bash .claude/bin/update.sh) > "$TEMP_DIR/fetch.out" 2> "$TEMP_DIR/fetch.err" || true
+assert_file_contains "$TEMP_DIR/fetch.err" "could not fetch file://$TEMP_DIR/no-such-upstream.git" \
+  "the failure names the upstream without its credentials"
+assert_file_not_contains "$TEMP_DIR/fetch.err" "tok3n-s3cr3t" "no credential from the upstream URL reaches stderr"
+
+# A local source without .claude/ makes the frozen range fall back to the network in
+# silence. When that fetch fails too, the error has to name the local path, not just
+# a URL nobody asked for.
+mkdir -p "$TEMP_DIR/empty-src"
+(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$TEMP_DIR/empty-src" SOLANA_AI_KIT_UPSTREAM="$DEAD_URL" \
+  bash .claude/bin/update.sh) > "$TEMP_DIR/fetch.out" 2> "$TEMP_DIR/fetch.err" || true
+assert_file_contains "$TEMP_DIR/fetch.err" "SOLANA_AI_KIT_LOCAL_SRC=$TEMP_DIR/empty-src has no .claude/" \
+  "a local source without .claude/ is named when the fallback fetch fails"
+rm -rf "$TEMP_DIR/empty-src"; rm -f "$TEMP_DIR/fetch.out" "$TEMP_DIR/fetch.err"
+
 # --- Retired kit defaults: what kit <= 2.1.0 wrote into settings.json and .mcp.json ---
 echo "[retired kit defaults]"
 json_at() {  # json_at <file> <key>... -> the value (JSON for non-strings), or __MISSING__
