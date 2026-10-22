@@ -994,13 +994,14 @@ if [ "$DRY_RUN" = false ] && [ -f "$GITIGNORE" ]; then
     CHANGES="$CHANGES  [updated] .gitignore — $ignore added\n"
   done
 fi
-# --agents installs no longer gitignore AGENTS.md: Grok Build skips an instruction file
-# that .gitignore lists, so every --agents install made before that change gave Grok no
-# house rules. Take it out of the kit's marked block, and only out of a terminated one:
-# past a lost end marker the kit's lines and the user's cannot be told apart. An
-# AGENTS.md line the user wrote outside the block stays. awk exits 0 only when it
-# dropped a line, so a second run writes and reports nothing. install.sh does the same.
-if [ "$INSTR_FILE" = "AGENTS.md" ] && [ -f "$GITIGNORE" ] && awk -v f="$INSTR_FILE" '
+# Installs no longer gitignore the instruction file (CLAUDE.md, or AGENTS.md for
+# --agents): Grok Build reads both and skips one that .gitignore lists, so every install
+# made before that change gave Grok no house rules. Take it out of the kit's marked
+# block, and only out of a terminated one: past a lost end marker the kit's lines and
+# the user's cannot be told apart. A line the user wrote outside the block stays. awk
+# exits 0 only when it dropped a line, so a second run writes and reports nothing.
+# install.sh does the same.
+if [ -f "$GITIGNORE" ] && awk -v f="$INSTR_FILE" '
     !inblk && /^# >>> solana-ai-kit config/ { inblk = 1; n = 0; print; next }
     inblk && /^# <<< solana-ai-kit config/ {
       for (i = 1; i <= n; i++) { l = buf[i]; sub(/\r$/, "", l); if (l == f) gone++; else print buf[i] }

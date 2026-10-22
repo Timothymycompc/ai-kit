@@ -3,7 +3,7 @@ description: "Un-ignore and commit the kit config dir, instruction file, .mcp.js
 disable-model-invocation: true
 ---
 
-`install.sh` gitignores the kit config by default, in a marked `.gitignore` block covering the config dir (`.claude/`, or `.agents/` in `--agents` installs), `.mcp.json`, `.gitmodules` and, in Claude Code installs, `CLAUDE.md` and `.safe-ai-skill/` (the safe-ai-skill project policy). An `--agents` install leaves `AGENTS.md` out of the block, since Grok Build skips an instruction file that `.gitignore` lists, but the commit below still includes it. This command opts the project in, so the config travels with the repo: a teammate who clones it gets the policy without running `install.sh`. The `ext/` skill submodules stay ignored: they are upstream content, and tracking `.gitmodules` is enough for a `--recurse-submodules` clone to repopulate them.
+`install.sh` gitignores the kit config by default, in a marked `.gitignore` block covering the config dir (`.claude/`, or `.agents/` in `--agents` installs), `.mcp.json`, `.gitmodules` and, in Claude Code installs, `.safe-ai-skill/` (the safe-ai-skill project policy). The instruction file (`CLAUDE.md`, or `AGENTS.md`) is left out of the block in both modes, since Grok Build skips an instruction file that `.gitignore` lists, but the commit below still includes it. This command opts the project in, so the config travels with the repo: a teammate who clones it gets the policy without running `install.sh`. The `ext/` skill submodules stay ignored: they are upstream content, and tracking `.gitmodules` is enough for a `--recurse-submodules` clone to repopulate them.
 
 ## Steps
 
@@ -30,6 +30,6 @@ disable-model-invocation: true
 
 ## Notes
 
-- To go back to ignoring the config, re-run `install.sh` (it re-adds the block only if absent), or run `git rm --cached -r .claude CLAUDE.md .mcp.json .gitmodules .safe-ai-skill` (`git rm --cached -r .agents .mcp.json .gitmodules` in `--agents` installs, which leave `AGENTS.md` tracked so Grok Build still reads it) and restore the `.gitignore` lines.
+- To go back to ignoring the config, re-run `install.sh` (it re-adds the block only if absent), or run `git rm --cached -r .claude .mcp.json .gitmodules .safe-ai-skill` (`git rm --cached -r .agents .mcp.json .gitmodules` in `--agents` installs) and restore the `.gitignore` lines. Leave the instruction file tracked either way, so Grok Build still reads it.
 - Committing the config redistributes what it holds. `anthropic-skills` is a core pack, so `$CONFIG_DIR/skills/anthropic-skills.lock` is normally present: the skill folders it lists are Anthropic's, under Apache-2.0 rather than the kit's MIT, so name them in the confirmation and keep each folder's `LICENSE.txt` with it.
 - To version the `ext/` submodules as well (rarely needed; they are large upstream trees), remove the `$CONFIG_DIR/skills/ext/` line from `.gitignore` and run `git submodule update --init` so real gitlinks exist before `git add`.

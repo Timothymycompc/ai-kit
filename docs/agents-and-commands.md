@@ -97,7 +97,7 @@ Recommended team patterns:
 |---------|---------|
 | `/quick-commit` | Create branch, format, lint, conventional commit |
 | `/pr-description` | Write a PR title and body a reviewer can verify: repro without funds, test plan with real counts, risk |
-| `/commit-claude-config` | Version the kit config in git (un-ignores `.claude/`, `CLAUDE.md`, `.mcp.json`, `.gitmodules`) |
+| `/commit-claude-config` | Version the kit config in git (un-ignores `.claude/`, `.mcp.json`, `.gitmodules` and commits them with `CLAUDE.md`) |
 | `/setup-ci-cd` | Configure GitHub Actions pipeline |
 | `/firewall` | Show or switch the firewall tier (Off / Relaxed / Medium / High) |
 | `/setup-mcp` | Configure MCP server API keys and connections |

@@ -509,29 +509,28 @@ if ! grep -qF "$CONFIG_DIR/skills/ext/" "$GITIGNORE"; then
 fi
 
 # 2) Kit config — gitignored by default; /commit-claude-config versions it.
-# Not AGENTS.md: Grok Build skips an instruction file that .gitignore lists, so an
-# --agents install that ignored it gave Grok no house rules.
+# Not the instruction file (CLAUDE.md, or AGENTS.md with --agents): Grok Build reads
+# both and skips one that .gitignore lists, so an install that ignored it gave Grok no
+# house rules.
 if ! grep -qF ">>> solana-ai-kit config" "$GITIGNORE"; then
   {
     printf '\n# >>> solana-ai-kit config — gitignored by default; run /commit-claude-config to version it >>>\n'
     printf '.gitmodules\n'
     printf '%s/\n' "$CONFIG_DIR"
-    [ "$AGENTS_ONLY" = true ] || printf '%s\n' "$INSTR_FILE"
     printf '.mcp.json\n'
     [ "$AGENTS_ONLY" = true ] || printf '.safe-ai-skill/\n'
     printf '# <<< solana-ai-kit config <<<\n'
   } >> "$GITIGNORE"
   ok "Kit config gitignored by default — run /commit-claude-config to version it"
 else
-  # A block written by an earlier install can be missing this mode's entries: an
-  # older --agents install listed CLAUDE.md, and a second install in the other mode
-  # (--agents next to .claude/, or the reverse) left its config dir and instruction
-  # file untracked (.agents/ alone is 60MB of vendored trees), and blocks from before
-  # the safe-ai-skill policy lack .safe-ai-skill/. Ignore CRs when matching: Git for
-  # Windows checks a tracked .gitignore out with CRLF endings.
+  # A block written by an earlier install can be missing this mode's entries: a second
+  # install in the other mode (--agents next to .claude/, or the reverse) left its config
+  # dir untracked (.agents/ alone is 60MB of vendored trees), and blocks from before the
+  # safe-ai-skill policy lack .safe-ai-skill/. Ignore CRs when matching: Git for Windows
+  # checks a tracked .gitignore out with CRLF endings.
   ADDED_IGNORE=""
   IGNORE_ENTRIES="$CONFIG_DIR/"
-  [ "$AGENTS_ONLY" = true ] || IGNORE_ENTRIES="$IGNORE_ENTRIES $INSTR_FILE .safe-ai-skill/"
+  [ "$AGENTS_ONLY" = true ] || IGNORE_ENTRIES="$IGNORE_ENTRIES .safe-ai-skill/"
   for entry in $IGNORE_ENTRIES; do
     if sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$GITIGNORE" | tr -d '\r' | grep -qxF "$entry"; then
       continue
@@ -543,26 +542,26 @@ else
   if [ -n "$ADDED_IGNORE" ]; then
     ok "Added to the gitignore config block:$ADDED_IGNORE"
   fi
-  # --agents installs made before AGENTS.md left the block list it there; take it out.
-  # Only from a terminated block: past a lost end marker the kit's lines and the
-  # user's cannot be told apart, so that tail is printed back untouched. An AGENTS.md
-  # line the user wrote outside the block stays. awk exits 0 only when it dropped a
-  # line. bin/update.sh does the same.
-  if [ "$AGENTS_ONLY" = true ]; then
-    if awk -v f="$INSTR_FILE" '
-      !inblk && /^# >>> solana-ai-kit config/ { inblk = 1; n = 0; print; next }
-      inblk && /^# <<< solana-ai-kit config/ {
-        for (i = 1; i <= n; i++) { l = buf[i]; sub(/\r$/, "", l); if (l == f) gone++; else print buf[i] }
-        inblk = 0; print; next }
-      inblk { buf[++n] = $0; next }
-      { print }
-      END { if (inblk) { for (i = 1; i <= n; i++) print buf[i] }; exit !gone }
-    ' "$GITIGNORE" > "$GITIGNORE.tmp"; then
-      cat "$GITIGNORE.tmp" > "$GITIGNORE"
-      ok "Removed $INSTR_FILE from the gitignore config block (Grok Build skips an ignored instruction file)"
-    fi
-    rm -f "$GITIGNORE.tmp"
+  # Installs made before the instruction file left the block list it there; take it out.
+  # Only from a terminated block: past a lost end marker the kit's lines and the user's
+  # cannot be told apart, so that tail is printed back untouched. A line the user wrote
+  # outside the block stays. Each mode takes out its own file only: a CLAUDE.md an older
+  # --agents install listed is a copy the kit stopped updating, and a default install
+  # next to it takes the line out itself. awk exits 0 only when it dropped a line.
+  # bin/update.sh does the same.
+  if awk -v f="$INSTR_FILE" '
+    !inblk && /^# >>> solana-ai-kit config/ { inblk = 1; n = 0; print; next }
+    inblk && /^# <<< solana-ai-kit config/ {
+      for (i = 1; i <= n; i++) { l = buf[i]; sub(/\r$/, "", l); if (l == f) gone++; else print buf[i] }
+      inblk = 0; print; next }
+    inblk { buf[++n] = $0; next }
+    { print }
+    END { if (inblk) { for (i = 1; i <= n; i++) print buf[i] }; exit !gone }
+  ' "$GITIGNORE" > "$GITIGNORE.tmp"; then
+    cat "$GITIGNORE.tmp" > "$GITIGNORE"
+    ok "Removed $INSTR_FILE from the gitignore config block (Grok Build skips an ignored instruction file)"
   fi
+  rm -f "$GITIGNORE.tmp"
 fi
 
 # 3) Local-only — never committed (.env holds API keys once filled; .env.example stays tracked)
@@ -634,21 +633,13 @@ else
   BOX_LINES+=("Firewall tier: $TIER. Switch any time with /firewall <tier>")
   BOX_LINES+=("(off, relaxed, medium, high).")
 fi
-BOX_LINES+=("")
-if [ "$AGENTS_ONLY" = true ]; then
-  BOX_LINES+=(
-    "$CONFIG_DIR/, .mcp.json and .gitmodules are gitignored by default to"
-    "keep your repo clean. $INSTR_FILE is not: Grok Build skips an"
-    "instruction file that .gitignore lists. To version the kit config,"
-    "run /commit-claude-config (or edit .gitignore)."
-  )
-else
-  BOX_LINES+=(
-    "$CONFIG_DIR/, $INSTR_FILE, .mcp.json and .gitmodules are gitignored"
-    "by default to keep your repo clean. To version the kit config,"
-    "run /commit-claude-config (or edit .gitignore)."
-  )
-fi
+BOX_LINES+=(
+  ""
+  "$CONFIG_DIR/, .mcp.json and .gitmodules are gitignored by default to"
+  "keep your repo clean. $INSTR_FILE is not: Grok Build skips an"
+  "instruction file that .gitignore lists. To version the kit config,"
+  "run /commit-claude-config (or edit .gitignore)."
+)
 if [ "$AGENTS_ONLY" = true ]; then
   BOX_LINES+=("")
   BOX_LINES+=("Note: Installed into $CONFIG_DIR/ (--agents mode). $CONFIG_DIR/agents/,")
