@@ -112,6 +112,19 @@ fi
 assert_file_exists "$TEMP_DIR/.claude/rules/rust.md" "Edited kit rule kept by update"
 assert_file_exists "$TEMP_DIR/.claude/rules/team-api.md" "User-written rule kept by update"
 rm -f "$TEMP_DIR/.claude/rules/rust.md" "$TEMP_DIR/rules-dry.out"
+# update.sh's list of shipped rule versions is pasted by hand. It must equal every
+# version of the five files in the kit's history, or an unedited copy of a missing
+# version would be kept as if the user had edited it. Needs full history.
+if [ "$(git -C "$REPO_ROOT" rev-parse --is-shallow-repository 2>/dev/null)" = false ]; then
+  HIST_BLOBS="$(for c in $(git -C "$REPO_ROOT" rev-list HEAD -- .claude/rules/); do
+      git -C "$REPO_ROOT" ls-tree "$c" .claude/rules/; done \
+    | awk '$4 ~ /\/(anchor|dotnet|pinocchio|rust|typescript)\.md$/ {print $3}' | sort -u | tr '\n' ' ')"
+  LISTED_BLOBS="$(awk '/^RETIRED_RULE_BLOBS="/,/"$/' "$REPO_ROOT/.claude/bin/update.sh" \
+    | grep -oE '[0-9a-f]{40}' | sort -u | tr '\n' ' ')"
+  assert_eq "$HIST_BLOBS" "$LISTED_BLOBS" "update.sh lists exactly the rule versions the kit ever shipped"
+else
+  echo "  SKIP: the shipped-rule list check needs full git history (shallow clone)"
+fi
 
 # --- Retired kit defaults: what kit <= 2.1.0 wrote into settings.json and .mcp.json ---
 echo "[retired kit defaults]"
