@@ -137,7 +137,12 @@ SECURITY = os.path.join(TARGET, SECURITY_REL)
 #           rule and every subcommand-classifying hook matches on; and Playwright's
 #           executors are denied by name — browser_run_code_unsafe and
 #           browser_network_request at Medium and High, browser_evaluate at High only.
-RULE_SET_VERSION = 6
+#   6 -> 7: `git --config-env` joins `git -c` in DENY_WRAPPERS and `git reflog delete`
+#           and `git reflog drop` join `reflog expire` in DENY_UNRECOVERABLE_GIT, all at
+#           every tier; and DENY_GIT_CONFIG_AND_HOOKS denies the file tools' writes to a
+#           repository's .git/config and .git/hooks/ at High only, including a linked
+#           worktree's common dir when that sits outside the project.
+RULE_SET_VERSION = 7
 TIERS = ("off", "relaxed", "medium", "high")
 RANK = {t: i for i, t in enumerate(TIERS)}
 MARK = "@@KIT-GROUP@@"          # serializes to a blank line; never the last element
@@ -348,14 +353,14 @@ ALLOW = [
 # a tier cannot take it back out. Most tier variation therefore lives in a
 # sandbox.filesystem path or a hook decision.
 #
-# Five groups are exceptions, and they are safe for the same reason: firewall.sh owns
+# Six groups are exceptions, and they are safe for the same reason: firewall.sh owns
 # one file and subtracts exactly the strings recorded in enforced.ruleIds, so a descent
 # does remove them. The relaxed -> high -> relaxed and high -> medium byte-identity
-# tests are the proof. The groups are DENY_SELF_PROTECTION (High only),
-# DENY_MCP_ARBITRARY_EXECUTION and DENY_MCP_PLAYWRIGHT_EXECUTION (Medium and High), and
-# DENY_MCP_CLOUDFLARE_EXECUTION and DENY_MCP_PLAYWRIGHT_EVALUATE (High only). The
-# residual is unchanged: a block hand-copied into user or managed scope stops tracking
-# the tier, and those denies then cannot be lifted.
+# tests are the proof. The groups are DENY_SELF_PROTECTION and DENY_GIT_CONFIG_AND_HOOKS
+# (High only), DENY_MCP_ARBITRARY_EXECUTION and DENY_MCP_PLAYWRIGHT_EXECUTION (Medium
+# and High), and DENY_MCP_CLOUDFLARE_EXECUTION and DENY_MCP_PLAYWRIGHT_EVALUATE (High
+# only). The residual is unchanged: a block hand-copied into user or managed scope stops
+# tracking the tier, and those denies then cannot be lifted.
 #
 # Two matcher facts the patterns below are built around:
 #   * A `*` with a space on BOTH sides cannot be empty, because runs of spaces collapse
@@ -462,6 +467,44 @@ DENY_SELF_PROTECTION = [
     "Edit(~/.claude/shell-snapshots/**)",
     # Where a local `claude` install lives; writing it replaces the binary.
     "Edit(~/.claude/local/**)",
+]
+
+# High only. The two places in a repository that make git run a program later, outside
+# the agent's turn: .git/config (core.hooksPath, core.fsmonitor, core.pager, alias.*
+# and the other keys egress-guard.awk's GITEXEC pass names) and .git/hooks/, whose
+# scripts run on the next commit, checkout or merge.
+#
+# Measured before this group was written, which is why it is this small:
+#   * Shell writes are already refused at every tier that turns the sandbox on, by
+#     Claude Code itself. access(W_OK) came back denied on the project's .git/config,
+#     .git/hooks/ and a hook inside it while HEAD, index and refs beside them stayed
+#     writable — with no .git entry anywhere in the kit's denyWrite, and with `.git`
+#     in its allowWrite (below), which Claude Code documents as not lifting its own
+#     protected paths. A repository OUTSIDE the session's directory is not covered:
+#     a scratch .git/config and .git/hooks/pre-commit under $TMPDIR were writable.
+#   * The file tools are not sandboxed. A path with a `.git` segment is a protected
+#     path for them, which prompts in default and acceptEdits mode, goes to the
+#     classifier in auto mode and is written unasked under bypassPermissions, and no
+#     allow rule pre-approves it. Only a deny holds in every mode — the reasoning of
+#     DENY_SELF_PROTECTION above, and the reason this group is Edit rules alone.
+#
+# Relative and recursive, so a nested repository under the project is covered with the
+# project's own: the scope of the sandbox's fence, no wider. An Edit deny also reaches
+# the Bash sandbox as a write deny (measured: Edit(**/.cargo/config.toml) refused a
+# shell write while a sibling file stayed writable), so a filesystem-wide
+# `//**/.git/config` would refuse every `git clone` and `git init` at High — /update's
+# temp clone and cargo's git checkouts included, each writing a fresh .git/config.
+#
+# The case those rules miss is a linked worktree, whose .git is a file pointing at a
+# common dir that holds the config and the hooks, usually outside the project.
+# git_common_edit_deny() names that dir absolutely under the same condition
+# git_common_write() grants it, so the machine path lands only where git_common_write's
+# already does — a worktree's own apply — and never in the kit's committed
+# settings.json, which is generated in a clean clone.
+DENY_GIT_CONFIG_AND_HOOKS = [
+    "Edit(**/.git/config)",
+    "Edit(**/.git/hooks)",
+    "Edit(**/.git/hooks/**)",
 ]
 
 DENY_CREDENTIALS = [
@@ -657,9 +700,23 @@ DENY_WRAPPERS = [
     # default tier, `reflog expire` included (FIREWALL-SPEC.md section 3.4 singles that
     # one out as deny-at-every-tier because it is what makes history unrecoverable).
     # `-C` was never the only door of its kind, only the only one shut — see the note on
-    # DENY_UNRECOVERABLE_GIT below for the 16 others and the hook pass that covers them.
+    # DENY_UNRECOVERABLE_GIT below for the rest and the hook pass that covers them.
     # Both rules stay regardless: they decide at the permission layer, ahead of the hook,
     # and a hook miss is a silent open door where a glob is a loud closed one.
+    #
+    # `git --config-env` is `git -c` reading its value from an environment variable, so
+    # `X=/tmp/x.sh git --config-env=core.fsmonitor=X status` runs /tmp/x.sh exactly as the
+    # -c spelling does — and until rule set 7 it walked past every rule here. ONE rule
+    # covers the `--config-env=<k>=<v>` spelling and the space-separated one alike,
+    # because its `*` touches the option name: a `*` touching a non-space may be empty
+    # and matches `=` as readily as a space. `Bash(git --config-env *)`, the shape the -c
+    # rule beside it has, would have required the space and let the `=` form straight
+    # through; gap_probe's port of the matcher and tests/test_firewall.sh pin both facts.
+    # No twin: the lone wildcard holds with its gap empty, so bare `git --config-env` is
+    # covered too. A leading VAR=value is no way round it either, since a deny rule
+    # matches past any leading assignment. Behind another git-level option
+    # (`git --no-pager --config-env=…`, and `git -P -c …` the same way) neither rule
+    # matches, which is what egress-guard.awk's GITCFG pass is for.
     #
     # `git config alias.*` is the third git evasion, and the worst of the three, because
     # it is the only one that survives the command it was typed in. `git config
@@ -687,16 +744,22 @@ DENY_WRAPPERS = [
     # denies at every tier — see its header. These rules STAY: they catch the common
     # spelling at the permission layer, before the hook runs, and a hook miss is a
     # silent open door where a glob is a loud closed one.
-    # Still open, in both layers: writing straight into `.git/config` with a shell
-    # redirect is not a `git config` command, so no amount of subcommand parsing
-    # reaches it; `.git` is in sandbox allowWrite and carries no Edit deny the way
-    # ~/.gitconfig does.
+    # Writing straight into `.git/config` is not a `git config` command, so no amount of
+    # subcommand parsing reaches it, and these rules do not try. What stops it is a
+    # layer below them: Claude Code's own sandbox refuses a shell write to the
+    # project's .git/config and .git/hooks/ at every tier that turns the sandbox on,
+    # `.git` being in allowWrite notwithstanding (measured, and documented upstream as a
+    # protected path), and High adds DENY_GIT_CONFIG_AND_HOOKS for the file tools. Open:
+    # Off, which has no sandbox; a command line led by an excludedCommands entry, which
+    # lifts the sandbox for the whole line; and the file tools below High, where those
+    # paths only prompt as protected paths and bypassPermissions writes them unasked.
     "Bash(env *)",
     "Bash(sh -c *)",
     "Bash(bash -c *)",
     "Bash(bash -lc *)",
     "Bash(zsh -c *)",
     "Bash(git -c *)",
+    "Bash(git --config-env*)",
     "Bash(git -C *)",
     "Bash(git config *alias.*)",
     "Bash(git config alias.*)",
@@ -749,20 +812,20 @@ DENY_UNRECOVERABLE_GIT = [
     # `git reset --ha HEAD` walked straight past `git reset --hard *`.
     #
     # Every rule here is anchored on the literal subcommand, so a git-LEVEL option in
-    # front of it sits where the glob expects `git` and none of them match. `git -C` and
-    # `git -c` in DENY_WRAPPERS are two of the many option forms `git --help` lists
-    # before <command>, and the only two shut;
+    # front of it sits where the glob expects `git` and none of them match. `git -C`,
+    # `git -c` and `git --config-env` in DENY_WRAPPERS are three of the many option forms
+    # `git --help` lists before <command>, and the only three shut;
     # measured live, `git --no-pager clean --dry-run`, `git --git-dir=.git clean
     # --dry-run`, `git -P clean --dry-run` and `git --literal-pathspecs clean --dry-run`
     # all ran. The rest is closed by egress-guard.awk's GITDESTRUCT pass, which walks the
     # global options and classifies the subcommand; it mirrors these rules rather than
     # extending them, firing only on the prefixed spelling, and covers `clean`,
-    # `restore`, `checkout -- <path>`, `reset --ha*`, `reflog expire`, `prune`,
-    # `push --mirror` and the transport overrides below — each in its bare form too,
-    # because a trailing ` *` that is a rule's only wildcard matches the bare command.
-    # `branch -D`/`-f` is out of that pass on purpose (reflog-recoverable), and
-    # `gc --prune` is out as a recorded gap; for those two the rules here are the only
-    # layer and the prefixed form stays open.
+    # `restore`, `checkout -- <path>`, `reset --ha*`, `reflog expire|delete|drop`,
+    # `prune`, `gc --prune`, `push --mirror` and the transport overrides below — each in
+    # its bare form too, because a trailing ` *` that is a rule's only wildcard matches
+    # the bare command. `branch -D`/`-f` is out of that pass on purpose
+    # (reflog-recoverable), so for it the rules here are the only layer and the prefixed
+    # form stays open.
     "Bash(git clean *)",            # git clean is never non-destructive; -xdf, -dfx, --f -d
     "Bash(git restore *)",          # the modern spelling of `git checkout -- .`
     "Bash(git checkout -- *)",
@@ -774,11 +837,20 @@ DENY_UNRECOVERABLE_GIT = [
     "Bash(git branch --delete*)",
     "Bash(git branch * -f*)",
     "Bash(git branch -f*)",
-    # These two are what make history truly unrecoverable; the rest is reflog-recoverable.
+    # These are what make history truly unrecoverable; the rest is reflog-recoverable.
+    # A dropped commit lives on only in a reflog, so anything that removes reflog
+    # entries removes the record it is recovered from — `reflog expire` by age,
+    # `reflog delete` entry by entry, `reflog drop` a whole reflog at once — and
+    # `gc --prune` and `prune` then delete the objects nothing reaches any more. The
+    # three reflog rules have one trailing wildcard each, so the bare subcommand is
+    # covered by the rule itself and takes no twin. `reflog show`, `reflog list`,
+    # `reflog exists` and a bare `git reflog` are reads and stay open.
     "Bash(git gc *--prune*)",
     "Bash(git gc --prune*)",
     "Bash(git prune *)",
     "Bash(git reflog expire *)",
+    "Bash(git reflog delete *)",
+    "Bash(git reflog drop *)",
     "Bash(git push *--mirror*)",
     "Bash(git push --mirror*)",
 ]
@@ -1311,6 +1383,7 @@ def plan(tier):
     deny_extra = []
     if high:
         deny_extra.append(DENY_SELF_PROTECTION)
+        deny_extra.append(DENY_GIT_CONFIG_AND_HOOKS + git_common_edit_deny())
     if medium_up:
         deny_extra.append(DENY_GH_API)
 
@@ -1324,9 +1397,9 @@ def plan(tier):
         # permissionDecision "ask"; every hard block is a deny rule or hook exit 2.
         # It is also what keeps Relaxed CI-safe: an ask is a hard failure under -p.
         "permissions.ask": [],
-        # Tier-varying deny groups, all of them: DENY_SELF_PROTECTION at High,
-        # DENY_GH_API at Medium and High, and the four MCP groups appended after the Off
-        # early-return below.
+        # Tier-varying deny groups, all of them: DENY_SELF_PROTECTION and
+        # DENY_GIT_CONFIG_AND_HOOKS at High, DENY_GH_API at Medium and High, and the four
+        # MCP groups appended after the Off early-return below.
         #
         # DENY_GH_API is the ONLY Bash rule in the whole corpus that varies by tier, and
         # it carries the residual the other tier-varying groups carry: /firewall subtracts
@@ -1438,18 +1511,38 @@ def plan(tier):
     return lists, scalars
 
 
+def git_common_outside():
+    """The git common dir's real path when it sits outside the project, else None."""
+    if not GIT_COMMON:
+        return None
+    try:
+        common = os.path.realpath(GIT_COMMON)
+        root = os.path.realpath(TARGET)
+        if os.path.commonpath([common, root]) != root:
+            return common
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def git_common_write():
     """Write access to the git common dir, only when it is outside the project."""
-    entries = [".git"]
-    if GIT_COMMON:
-        try:
-            common = os.path.realpath(GIT_COMMON)
-            root = os.path.realpath(TARGET)
-            if os.path.commonpath([common, root]) != root:
-                entries.append(common)
-        except (OSError, ValueError):
-            pass
-    return entries
+    common = git_common_outside()
+    return [".git"] + ([common] if common else [])
+
+
+def git_common_edit_deny():
+    """DENY_GIT_CONFIG_AND_HOOKS for that same out-of-project common dir.
+
+    `//` anchors an Edit rule at the filesystem root: the path is absolute, so the one
+    `/` each rule adds in front of it makes the anchor. Glob characters in the path are
+    escaped, so the rule names this one directory and nothing a pattern widens it to.
+    """
+    common = git_common_outside()
+    if not common:
+        return []
+    path = re.sub(r"([\\*?\[\]])", r"\\\1", common)
+    return ["Edit(/%s/config)" % path, "Edit(/%s/hooks)" % path, "Edit(/%s/hooks/**)" % path]
 
 
 MANAGED_LISTS = (

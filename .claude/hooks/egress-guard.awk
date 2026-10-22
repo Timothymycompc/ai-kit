@@ -9,6 +9,8 @@
 #            core.pager, core.hooksPath and the rest) — denied at every tier
 #   GITDESTRUCT  a destructive git subcommand reached behind a git-level option,
 #            where the glob rule anchored on the bare subcommand cannot see it
+#   GITCFG   `-c` or `--config-env` behind another git-level option, where the
+#            `git -c` and `git --config-env` rules cannot see it
 #   DENY  a secret reaches a network command — as a body, as an argument, via a
 #         reader in the same statement, or named in inline interpreter code
 #   ASK1  a request body or upload sourced from a file or from stdin
@@ -198,11 +200,15 @@ function unwrap(STG, nstg,   g, n, T, ci, i) {
 # reason `git config` is not denied as a whole command.  A false positive here
 # breaks /quick-commit and every normal setup step.
 #
-# Not covered, stated rather than papered over:
+# Not covered here, stated rather than papered over:
 #   * a shell redirect into .git/config, which is not a `git config` command at
-#     all, so no amount of subcommand parsing reaches it;
-#   * GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 and
-#     GIT_CONFIG_GLOBAL in the environment, which are `git -c` by another name.
+#     all, so no amount of subcommand parsing reaches it.  The layer below does:
+#     Claude Code's sandbox refuses shell writes to the project's .git/config and
+#     .git/hooks/ wherever it is on, and High denies the file tools the same paths
+#     (DENY_GIT_CONFIG_AND_HOOKS in firewall.sh).  Off, and a command line led by
+#     an excludedCommands entry, are left with neither;
+#   * GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0, GIT_CONFIG_PARAMETERS
+#     and GIT_CONFIG_GLOBAL in the environment, which are `git -c` by another name.
 
 # gc_silent_opt — the `git config` forms this pass does not gate: the readers,
 # which are ordinary work, and the removers, which can only take a key away.
@@ -224,32 +230,49 @@ function gc_opt_operand(o) {
 # git_global_operand — a git-LEVEL option, ahead of the subcommand, that eats the
 # next token.  Verified by hand against the installed git: `--git-dir .git`,
 # `--namespace ns` and `--attr-source HEAD` all leave the subcommand running, so
-# they do consume one.  `--exec-path` does NOT: `git --exec-path /tmp rev-parse`
-# printed the exec path and ignored the rest, so it is left out and treated as a
-# plain flag.  Getting one wrong costs a MISS, never a false positive: the walk
-# lands on the wrong token, finds no subcommand it knows, and stays silent.
+# they do consume one, and so does the undocumented `--shallow-file`
+# (`git --shallow-file x status --short` runs status), which this list lacked
+# until a review found `git --shallow-file x clean -fdx` silent.  `--exec-path`
+# does NOT: `git --exec-path /tmp rev-parse` printed the exec path and ignored
+# the rest — git_walk stops there.  Getting one wrong costs a MISS, never a false
+# positive: the walk lands on the wrong token, finds no subcommand it knows, and
+# stays silent.
 function git_global_operand(o) {
   return (o == "-C" || o == "-c" || o == "--git-dir" || o == "--work-tree" \
        || o == "--namespace" || o == "--attr-source" || o == "--super-prefix" \
-       || o == "--config-env")
+       || o == "--config-env" || o == "--shallow-file")
 }
 
 # git_walk — the shared option walker.  Returns 1 on a real git invocation and
-# fills three globals: GW_SUB (the subcommand), GW_I (the index of the first
-# token after it) and GW_PREFIXED (1 when at least one git-level option came
-# first).  Both git passes below run off this one walk.
-function git_walk(T, n,   i, o) {
-  GW_SUB = ""; GW_I = 0; GW_PREFIXED = 0
+# fills four globals: GW_SUB (the subcommand), GW_I (the index of the first
+# token after it), GW_PREFIXED (1 when at least one git-level option came
+# first) and GW_CFG (`-c` or `--config-env` when one of them came after another
+# git-level option, else "").  GW_CFG is set even when no subcommand follows.
+# All three git passes below run off this one walk.
+function git_walk(T, n,   i, o, k) {
+  GW_SUB = ""; GW_I = 0; GW_PREFIXED = 0; GW_CFG = ""
   # cmdword_x's fourth argument (skip a wrapper's positional operand) is asked
   # for here where the egress passes below decline it: `timeout 5 git config
   # alias.z '!x'` leaves "5" in command position otherwise, and the globs miss
   # that spelling too, so there is no verdict to keep identical.
   if (cmdword_x(T, n, 1, 1) != "git") return 0
-  i = CWI + 1
+  i = CWI + 1; k = 0
   while (i <= n && substr(T[i], 1, 1) == "-" && T[i] != "-" && T[i] != "--") {
     o = T[i]; sub(/=.*$/, "", o)
+    # git prints and exits on these — help, the version, a path or command-list
+    # query — so no subcommand runs.  `git --help clean` is `git help clean`, which
+    # no rule denies, and deciding it here was a false positive.  A -c or
+    # --config-env already walked past stays in GW_CFG: `git help` reads config
+    # (man.<tool>.cmd, web.browser), so that half still matters.
+    if (o == "-h" || o == "--help" || o == "-v" || o == "--version" || o == "--html-path" \
+        || o == "--man-path" || o == "--info-path" || o == "--list-cmds" \
+        || T[i] == "--exec-path") return 0
+    # k counts the options before this one: the first option is what the
+    # `git -c *` and `git --config-env*` rules are anchored on, so only a later
+    # one is a spelling they cannot see.
+    if (k > 0 && GW_CFG == "" && (o == "-c" || o == "--config-env")) GW_CFG = o
     if (git_global_operand(o) && T[i] !~ /=/) i++
-    i++
+    i++; k++
     GW_PREFIXED = 1
   }
   if (i > n) return 0
@@ -334,7 +357,9 @@ function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
 #
 # Every destructive-git deny is a glob anchored on the literal subcommand, so a
 # git-level option in front of it sits where the glob expects `git`, and none of
-# them match.  `Bash(git -C *)` is the only one of those doors that is shut.
+# them match.  `Bash(git -C *)` is the only one of those doors shut for that
+# reason; `-c` and `--config-env` are denied as config setters, which shuts them
+# too, but only in first position (GITCFG below is the rest of that).
 # Measured against the live `Bash(git clean *)`:
 #
 #   git --no-pager clean --dry-run           ran
@@ -344,16 +369,17 @@ function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
 #   git -C . clean --dry-run                 DENIED
 #
 # `git --help` lists the whole set before <command> (the count varies by git
-# version, so read it there rather than trusting a number), and only `-C` and
-# `-c` are denied.  Some of them print and stop rather than reaching a
-# subcommand — `--version`, `--help`, the three path-printing ones, and a bare
-# `--exec-path`, which is also why `--exec-path` is out of git_global_operand
-# above.  The ones that do pass through — `--no-pager`, `-p`, `-P`, `--bare`,
-# `--git-dir`, `--work-tree`, `--namespace`, `--config-env`, the `--no-*`
-# switches and the undocumented `--literal-pathspecs` family — each take both
-# `--opt=v` and `--opt v` and repeat and combine freely, so there is no glob set
-# to enumerate.  There is one option walk, and git_walk above already had to do
-# it to find `config`.
+# version, so read it there rather than trusting a number), and only `-C`, `-c`
+# and `--config-env` are denied.  Some of them print and stop rather than
+# reaching a subcommand — `-h`/`--help`, `-v`/`--version`, the three
+# path-printing ones, `--list-cmds=` and a bare `--exec-path` — and git_walk
+# stops on each, since `git --help clean` runs `git help clean` and nothing else.
+# The ones that do pass through — `--no-pager`, `-p`, `-P`, `--bare`,
+# `--git-dir`, `--work-tree`, `--namespace`, `--shallow-file`, `--config-env`,
+# the `--no-*` switches and the undocumented `--literal-pathspecs` family — repeat
+# and combine freely, and the ones taking a value take it as `--opt=v` or
+# `--opt v`, so there is no glob set to enumerate.  There is one option walk, and
+# git_walk above already had to do it to find `config`.
 #
 # THE DESIGN RULE, and the reason this pass is this narrow: it MIRRORS the glob
 # rules and changes no tier's policy.  It fires only when GW_PREFIXED is set —
@@ -373,12 +399,24 @@ function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
 # `reflog expire`, on the belief that the glob did too, and that left the
 # prefixed bare form covered by neither layer.  It matters for clean: with
 # `clean.requireForce` false, a bare `git clean` deletes untracked files, and
-# `git --config-env=clean.requireForce=V clean` sets that inside the same
+# `git -P --config-env=clean.requireForce=V clean` sets that inside the same
 # command line, behind an option no glob sees past.
 #
 # WHAT IS IN, and why each earns the parsing surface:
-#   reflog expire   FIREWALL-SPEC.md section 3.4 singles this out as the command
-#                   that makes history unrecoverable.  Strongest case in the set.
+#   reflog expire / delete / drop
+#                   FIREWALL-SPEC.md section 3.4 singles out expire as the command
+#                   that makes history unrecoverable, and delete (chosen entries)
+#                   and drop (whole reflogs) remove the same record by other
+#                   means.  Strongest case in the set.  The word right after
+#                   `reflog` only, as the globs anchor it: show, list, exists and
+#                   a bare `git reflog` are reads and stay silent.
+#   gc --prune      deletes the unreachable objects prune does, so prune's case
+#                   below is its case too.  A token beginning `--prune` after the
+#                   `gc` subcommand, which is narrower than `Bash(git gc
+#                   *--prune*)`: `--no-prune` begins otherwise, and `fetch
+#                   --prune`, `remote prune`, `worktree prune` and `prune-packed`
+#                   never put "gc" in GW_SUB, so the substring hazard prune-packed
+#                   once posed does not reach this test.
 #   prune           with no --expire it deletes every unreachable loose object,
 #                   whatever its age.  Those are what `git fsck` recovers a
 #                   dropped stash from, or a deleted branch no reflog still
@@ -403,17 +441,20 @@ function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
 #                   in the set: -D against a safe -d, -f clustered inside -Df,
 #                   and `--sort=-date` already tripped a `-d` matcher in this
 #                   same guard once.  Friction without safety.
-#   gc --prune      deletes the same unreachable set prune does, so the reason
-#                   prune is in applies here as well.  Left out as a recorded
-#                   gap, not as a judgment that it is safe: its prefixed form
-#                   is open, and only the glob rules stand behind the plain one.
 #
 # KNOWN MISSES, stated rather than papered over: a variable-indirected command
-# (`G=git; $G clean -fd`) is invisible to this walk, and so is git inside a
-# script the agent wrote — for both of those the OS sandbox is the only layer
-# left, and `.git` is in its allowWrite.  `git checkout <tree-ish> -- <path>`
+# (`G=git; $G clean -fd`) is invisible to this walk, and so is a subcommand the
+# shell builds after the hook has read the words — `$'clean'`, `{clean,}`,
+# `${X:-clean}` — and git inside a script the agent wrote.  For all of those the
+# OS sandbox is the only layer left, and `.git` is in its allowWrite.  `git checkout <tree-ish> -- <path>`
 # and `git checkout --force -- .` are open in BOTH layers, because the glob is
-# `git checkout -- *` and this pass mirrors it rather than widening it.
+# `git checkout -- *` and this pass mirrors it rather than widening it.  So are
+# git named by path (`/usr/bin/git clean -fd`) and a quoted subcommand
+# (`git 'clean' -fd`) with no option in front: Claude Code documents that a
+# deny rule matches neither, and with nothing prefixed this pass stays silent.
+# And a long option abbreviated past its glob — `git gc --p=now`, which git's
+# parser accepts if `--p` is unique among gc's options — is missed here exactly
+# as the glob misses it.
 
 function gd_scan(stage,   n, T, i) {
   n = tokenize(stage, T); if (n == 0) return ""
@@ -431,14 +472,25 @@ function gd_scan(stage,   n, T, i) {
     return "runs git checkout -- <path> behind a git-level option, discarding uncommitted changes"
   if (GW_SUB == "prune")
     return "runs git prune behind a git-level option, deleting the unreachable objects a dropped stash or a deleted branch could still be recovered from"
+  if (GW_SUB == "gc") {
+    for (; i <= n; i++)
+      if (T[i] ~ /^--prune/)          # --prune and --prune=<date>; never --no-prune
+        return "runs git gc --prune behind a git-level option, deleting the unreachable objects a dropped stash or a deleted branch could still be recovered from"
+    return ""
+  }
   if (GW_SUB == "reset") {
     for (; i <= n; i++)
       if (T[i] ~ /^--ha/)             # --hard, and the --ha abbreviation git accepts
         return "runs git reset --hard behind a git-level option, discarding uncommitted changes"
     return ""
   }
-  if (GW_SUB == "reflog" && i <= n && T[i] == "expire")
-    return "runs git reflog expire behind a git-level option, which is what makes history unrecoverable"
+  if (GW_SUB == "reflog" && i <= n) {
+    if (T[i] == "expire")
+      return "runs git reflog expire behind a git-level option, which is what makes history unrecoverable"
+    if (T[i] == "delete" || T[i] == "drop")
+      return "runs git reflog " T[i] " behind a git-level option, removing the reflog entries a dropped commit is recovered from"
+    return ""
+  }
   if (GW_SUB == "push") {
     for (; i <= n; i++) {
       if (T[i] ~ /^--mirror/)
@@ -455,6 +507,32 @@ function gd_scan(stage,   n, T, i) {
     return ""
   }
   return ""
+}
+
+# ---- -c and --config-env behind another git-level option -------------------
+#
+# `git -c core.fsmonitor=/tmp/x.sh status` is arbitrary code execution, and
+# `X=/tmp/x.sh git --config-env=core.fsmonitor=X status` is the same thing with
+# the value read from $X.  `Bash(git -c *)` and `Bash(git --config-env*)` deny
+# both at every tier, anchored on the first token after `git` — so another
+# git-level option in front (`git --no-pager -c …`, `git -P --config-env …`)
+# walks past them exactly as it walks past the subcommand globs above.  Measured
+# before this pass existed: `git --no-pager -c core.fsmonitor=/tmp/x.sh status`
+# reached neither a rule nor this hook.
+#
+# The GITDESTRUCT design, applied to two options instead of a subcommand: it
+# mirrors the rules, fires only when the option comes after another one
+# (git_walk's GW_CFG), and leaves the first-position spelling to the rules —
+# which already match it behind a VAR=value, since a deny rule matches past any
+# leading assignment.  Every key, because the rules deny every key: which keys
+# execute is GITEXEC's list, and a shorter one here would only reopen what the
+# rule closes.  The walk stops at the subcommand, so a commit message or a
+# --grep pattern that names either option is data and never reaches this test.
+function gcfg_scan(stage,   n, T) {
+  n = tokenize(stage, T); if (n == 0) return ""
+  git_walk(T, n)
+  if (GW_CFG == "") return ""
+  return "sets git config for this one command with " GW_CFG " behind another git-level option, where a key such as core.fsmonitor, core.pager or alias.* names a program git runs"
 }
 
 BEGIN {
@@ -505,10 +583,11 @@ END {
   nst = split(text, ST, "\001")
 
   # ---- pass 0, over EVERY statement before any other pass reaches a verdict:
-  # a git config write that arms an execution for later.  Ahead of the egress
-  # passes on purpose — those exit on their first match, so a `curl` in an
-  # earlier statement that only ASKs would otherwise shadow a deny here, and an
-  # approved prompt runs the whole Bash call, this write included.
+  # the three git denies — a config write that arms an execution for later, a
+  # config option behind another option, a destructive subcommand behind one.
+  # Ahead of the egress passes on purpose — those exit on their first match, so
+  # a `curl` in an earlier statement that only ASKs would otherwise shadow a deny
+  # here, and an approved prompt runs the whole Bash call, this git call included.
   for (q = 1; q <= nst; q++) {
     stmt = ST[q]
     if (stmt !~ /[^ \t\002]/) continue
@@ -517,6 +596,8 @@ END {
     for (g = 1; g <= nstg; g++) {
       why = gc_scan(STG[g])
       if (why != "") { print "GITEXEC " why; exit }
+      why = gcfg_scan(STG[g])
+      if (why != "") { print "GITCFG " why; exit }
       why = gd_scan(STG[g])
       if (why != "") { print "GITDESTRUCT " why; exit }
     }

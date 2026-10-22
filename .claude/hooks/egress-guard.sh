@@ -42,11 +42,14 @@
 # is in that file's own header.
 #
 # And the destructive git subcommands — clean, restore, checkout -- <path>,
-# reset --hard, reflog expire, prune, push --mirror, and the transport
-# overrides — when they are reached behind a git-LEVEL option, where every deny
-# rule is anchored on the bare subcommand and therefore cannot see them.  That
-# pass (GITDESTRUCT) mirrors the rules and changes no tier's policy: it fires
-# only on the prefixed spelling, bare form included.  Same file, same header.
+# reset --hard, reflog expire/delete/drop, prune, gc --prune, push --mirror, and
+# the transport overrides — when they are reached behind a git-LEVEL option,
+# where every deny rule is anchored on the bare subcommand and therefore cannot
+# see them.  That pass (GITDESTRUCT) mirrors the rules and changes no tier's
+# policy: it fires only on the prefixed spelling, bare form included.  GITCFG
+# does the same for `-c` and `--config-env` behind another git-level option,
+# where the `git -c` and `git --config-env` rules cannot see them.  Same file,
+# same headers.
 #
 # stdin: PreToolUse JSON.  Exit 0 = silent, exit 2 = blocked, stdout JSON = ask.
 
@@ -251,6 +254,12 @@ case $CLASS in
     # option in front of it walked past.  Same policy, one more spelling — see gd_scan's
     # header for why it mirrors the rules instead of widening them.
     kit_deny "$WHY. That command is denied at every tier by a permission rule anchored on the bare subcommand, and a git-level option in front of it is not a different command — this hook is what makes the rule mean what it says. If the user wants it run, they run it themselves."
+    ;;
+  GITCFG)
+    # The same mirror for `git -c` and `git --config-env`, which every tier denies as
+    # wrappers no subcommand rule can see past; another option in front of either one
+    # is not a different command.  See gcfg_scan's header.
+    kit_deny "$WHY. git -c and git --config-env are denied at every tier, because a one-shot config value can make any git command run a program, and an option in front of either is not a different command — this hook is what makes those rules mean what they say. If the user needs the value set, they run the command themselves."
     ;;
   DENY)
     kit_deny "$WHY. Sending credentials or key material off the machine is not allowed at any tier. If the user needs this uploaded, they do it themselves."

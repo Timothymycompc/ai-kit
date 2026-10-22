@@ -289,6 +289,11 @@ def probes(pat):
 if sys.argv[1] == "--match":
     print("yes" if matches(sys.argv[2], sys.argv[3]) else "no")
     sys.exit(0)
+if sys.argv[1] == "--deny-matches":
+    deny = (json.load(open(sys.argv[2])).get("permissions") or {}).get("deny") or []
+    hit = [r for r in deny if r.startswith("Bash(") and r.endswith(")") and matches(r[5:-1], sys.argv[3])]
+    print(" ".join(hit) or "none")
+    sys.exit(0)
 if sys.argv[1] == "--documented":
     DOCUMENTED = [("ls *", "ls", True), ("ls *", "lsof", False), ("ls*", "lsof", True),
                   ("npm run *", "npm run", True), ("git log * main", "git log main", False),
@@ -525,8 +530,9 @@ done
 # relaxed and high -> medium byte-identity tests above are the proof of.
 #   * MCP tool-name denies -- MCP rules have no argument form at all (a parenthesised
 #     mcp__ rule is skipped on load), so a tool-name deny is the only expressible gate.
-#   * The self-protection Edit denies, High only, because below High the kit defers to a
-#     user customizing their own installation.
+#   * The Edit denies, High only: self-protection, because below High the kit defers to
+#     a user customizing their own installation, and the .git/config and .git/hooks/
+#     fence, because below High it defers to the user on their own repository.
 #   * Bash(gh api *) at Medium and High -- the ONE Bash rule in the corpus that varies,
 #     added in rule set 5.
 # A Bash deny is the one that most plausibly reaches user or managed scope by
@@ -570,7 +576,7 @@ bad = sorted(r for r in varying
              if not (r.startswith('mcp__') or r.startswith('Edit(') or r in ALLOWED))
 print(' '.join(bad) or 'none')" 2>/dev/null)"
 assert_eq "none" "$VARY_KIND" \
-  "only MCP tool-name denies, self-protection Edit denies and the one named Bash rule vary by tier"
+  "only MCP tool-name denies, High's Edit denies and the one named Bash rule vary by tier"
 
 # The unconditional group, by exact rule, at every tier. Each is here because it is not
 # "customizing your installation": a nested `claude -p --dangerously-skip-permissions`
@@ -692,7 +698,8 @@ for r in "Bash(claude *)" "Bash(env *)" "Bash(git -c *)" "Bash(git -C *)" "Bash(
          "Bash(git push *--receive-pack*)" "Bash(git push --receive-pack*)" \
          "Bash(git push *--exec*)" "Bash(git push --exec*)" \
          "Bash(gh issue delete *)" "Bash(gh repo delete *)" "Bash(gh repo delete)" \
-         "Bash(git config *alias.*)" "Bash(git config alias.*)"; do
+         "Bash(git config *alias.*)" "Bash(git config alias.*)" \
+         "Bash(git --config-env*)" "Bash(git reflog delete *)" "Bash(git reflog drop *)"; do
   TOTAL=$((TOTAL + 1))
   if printf '%s\n' "$DENY_LIVE" | grep -qxF "$r"; then
     echo "  PASS: the never-allowed set denies $r"
@@ -720,6 +727,208 @@ print('%s/%s' % ('deny' if 'Bash(git -c *)' in deny else 'allow',
                  'deny' if 'Bash(git -C *)' in deny else 'allow'))" 2>/dev/null)"
   assert_eq "deny/deny" "$PAIR" "$t: git -c and git -C both denied (a -C prefix defeats every destructive git glob)"
 done
+
+# git --config-env is git -c with the value read from an environment variable, and the
+# reflog's delete and drop take away the same record `reflog expire` does. All three are
+# denied at every tier, like the rules they sit beside. The shape of the --config-env rule
+# is the point worth pinning: its `*` touches the option name, so it may be empty and
+# matches `=` as readily as a space. A ` *` — the shape `git -c *` has — requires the
+# space and leaves the `=` spelling open, which the planted check proves.
+echo "[git --config-env and reflog delete/drop]"
+for t in $TIERS; do
+  MISSING="$(python3 -c "
+import json
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+want = ['Bash(git --config-env*)', 'Bash(git reflog delete *)', 'Bash(git reflog drop *)']
+print(' '.join(r for r in want if r not in deny) or 'none')" 2>/dev/null)"
+  assert_eq "none" "$MISSING" "$t denies git --config-env, git reflog delete and git reflog drop"
+done
+for cmd in "git --config-env=core.fsmonitor=X status" "git --config-env core.fsmonitor=X status" \
+           "git --config-env"; do
+  assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "git --config-env*" "$cmd" 2>&1)" \
+    "Bash(git --config-env*) matches \`$cmd\`"
+done
+assert_eq "no" "$(python3 "$WORK/gap_probe.py" --match "git --config-env *" \
+  "git --config-env=core.fsmonitor=X status" 2>&1)" \
+  "planted: the spaced shape Bash(git --config-env *) would leave the = spelling open"
+for verb in "git reflog delete" "git reflog drop"; do
+  assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "$verb *" "$verb" 2>&1)" \
+    "Bash($verb *) denies a bare \`$verb\` by itself, so it needs no twin"
+done
+assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "git reflog delete *" \
+  "git reflog delete --rewrite --updateref HEAD@{1}" 2>&1)" "Bash(git reflog delete *) matches its flagged form"
+assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "git reflog drop *" \
+  "git reflog drop --all --single-worktree" 2>&1)" "Bash(git reflog drop *) matches its flagged form"
+# The reads beside them stay open at every tier, judged against the whole generated deny
+# set rather than the two new rules, so a broader rule added later is caught here too.
+for t in $TIERS; do
+  for cmd in "git reflog" "git reflog show" "git reflog show --date=iso HEAD" "git reflog list" \
+             "git reflog exists refs/heads/main"; do
+    assert_eq "none" "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$t.json" "$cmd" 2>&1)" \
+      "$t leaves \`$cmd\` open (a read)"
+  done
+done
+python3 - "$WORK/gen.relaxed.json" "$WORK/planted-reflog.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s["permissions"]["deny"].append("Bash(git reflog *)")
+json.dump(s, open(sys.argv[2], "w"))
+PY
+assert_eq "Bash(git reflog *)" "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/planted-reflog.json" "git reflog show" 2>&1)" \
+  "planted: a whole-subcommand Bash(git reflog *) would close the reads, and the check names it"
+
+# High fences .git/config and .git/hooks/ from the file tools. Claude Code's sandbox
+# already refuses shell writes there at every tier that runs it, so the gap was the
+# Edit/Write tools: a protected path prompts, goes to auto mode's classifier, and is
+# written unasked under bypassPermissions. Only an Edit deny holds in every mode.
+# Judged as an effective permission on a PATH, with the gitignore anchors the kit emits:
+# `**/x` at any depth under the project, `/x` at its root, `//x` absolute.
+echo "[git config and hooks, High only]"
+cat > "$WORK/edit_deny.py" <<'PY'
+import json, re, sys
+
+def to_regex(pat):
+    out, i = [], 0
+    if pat.startswith("**/"):
+        out.append("(?:.*/)?"); i = 3
+    while i < len(pat):
+        if pat.startswith("/**", i):
+            out.append("(?:/.*)?"); i += 3
+        elif pat.startswith("**", i):
+            out.append(".*"); i += 2
+        elif pat[i] == "\\" and i + 1 < len(pat):
+            out.append(re.escape(pat[i + 1])); i += 2
+        elif pat[i] == "*":
+            out.append("[^/]*"); i += 1
+        elif pat[i] == "?":
+            out.append("[^/]"); i += 1
+        else:
+            out.append(re.escape(pat[i])); i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+def denied(deny, path):
+    """path: project-relative (".git/config") or absolute ("/x/.git/config")."""
+    for rule in deny:
+        if not (rule.startswith("Edit(") and rule.endswith(")")):
+            continue
+        pat = rule[5:-1]
+        if pat.startswith("//"):
+            if path.startswith("/") and to_regex(pat[1:]).match(path):
+                return rule
+        elif pat.startswith("~/"):
+            continue
+        elif pat.startswith("/"):
+            if not path.startswith("/") and to_regex(pat[1:]).match(path):
+                return rule
+        elif not path.startswith("/") and to_regex(pat).match(path):
+            return rule
+    return None
+
+deny = (json.load(open(sys.argv[1])).get("permissions") or {}).get("deny") or []
+want = sys.argv[2]
+bad = [p for p in sys.argv[3:] if (denied(deny, p) is not None) != (want == "denied")]
+print(" ".join(bad) or "none")
+PY
+GIT_FENCED=".git/config .git/hooks .git/hooks/pre-commit .git/hooks/post-checkout vendor/lib/.git/config vendor/lib/.git/hooks/pre-push"
+GIT_INTERNALS=".git/HEAD .git/index .git/refs/heads/main .git/objects/ab/cdef0123 .git/COMMIT_EDITMSG .git/info/exclude .git/packed-refs .git/FETCH_HEAD .git/worktrees/x/HEAD .git/modules/sub/HEAD .gitignore .gitattributes src/config"
+# shellcheck disable=SC2086
+assert_eq "none" "$(python3 "$WORK/edit_deny.py" "$WORK/gen.high.json" denied $GIT_FENCED 2>&1)" \
+  "high denies the file tools every repository's .git/config and .git/hooks/, nested ones included"
+# shellcheck disable=SC2086
+assert_eq "none" "$(python3 "$WORK/edit_deny.py" "$WORK/gen.high.json" open $GIT_INTERNALS 2>&1)" \
+  "high leaves the rest of .git writable: HEAD, index, refs, objects and the commit message"
+for t in off relaxed medium; do
+  # shellcheck disable=SC2086
+  assert_eq "none" "$(python3 "$WORK/edit_deny.py" "$WORK/gen.$t.json" open $GIT_FENCED 2>&1)" \
+    "$t carries none of it (High only)"
+done
+assert_eq "none" "$(python3 -c "
+import json
+deny = (json.load(open('$WORK/gen.high.json')).get('permissions') or {}).get('deny') or []
+print(' '.join(r for r in deny if r.startswith('Edit(//') and '.git/' in r) or 'none')" 2>/dev/null)" \
+  "a project that is its own repository gets no absolute .git rule, so no machine path"
+# Planted holes in both directions: the fence with its hooks rule dropped must show, and
+# a fence widened to the whole of .git — which would refuse every commit — must too.
+python3 - "$WORK/gen.high.json" "$WORK/planted-git.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s["permissions"]["deny"] = [r for r in s["permissions"]["deny"] if r != "Edit(**/.git/hooks/**)"]
+json.dump(s, open(sys.argv[2], "w"))
+PY
+assert_contains "$(python3 "$WORK/edit_deny.py" "$WORK/planted-git.json" denied $GIT_FENCED 2>&1)" \
+  ".git/hooks/pre-commit" "planted: dropping Edit(**/.git/hooks/**) leaves a hook writable, and the check says so"
+python3 - "$WORK/gen.high.json" "$WORK/planted-git.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s["permissions"]["deny"].append("Edit(**/.git/**)")
+json.dump(s, open(sys.argv[2], "w"))
+PY
+assert_contains "$(python3 "$WORK/edit_deny.py" "$WORK/planted-git.json" open $GIT_INTERNALS 2>&1)" \
+  ".git/index" "planted: an Edit(**/.git/**) fence would deny the index, and the check says so"
+
+# A linked worktree's .git is a file; the config and hooks live in the common dir, outside
+# the worktree whether it is a sibling or nested the way Claude Code's own -w worktrees are.
+# High names that dir absolutely, under the same condition git_common_write() grants it,
+# with glob characters escaped. Real git, in throwaway repos under the test's temp dir.
+WT_MAIN="$WORK/wt main[1]"
+WT_SIB="$WORK/wt-sibling"
+WT_OK=1
+{
+  git init -q "$WT_MAIN" &&
+  (cd "$WT_MAIN" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+     GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid \
+     git commit -q --allow-empty -m init) &&
+  (cd "$WT_MAIN" && git worktree add -q -b wt-sibling "$WT_SIB") &&
+  (cd "$WT_MAIN" && git worktree add -q -b wt-inner .claude/worktrees/inner)
+} > "$WORK/wt.log" 2>&1 || WT_OK=0
+TOTAL=$((TOTAL + 1))
+if [ "$WT_OK" -eq 1 ]; then
+  echo "  PASS: built a repository with a sibling and a nested linked worktree"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: could not build the worktree fixture: $(tail -3 "$WORK/wt.log")"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$WT_OK" -eq 1 ]; then
+  COMMON="$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$WT_MAIN/.git")"
+  for wt in "$WT_SIB" "$WT_MAIN/.claude/worktrees/inner"; do
+    WT_LABEL="$(basename "$wt")"
+    mkdir -p "$wt/.claude/bin"
+    cp "$REPO_ROOT/.claude/settings.json" "$SECURITY" "$wt/.claude/"
+    cp "$FIREWALL" "$wt/.claude/bin/firewall.sh"
+    for t in high relaxed medium; do
+      (cd "$wt" && CLAUDE_PROJECT_DIR="$wt" bash .claude/bin/firewall.sh apply "$t") \
+        > "$WORK/wt-apply.log" 2>&1 || true
+      cp "$wt/.claude/settings.json" "$WORK/wt.$t.json"
+    done
+    assert_eq "none" "$(python3 "$WORK/edit_deny.py" "$WORK/wt.high.json" denied \
+      "$COMMON/config" "$COMMON/hooks" "$COMMON/hooks/pre-commit" 2>&1)" \
+      "worktree '$WT_LABEL' at high: the common dir's config and hooks are denied by absolute path"
+    assert_contains "$(python3 -c "
+import json, sys
+deny = (json.load(open(sys.argv[1])).get('permissions') or {}).get('deny') or []
+print(' '.join(r for r in deny if r.startswith('Edit(//')))" "$WORK/wt.high.json" 2>/dev/null)" \
+      'wt main\[1\]/.git/config)' "worktree '$WT_LABEL' at high: brackets in the path are escaped, so the rule names that directory alone"
+    for t in relaxed medium; do
+      assert_eq "none" "$(python3 -c "
+import json, sys
+deny = (json.load(open(sys.argv[1])).get('permissions') or {}).get('deny') or []
+print(' '.join(r for r in deny if '.git/' in r and r.startswith('Edit(')) or 'none')" "$WORK/wt.$t.json" 2>/dev/null)" \
+        "worktree '$WT_LABEL' at $t: no .git Edit rule (High only, even in a worktree)"
+    done
+  done
+  # Planted: the same High file with its absolute rules taken out, which is what the
+  # project-relative rules alone would leave — the common dir's config writable.
+  python3 - "$WORK/wt.high.json" "$WORK/planted-wt.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s["permissions"]["deny"] = [r for r in s["permissions"]["deny"] if not r.startswith("Edit(//")
+                            or ".git/" not in r]
+json.dump(s, open(sys.argv[2], "w"))
+PY
+  assert_contains "$(python3 "$WORK/edit_deny.py" "$WORK/planted-wt.json" denied "$COMMON/config" 2>&1)" \
+    "$COMMON/config" "planted: without the absolute rules a worktree's common config is writable, and the check says so"
+fi
 
 # A git alias is the third evasion of that family and the only one that outlives the
 # command that created it: `git config alias.z '!git clean -fdx'` is an ordinary config

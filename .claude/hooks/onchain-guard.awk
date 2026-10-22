@@ -17,8 +17,8 @@
 # is not prose.
 #
 # So this file takes from the library only what it can take identically — base(),
-# is_wrapper(), is_shell(), split_cmd() and tokenize() for heredoc heads — and
-# keeps its own pass.  Rewriting it onto
+# is_wrapper(), is_shell(), kit_wrapper_optarg(), split_cmd() and tokenize() for
+# heredoc heads — and keeps its own pass.  Rewriting it onto
 # split_cmd is a behaviour change to the mainnet gate and belongs in its own
 # change, with its own test corpus, not in a refactor.
 
@@ -36,16 +36,9 @@ function kit_heredoc_is_code(b) { return is_shell(b) }
 # deploy --url mainnet-beta"` made the gate silent before.
 function wrapper(b) { return (is_wrapper(b) || is_shell(b) || b == "ash") }
 
-# Options of those wrappers that swallow the next word, so the word is not
-# mistaken for the command: env -u HOME, xargs -I {}, nice -n 5, sudo -u me.
-function optarg(b, f) {
-  return (b == "env" && f ~ /^(-u|-C|--unset|--chdir)$/) \
-      || (b == "xargs" && f ~ /^(-I|-L|-n|-P|-s|-d|-E|-a|-J|-R|-S)$/) \
-      || ((b == "sudo" || b == "doas") && f ~ /^-[ugphCDrtTU]$/) \
-      || (b == "nice" && f == "-n") || (b == "timeout" && f ~ /^-[sk]$/) \
-      || (b == "stdbuf" && f ~ /^-[ioe]$/) || (b == "exec" && f == "-a") \
-      || (b == "time" && f ~ /^-[fo]$/)
-}
+# The options of those wrappers that swallow the next word (env -u HOME,
+# xargs -I {}, nice -n 5, sudo -u me) are the library's kit_wrapper_optarg, the
+# table this file carried first and lib-tokenize.awk now shares with the git gates.
 function strip(st,   n, A, i, j, w, b, cur, hadw, keep, out) {
   n = split(st, A, /[ \t\r]+/)
   i = 1
@@ -62,7 +55,7 @@ function strip(st,   n, A, i, j, w, b, cur, hadw, keep, out) {
     while (i <= n) {
       if (A[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { keep = keep A[i] " "; i++; continue }
       if (A[i] == "--") { i++; break }
-      if (A[i] ~ /^[-+]/) { if (optarg(cur, A[i]) && i < n) i++; i++; continue }
+      if (A[i] ~ /^[-+]/) { if (kit_wrapper_optarg(cur, A[i]) && i < n) i++; i++; continue }
       if (cur == "timeout" && A[i] ~ /^[0-9]/) { i++; continue }
       break
     }
