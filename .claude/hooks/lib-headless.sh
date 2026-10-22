@@ -379,8 +379,9 @@ kit_gate() {
 
 # kit_vault_re — the never-allowed set: credential stores, key material,
 # wallet vaults, browser profiles, shell history.  Identical at every tier.
-# Deliberately NOT included: project .env and project keypairs (readable at
-# every tier per spec 3.2), ~/.config/solana/cli/config.yml (3.3), and the
+# Deliberately NOT included: project .env (readable below High, whose Read rules
+# cover it), project keypairs (readable at every tier per spec 3.2),
+# ~/.config/solana/cli/config.yml (3.3), and the
 # persistence / exec-on-next-build files (~/.zshenv, ~/.gitconfig,
 # ~/.cargo/config.toml, LaunchAgents) — those are permissions-deny +
 # sandbox.denyWrite entries, not read blocks.

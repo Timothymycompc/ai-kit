@@ -8,7 +8,7 @@ Turn a fork or clone of the solana-ai-kit repo into a working project: install t
 ## Steps
 
 1. **CLAUDE.md.** If it is missing, or is the maintainer version (contains "Meta Configuration"), copy `CLAUDE-solana.md` to `CLAUDE.md`, create a starter `CLAUDE.local.md` for private notes if absent, and add `CLAUDE.local.md` to `.gitignore`. Leave an existing project `CLAUDE.md` alone.
-2. **.env.** Leave it alone — don't read it, don't create it. `.env.example` is on the keep list, so print `cp .env.example .env` in the step 5 summary and point the user at `/setup-mcp` to fill it. The firewall gates `.env` reads at Medium and High, and nothing here needs its contents.
+2. **.env.** Leave it alone — don't read it, don't create it. `.env.example` is on the keep list, so print `cp .env.example .env` in the step 5 summary and point the user at `/setup-mcp` to fill it. safe-ai-skill and the High tier deny reading it, and nothing here needs its contents.
 3. **Plan the removals**, each only if present (a missing path is not an error):
    - Maintenance: `install.sh`, `validate.sh`, `tests/`, `CLAUDE-solana.md`, `QUICK-START.md`, `README.md` (the kit's; the user writes their own), `docs/` and `FIREWALL-SPEC.md` (the kit's own documentation), `.claude/CHANGELOG.md` (the kit's changelog), `.github/workflows/ci.yml`, `.github/workflows/claude-code-review.yml` (its prompt reviews the kit itself; keep `.github/templates/claude-code.yml`)
    - Distribution infra, only needed to publish the kit: `.claude-plugin/` (plugin marketplace manifest), `plugin/` (symlinked plugin subtree), `vercel.json` (install-endpoint redirect)

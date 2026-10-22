@@ -1071,19 +1071,42 @@ if [ -f "$GITIGNORE" ] && awk -v f="$INSTR_FILE" '
 fi
 
 # safe-ai-skill project policy (Claude Code installs only; its hooks don't run under
-# --agents): add it when missing, never overwrite it, and gitignore it with the kit
-# config while that block is present.
+# --agents): add it when missing, refresh it while it is still a copy the kit shipped,
+# and gitignore it with the kit config while that block is present. An edited policy is
+# the user's and is left alone, and so is a link: it points somewhere this project does
+# not own, so /update never writes through one, not even to create the file.
 POLICY=".safe-ai-skill/policy.yaml"
 POLICY_SRC="$TEMP_DIR/repo/$POLICY"
 [ -f "$POLICY_SRC" ] || POLICY_SRC="${LOCAL_SRC:+$LOCAL_SRC/$POLICY}"
 if [ "$CONFIG_NAME" = ".claude" ] && [ -n "$POLICY_SRC" ] && [ -f "$POLICY_SRC" ]; then
-  if [ ! -f "$TARGET_DIR/$POLICY" ]; then
+  if [ -L "$TARGET_DIR/$POLICY" ] || [ -L "$TARGET_DIR/.safe-ai-skill" ]; then
+    cmp -s "$POLICY_SRC" "$TARGET_DIR/$POLICY" \
+      || CHANGES="$CHANGES  [notice] $POLICY or its directory is a link, so it was left alone: /update never writes through one\n"
+  elif [ ! -f "$TARGET_DIR/$POLICY" ]; then
     if [ "$DRY_RUN" = true ]; then
       CHANGES="$CHANGES  [would create] $POLICY\n"
     else
       mkdir -p "$TARGET_DIR/.safe-ai-skill" && cp "$POLICY_SRC" "$TARGET_DIR/$POLICY"
       CHANGES="$CHANGES  [created] $POLICY\n"
     fi
+  elif ! cmp -s "$POLICY_SRC" "$TARGET_DIR/$POLICY"; then
+    # Git blob ids, CRs stripped, of every earlier version of the policy in the kit's
+    # history, PR branches included. A match is still kit-owned, so it takes this
+    # version. tests/test_safe_ai_skill_policy.sh fails when a version is missing here.
+    SHIPPED_POLICY_BLOBS="190fceae262b77cd0429aa9132c204149ecc3475 636f1003bb0228e11136f8d78c284d8ce3181eec d6d72c40dc66d94aa9c6e2178c6fea35bedf49e7"
+    pblob="$(tr -d '\r' < "$TARGET_DIR/$POLICY" | git hash-object --stdin 2>/dev/null)" || pblob=""
+    case " $SHIPPED_POLICY_BLOBS " in
+      *" ${pblob:-none} "*)
+        if [ "$DRY_RUN" = true ]; then
+          CHANGES="$CHANGES  [would update] $POLICY (unedited copy, refreshed to this version)\n"
+        else
+          cp "$POLICY_SRC" "$TARGET_DIR/$POLICY"
+          CHANGES="$CHANGES  [updated] $POLICY (unedited copy, refreshed to this version)\n"
+        fi ;;
+      *)
+        grep -qF '**/.env.schema' "$TARGET_DIR/$POLICY" \
+          || CHANGES="$CHANGES  [notice] $POLICY was edited, so it was kept. It does not let safe-ai-skill read varlock's .env.schema, which holds key names and never values: add \"**/.env.schema\" to secrets.allow_read_globs\n" ;;
+    esac
   fi
   if [ -f "$GITIGNORE" ] && grep -qF ">>> solana-ai-kit config" "$GITIGNORE" \
     && ! sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$GITIGNORE" | tr -d '\r' | grep -qxF ".safe-ai-skill/"; then

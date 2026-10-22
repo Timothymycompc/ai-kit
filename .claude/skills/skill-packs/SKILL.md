@@ -63,7 +63,7 @@ The registry holds more entries than this table: watchlist items, archived repos
 
 ## Packs that need a key
 
-Name the key when offering the pack, and check whether it is set with `bash .claude/bin/env-keys.sh`, which prints one `KEY set|empty` line and never a value. Reading `.env` is denied at the Medium and High firewall tiers, and a value read into the transcript has already left the machine.
+Name the key when offering the pack, and check whether it is set with `bash .claude/bin/env-keys.sh`, which prints one `KEY set|empty` line and never a value. Reading `.env` is denied by safe-ai-skill and at the High firewall tier, and a value read into the transcript has already left the machine.
 
 - `qedgen` — `MISTRAL_API_KEY` for fill-sorry and generate, `ARISTOTLE_API_KEY` for the aristotle commands. Without either, its Lean references still read but nothing generates, so the pack is worth installing only alongside a key.
 - `alchemy` — `ALCHEMY_API_KEY` for the alchemy-api skill; its agentic-gateway skill is keyless (x402), so the pack still earns its place without a key

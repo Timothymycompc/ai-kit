@@ -562,7 +562,9 @@ assert_eq "Bash(gh api *)@medium,high" "$BASH_VARY" \
 # varying here without this test being updated on purpose.
 VARY_KIND="$(python3 -c "
 import json
-ALLOWED = {'Bash(gh api *)'}
+ALLOWED = {'Bash(gh api *)'} | {'Read(%s)' % f for f in (
+    '**/.env', '**/.env.local', '**/.env.*.local', '**/.env.development',
+    '**/.env.production', '**/.env.staging', '**/.env.test')}
 sets = {}
 for t in '$TIERS'.split():
     deny = (json.load(open('$WORK/gen.%s.json' % t)).get('permissions') or {}).get('deny') or []
@@ -576,7 +578,22 @@ bad = sorted(r for r in varying
              if not (r.startswith('mcp__') or r.startswith('Edit(') or r in ALLOWED))
 print(' '.join(bad) or 'none')" 2>/dev/null)"
 assert_eq "none" "$VARY_KIND" \
-  "only MCP tool-name denies, High's Edit denies and the one named Bash rule vary by tier"
+  "only MCP tool-name denies, Edit denies, High's dotenv Read denies and the one named Bash rule vary by tier"
+
+# The project's dotenv files follow the tier: writes denied at Medium alone, reads at
+# High alone, nothing at Off or Relaxed. .env.example and varlock's .env.schema carry no
+# values and are never named, at any tier.
+ENV_TIERS="$(python3 -c "
+import json
+out = []
+for t in '$TIERS'.split():
+    deny = set((json.load(open('$WORK/gen.%s.json' % t)).get('permissions') or {}).get('deny') or [])
+    out.append('%s:%s%s' % (t, 'W' if 'Edit(**/.env)' in deny else '-', 'R' if 'Read(**/.env)' in deny else '-'))
+    if any(('.env.example' in r or '.env.schema' in r) for r in deny):
+        out.append('%s:names-example-or-schema' % t)
+print(' '.join(out))" 2>/dev/null)"
+assert_eq "off:-- relaxed:-- medium:W- high:-R" "$ENV_TIERS" \
+  "dotenv files: writes denied at Medium, reads at High, open at Off and Relaxed; .env.example and .env.schema never denied"
 
 # The unconditional group, by exact rule, at every tier. Each is here because it is not
 # "customizing your installation": a nested `claude -p --dangerously-skip-permissions`

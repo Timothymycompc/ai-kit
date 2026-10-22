@@ -1,5 +1,6 @@
 # safe-ai-skill project policy, deep-merged over the plugin's default policy.
-# install.sh writes it once and /update adds it only when missing: edit freely.
+# install.sh writes it, and /update adds it when missing and refreshes it only while
+# it is still a copy the kit shipped. Once you edit it, it is yours: edit freely.
 #
 # A list replaces the default instead of merging, so the session-start skill check
 # covers this project's .claude/skills and no longer sweeps your personal
@@ -9,8 +10,10 @@
 supply_chain:
   verify_skills_dirs: [".claude/skills"]
 
-# The default denies reads of **/.env.*, which covers varlock's .env.schema: key
-# names and which are secret, never values. An allow glob wins over a deny, and this
-# list replaces the default's, so .env.example is listed again. .env stays denied.
+# The default denies reads of **/.env and **/.env.*, which covers varlock's
+# .env.schema: key names and which are secret, never values. An allow glob wins over a
+# deny, and this list replaces the default's, so .env.example is listed again. Keep .env
+# and its variants out of it: an allow glob matches that name anywhere on the machine,
+# so it would open other projects' .env files and your home directory's as well.
 secrets:
   allow_read_globs: ["**/.env.example", "**/.env.schema"]
