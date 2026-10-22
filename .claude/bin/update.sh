@@ -1071,8 +1071,9 @@ if [ -f "$GITIGNORE" ] && awk -v f="$INSTR_FILE" '
 fi
 
 # safe-ai-skill project policy (Claude Code installs only; its hooks don't run under
-# --agents): add it when missing, never overwrite it, and gitignore it with the kit
-# config while that block is present.
+# --agents): add it when missing, refresh it while it is still a copy the kit shipped,
+# and gitignore it with the kit config while that block is present. An edited policy is
+# the user's and is left alone.
 POLICY=".safe-ai-skill/policy.yaml"
 POLICY_SRC="$TEMP_DIR/repo/$POLICY"
 [ -f "$POLICY_SRC" ] || POLICY_SRC="${LOCAL_SRC:+$LOCAL_SRC/$POLICY}"
@@ -1084,6 +1085,28 @@ if [ "$CONFIG_NAME" = ".claude" ] && [ -n "$POLICY_SRC" ] && [ -f "$POLICY_SRC" 
       mkdir -p "$TARGET_DIR/.safe-ai-skill" && cp "$POLICY_SRC" "$TARGET_DIR/$POLICY"
       CHANGES="$CHANGES  [created] $POLICY\n"
     fi
+  elif ! cmp -s "$POLICY_SRC" "$TARGET_DIR/$POLICY"; then
+    # Git blob ids, CRs stripped, of every version of the policy the kit shipped before
+    # this one. A match is still kit-owned, so it takes the new version: how rule set 8's
+    # dotenv allows, which hand the tier decision on .env to the kit, reach existing
+    # installs.
+    SHIPPED_POLICY_BLOBS="190fceae262b77cd0429aa9132c204149ecc3475 636f1003bb0228e11136f8d78c284d8ce3181eec"
+    pblob="$(tr -d '\r' < "$TARGET_DIR/$POLICY" | git hash-object --stdin 2>/dev/null)" || pblob=""
+    case " $SHIPPED_POLICY_BLOBS " in
+      *" ${pblob:-none} "*)
+        if [ "$DRY_RUN" = true ]; then
+          CHANGES="$CHANGES  [would update] $POLICY (unedited copy, refreshed to this version)\n"
+        else
+          cp "$POLICY_SRC" "$TARGET_DIR/$POLICY"
+          CHANGES="$CHANGES  [updated] $POLICY (unedited copy, refreshed to this version)\n"
+        fi
+        ;;
+      *)
+        if ! grep -qF '**/.env.local' "$TARGET_DIR/$POLICY"; then
+          CHANGES="$CHANGES  [notice] $POLICY was edited, so it was kept. safe-ai-skill still denies reading the project's .env at every tier there; to let the firewall tier decide, add the dotenv files to secrets.allow_read_globs as the kit's copy does\n"
+        fi
+        ;;
+    esac
   fi
   if [ -f "$GITIGNORE" ] && grep -qF ">>> solana-ai-kit config" "$GITIGNORE" \
     && ! sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$GITIGNORE" | tr -d '\r' | grep -qxF ".safe-ai-skill/"; then

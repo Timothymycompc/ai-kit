@@ -39,8 +39,19 @@ if [ "$status" -eq 2 ]; then
   echo "  SKIP: no YAML parser (ruby or python3 with PyYAML) to parse $POLICY"
 else
   assert_eq "0" "$status" "$POLICY parses as YAML"
-  assert_eq "True" "$(printf '%s' "$JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin) == {"supply_chain": {"verify_skills_dirs": [".claude/skills"]}, "secrets": {"allow_read_globs": ["**/.env.example", "**/.env.schema"]}})')" \
+  assert_eq "True" "$(printf '%s' "$JSON" | python3 -c 'import json, sys; d = json.load(sys.stdin); print(sorted(d) == ["secrets", "supply_chain"] and d["supply_chain"] == {"verify_skills_dirs": [".claude/skills"]} and sorted(d["secrets"]) == ["allow_read_globs"])')" \
     "It sets only supply_chain.verify_skills_dirs, to [.claude/skills], and secrets.allow_read_globs"
+  # The dotenv allows hand the .env decision to the firewall tier, so they must name
+  # exactly the files firewall.sh's DENY_ENV_WRITE and DENY_ENV_READ name: a file allowed
+  # here but missing there would be readable even at High.
+  SYNC="$(printf '%s' "$JSON" | REPO_ROOT="$REPO_ROOT" python3 -c '
+import json, os, re, sys
+allow = json.load(sys.stdin)["secrets"]["allow_read_globs"]
+src = open(os.path.join(os.environ["REPO_ROOT"], ".claude/bin/firewall.sh")).read()
+env_files = re.findall(r"\"([^\"]+)\"", re.search(r"ENV_FILES = \[(.*?)\]", src, re.S).group(1))
+dotenv = [a for a in allow if a not in ("**/.env.example", "**/.env.schema")]
+print("in-sync" if dotenv == env_files else "allow=%s fw=%s" % (dotenv, env_files))')"
+  assert_eq "in-sync" "$SYNC" "the dotenv allows name exactly firewall.sh's ENV_FILES, in order"
   # The default's deny_read_globs has **/.env.*, which matches .env.schema; an allow glob
   # wins over it. A list replaces the default's instead of merging, so .env.example has to
   # be restated or the override would make it unreadable.
@@ -88,7 +99,21 @@ assert_eq "" "$(diff "$REPO_ROOT/$POLICY" "$P4/$POLICY" 2>&1 || true)" "...as a 
 assert_contains "$(config_block "$P4")" ".safe-ai-skill/" "...and gitignores it with the kit config"
 printf 'supply_chain:\n  verify_skills_dirs: []\n' > "$P4/$POLICY"
 OUT="$(update_kit "$P4")"
-assert_file_contains "$P4/$POLICY" "verify_skills_dirs: []" "update.sh keeps an existing policy"
-assert_eq "" "$(printf '%s\n' "$OUT" | grep -F "$POLICY" || true)" "...and does not mention it"
+assert_file_contains "$P4/$POLICY" "verify_skills_dirs: []" "update.sh keeps an edited policy"
+assert_contains "$OUT" "[notice] $POLICY was edited, so it was kept" "...and says safe-ai-skill still denies .env there"
+# An unedited copy of a version the kit shipped earlier is still kit-owned, so /update
+# refreshes it: how the dotenv allows reach existing installs. Needs the old blob.
+if OLD_POLICY="$(git -C "$REPO_ROOT" cat-file -p 636f1003bb0228e11136f8d78c284d8ce3181eec 2>/dev/null)"; then
+  printf '%s\n' "$OLD_POLICY" > "$P4/$POLICY"
+  DRY="$(update_kit "$P4" --dry-run)"
+  assert_contains "$DRY" "[would update] $POLICY (unedited copy" "update.sh --dry-run reports refreshing an unedited old policy"
+  OUT="$(update_kit "$P4")"
+  assert_contains "$OUT" "[updated] $POLICY (unedited copy" "update.sh refreshes an unedited old policy"
+  assert_eq "" "$(diff "$REPO_ROOT/$POLICY" "$P4/$POLICY" 2>&1 || true)" "...to the kit's current template"
+  OUT="$(update_kit "$P4")"
+  assert_eq "" "$(printf '%s\n' "$OUT" | grep -F "$POLICY" || true)" "...and a current copy is not mentioned again"
+else
+  echo "  SKIP: the old-policy refresh needs the kit's git history (shallow clone)"
+fi
 
 print_summary

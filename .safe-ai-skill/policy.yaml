@@ -1,5 +1,6 @@
 # safe-ai-skill project policy, deep-merged over the plugin's default policy.
-# install.sh writes it once and /update adds it only when missing: edit freely.
+# install.sh writes it, and /update refreshes it only while it is still a copy the kit
+# shipped; once you edit it, it is yours and /update leaves it alone.
 #
 # A list replaces the default instead of merging, so the session-start skill check
 # covers this project's .claude/skills and no longer sweeps your personal
@@ -9,8 +10,12 @@
 supply_chain:
   verify_skills_dirs: [".claude/skills"]
 
-# The default denies reads of **/.env.*, which covers varlock's .env.schema: key
-# names and which are secret, never values. An allow glob wins over a deny, and this
-# list replaces the default's, so .env.example is listed again. .env stays denied.
+# The default denies reads of **/.env and **/.env.* at every profile. solana-ai-kit's
+# firewall decides the project's dotenv files by tier instead: open at Off and Relaxed,
+# writes denied at Medium, reads denied at High (its DENY_ENV_WRITE and DENY_ENV_READ).
+# So the files those rules name are allowed here, and the tier rules carry the
+# decision. .env.example and varlock's .env.schema carry no values. An allow glob wins
+# over a deny, and this list replaces the default's, so every entry is listed. Other
+# .env.* names and all key material stay denied by the default.
 secrets:
-  allow_read_globs: ["**/.env.example", "**/.env.schema"]
+  allow_read_globs: ["**/.env.example", "**/.env.schema", "**/.env", "**/.env.local", "**/.env.*.local", "**/.env.development", "**/.env.production", "**/.env.staging", "**/.env.test"]
