@@ -246,52 +246,106 @@ print(' '.join(sorted(set(p.get('ask') or []) & set(p.get('deny') or []))) or 'n
   assert_eq "none" "$OVERLAP" "$t: no pattern sits in both permissions.deny and permissions.ask"
 done
 
-# ── every two-wildcard rule has a zero-gap twin ─────────────────────────────
-# A mid-pattern * does not match an empty string: Bash(anchor * --final*) did not stop
-# `anchor --final`, and Bash(git push * -f *) did not stop `git push origin -f`.
-echo "[zero-gap twins]"
-for t in $TIERS; do
-  GAPS="$(python3 -c "
-import fnmatch, json, re, sys
+# ── every wildcard holds with its gap empty, by Claude Code's matcher ───────
+# A `*` with a space on both sides cannot be empty once spaces collapse: Bash(anchor *
+# --final*) did not stop `anchor --final`, and Bash(git push * -f *) did not stop
+# `git push origin -f`. A trailing ` *` that is the rule's ONLY wildcard is the exception
+# — optional, so Bash(git prune *) does deny a bare `git prune`. fnmatch models neither
+# fact, so this is a port of the matcher (code.claude.com/docs/en/permissions), pinned to
+# the documented examples, and every rule is probed with every mix of empty and filled
+# gaps. validate.sh carries the same port for its own run; the examples keep both honest.
+echo "[empty gaps]"
+cat > "$WORK/gap_probe.py" <<'PY'
+import itertools, json, re, sys
 
-def inner(rule):
-    return rule[5:-1] if rule.startswith('Bash(') and rule.endswith(')') else None
+def ws(s):
+    return re.sub(r"[ \t]+", " ", s)
 
-def zero_gap(pat):
-    'every spelling of pat with one mid-pattern * collapsed away'
-    out = []
-    for i, ch in enumerate(pat):
-        if ch != '*' or i == 0 or i == len(pat) - 1:
+def matches(rule, cmd):
+    m = re.fullmatch(r"(.+):\*", rule)
+    if m:
+        return ws(cmd) == ws(m.group(1)) or ws(cmd).startswith(ws(m.group(1)) + " ")
+    if "*" not in rule:
+        return rule == cmd
+    pat = ws(rule.strip())
+    rx = re.sub(r"""[.+?^${}()|\[\]\\'"]""", lambda s: "\\" + s.group(0), pat).replace("*", ".*")
+    if rx.endswith(" .*") and pat.count("*") == 1:
+        rx = rx[:-3] + "( .*)?"
+    return re.fullmatch(rx, ws(cmd), re.S) is not None
+
+def probes(pat):
+    stars = [i for i, ch in enumerate(pat) if ch == "*"]
+    for empty in itertools.product((False, True), repeat=len(stars)):
+        if not any(empty):
             continue
-        cand = re.sub(r' +', ' ', pat[:i] + pat[i + 1:]).strip()
-        if cand and cand != pat:
-            out.append(cand)
-    return out
+        out, last = "", 0
+        for i, gap_empty in zip(stars, empty):
+            out += pat[last:i] + ("" if gap_empty else "ZZZ")
+            last = i + 1
+        cmd = re.sub(r" +", " ", out + pat[last:]).strip()
+        if cmd:
+            yield cmd
 
-def probe(pat):
-    'the shortest command the pattern describes: trailing * -> empty, mid * -> a token'
-    p = pat[:-1] if pat.endswith('*') else pat
-    return re.sub(r' +', ' ', p.replace('*', 'ZZZ')).strip()
+if sys.argv[1] == "--match":
+    print("yes" if matches(sys.argv[2], sys.argv[3]) else "no")
+    sys.exit(0)
+if sys.argv[1] == "--documented":
+    DOCUMENTED = [("ls *", "ls", True), ("ls *", "lsof", False), ("ls*", "lsof", True),
+                  ("npm run *", "npm run", True), ("git log * main", "git log main", False),
+                  ("git * main", "git log", False), ("* --version", "node --version", True),
+                  ("* --help *", "npm --help x", True), ("* --help *", "npm --help", False),
+                  ("ls:*", "ls", True), ("npm run build", "npm run build --watch", False)]
+    bad = ["Bash(%s) on %r" % (r, c) for r, c, want in DOCUMENTED if matches(r, c) != want]
+    print("; ".join(bad) or "none")
+    sys.exit(0)
 
+perms = json.load(open(sys.argv[1])).get("permissions") or {}
 bad = []
-perms = json.load(open('$WORK/gen.$t.json')).get('permissions') or {}
-for key in ('deny', 'ask'):
-    rules = perms.get(key) or []
-    pats = [inner(r) for r in rules]
-    pats = [p for p in pats if p]
-    have = set(pats)
+for key in ("deny", "ask"):
+    pats = [r[5:-1] for r in perms.get(key) or []
+            if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
     for pat in pats:
-        if pat.count('*') < 2:
+        if "\\" in pat or "**" in pat:
+            bad.append("%s:Bash(%s) is unmodelled" % (key, pat))
             continue
-        for twin in zero_gap(pat):
-            if twin in have:
-                continue
-            cmd = probe(twin)
-            if any(fnmatch.fnmatchcase(cmd, other) for other in pats if other != pat):
-                continue
-            bad.append(f'{key}:{pat} -> missing Bash({twin})')
-print('; '.join(sorted(set(bad))[:6]) or 'none')" 2>/dev/null)"
-  assert_eq "none" "$GAPS" "$t: every two-wildcard rule has a zero-gap twin (or another rule covers it)"
+        for cmd in probes(pat):
+            if not any(matches(o, cmd) for o in pats):
+                bad.append("%s:Bash(%s) misses %r" % (key, pat, cmd))
+print("; ".join(sorted(set(bad))[:6]) or "none")
+PY
+assert_eq "none" "$(python3 "$WORK/gap_probe.py" --documented 2>&1)" \
+  "the matcher port agrees with every documented example (ls *, git log * main, * --help *, ...)"
+for t in $TIERS; do
+  assert_eq "none" "$(python3 "$WORK/gap_probe.py" "$WORK/gen.$t.json" 2>&1)" \
+    "$t: every Bash deny wildcard holds with its gap empty (or another rule covers it)"
+done
+# Planted holes, one per shape; the check this replaced could see only the first. The
+# rule set above is clean, so a probe that only ever said "none" would pass it too —
+# these have to fail.
+plant() { # plant <label> <expected substring> <add-rule|-> <drop-rule|->
+  python3 - "$WORK/gen.relaxed.json" "$WORK/planted.json" "$3" "$4" <<'PY'
+import json, sys
+src, dst, add, drop = sys.argv[1:5]
+s = json.load(open(src))
+deny = [r for r in s["permissions"]["deny"] if r != drop]
+if add != "-":
+    deny.append(add)
+s["permissions"]["deny"] = deny
+json.dump(s, open(dst, "w"))
+PY
+  assert_contains "$(python3 "$WORK/gap_probe.py" "$WORK/planted.json" 2>&1)" "$2" "planted: $1"
+}
+plant "a mid gap, the twin dropped (Bash(anchor * --final*))" "misses 'anchor --final'" \
+  - "Bash(anchor --final*)"
+plant "a trailing gap in a two-wildcard rule, mid twin present" "misses 'git push ZZZ --force'" \
+  "Bash(git push * --force *)" -
+plant "a spaced mid * in a one-wildcard rule" "misses 'git log main'" "Bash(git log * main)" -
+plant "a leading spaced *" "misses '--nuke'" "Bash(* --nuke)" -
+# ...and the fact that lets a one-wildcard Bash(X *) stand without a Bash(X) twin: the
+# rule itself decides the bare command. Read with fnmatch, all four of these look open.
+for verb in "git prune" "git clean" "git restore" "git reflog expire"; do
+  assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "$verb *" "$verb" 2>&1)" \
+    "Bash($verb *) denies a bare \`$verb\` by itself"
 done
 
 # ── Relaxed emits no permissions.ask at all ─────────────────────────────────
@@ -673,8 +727,9 @@ done
 # subcommand-classifying hook has a verb to match. Two rules carry it, so this asserts
 # the SHAPE in both directions -- every alias-setting spelling denied, and ordinary
 # `git config` keys left alone, which is the whole reason `git config` is not denied
-# outright. fnmatch's * matches the empty string where Claude Code's mid-pattern * does
-# not, so the denied cases below are all chosen to leave a non-empty gap.
+# outright. fnmatch is not Claude Code's matcher — it neither collapses spaces nor treats
+# a sole trailing ` *` as optional (see [empty gaps] above) — so the denied cases below
+# are all chosen to leave a non-empty gap, where the two agree.
 echo "[git config aliases]"
 for t in $TIERS; do
   CFG="$(python3 -c "

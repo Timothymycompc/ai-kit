@@ -18,7 +18,7 @@ Optional packs this work often wants, when the project has not installed them: `
 
 ## Anchor 1.x details older habits get wrong
 
-- `CpiContext::new` and `new_with_signer` take the program `Pubkey` (`ctx.accounts.token_program.key()`), not an `AccountInfo`.
+- `CpiContext::new` and `new_with_signer` take the program `Pubkey` (`ctx.accounts.token_program.key()`), not an `AccountInfo`. anchor-lang.com's CPI page still builds it with `.to_account_info()`, which no longer compiles; trust the compiler over that page.
 - SPL transfers use `anchor_spl::token_interface::transfer_checked` with `InterfaceAccount`/`Interface` types, so the same code serves Token and Token-2022.
 - Account space is `T::DISCRIMINATOR.len() + T::INIT_SPACE` with `#[derive(InitSpace)]`.
 - Every `#[error_code]` enum starts at 6000, so a second enum needs its own `#[error_code(offset = N)]` range or its codes collide with the first. Duplicate mutable accounts are rejected unless marked `dup`.

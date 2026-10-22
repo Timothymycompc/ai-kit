@@ -42,11 +42,11 @@
 # is in that file's own header.
 #
 # And the destructive git subcommands — clean, restore, checkout -- <path>,
-# reset --hard, reflog expire, push --mirror, and the transport overrides —
-# when they are reached behind a git-LEVEL option, where every deny rule is
-# anchored on the bare subcommand and therefore cannot see them.  That pass
-# (GITDESTRUCT) mirrors the rules and changes no tier's policy: it fires only on
-# the prefixed spelling.  Same file, same header.
+# reset --hard, reflog expire, prune, push --mirror, and the transport
+# overrides — when they are reached behind a git-LEVEL option, where every deny
+# rule is anchored on the bare subcommand and therefore cannot see them.  That
+# pass (GITDESTRUCT) mirrors the rules and changes no tier's policy: it fires
+# only on the prefixed spelling, bare form included.  Same file, same header.
 #
 # stdin: PreToolUse JSON.  Exit 0 = silent, exit 2 = blocked, stdout JSON = ask.
 
