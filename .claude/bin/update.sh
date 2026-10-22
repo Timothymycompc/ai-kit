@@ -1092,21 +1092,20 @@ if [ "$CONFIG_NAME" = ".claude" ] && [ -n "$POLICY_SRC" ] && [ -f "$POLICY_SRC" 
     # installs.
     SHIPPED_POLICY_BLOBS="190fceae262b77cd0429aa9132c204149ecc3475 636f1003bb0228e11136f8d78c284d8ce3181eec"
     pblob="$(tr -d '\r' < "$TARGET_DIR/$POLICY" | git hash-object --stdin 2>/dev/null)" || pblob=""
-    case " $SHIPPED_POLICY_BLOBS " in
-      *" ${pblob:-none} "*)
-        if [ "$DRY_RUN" = true ]; then
-          CHANGES="$CHANGES  [would update] $POLICY (unedited copy, refreshed to this version)\n"
-        else
-          cp "$POLICY_SRC" "$TARGET_DIR/$POLICY"
-          CHANGES="$CHANGES  [updated] $POLICY (unedited copy, refreshed to this version)\n"
-        fi
-        ;;
-      *)
-        if ! grep -qF '**/.env.local' "$TARGET_DIR/$POLICY"; then
-          CHANGES="$CHANGES  [notice] $POLICY was edited, so it was kept. safe-ai-skill still denies reading the project's .env at every tier there; to let the firewall tier decide, add the dotenv files to secrets.allow_read_globs as the kit's copy does\n"
-        fi
-        ;;
-    esac
+    PINNED_COPY=false
+    case " $SHIPPED_POLICY_BLOBS " in *" ${pblob:-none} "*) PINNED_COPY=true ;; esac
+    # Never write through a link: a symlinked policy, or a symlinked .safe-ai-skill/,
+    # points somewhere this project does not own, so it is kept like an edited one.
+    if [ "$PINNED_COPY" = true ] && [ ! -L "$TARGET_DIR/$POLICY" ] && [ ! -L "$TARGET_DIR/.safe-ai-skill" ]; then
+      if [ "$DRY_RUN" = true ]; then
+        CHANGES="$CHANGES  [would update] $POLICY (unedited copy, refreshed to this version)\n"
+      else
+        cp "$POLICY_SRC" "$TARGET_DIR/$POLICY"
+        CHANGES="$CHANGES  [updated] $POLICY (unedited copy, refreshed to this version)\n"
+      fi
+    elif ! grep -qF '**/.env.local' "$TARGET_DIR/$POLICY"; then
+      CHANGES="$CHANGES  [notice] $POLICY was edited or is a link, so it was kept. safe-ai-skill still denies reading the project's .env at every tier there; to let the firewall tier decide, add the dotenv files to secrets.allow_read_globs as the kit's copy does\n"
+    fi
   fi
   if [ -f "$GITIGNORE" ] && grep -qF ">>> solana-ai-kit config" "$GITIGNORE" \
     && ! sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$GITIGNORE" | tr -d '\r' | grep -qxF ".safe-ai-skill/"; then

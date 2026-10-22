@@ -100,7 +100,7 @@ assert_contains "$(config_block "$P4")" ".safe-ai-skill/" "...and gitignores it 
 printf 'supply_chain:\n  verify_skills_dirs: []\n' > "$P4/$POLICY"
 OUT="$(update_kit "$P4")"
 assert_file_contains "$P4/$POLICY" "verify_skills_dirs: []" "update.sh keeps an edited policy"
-assert_contains "$OUT" "[notice] $POLICY was edited, so it was kept" "...and says safe-ai-skill still denies .env there"
+assert_contains "$OUT" "[notice] $POLICY was edited or is a link, so it was kept" "...and says safe-ai-skill still denies .env there"
 # An unedited copy of a version the kit shipped earlier is still kit-owned, so /update
 # refreshes it: how the dotenv allows reach existing installs. Needs the old blob.
 if OLD_POLICY="$(git -C "$REPO_ROOT" cat-file -p 636f1003bb0228e11136f8d78c284d8ce3181eec 2>/dev/null)"; then
@@ -112,6 +112,15 @@ if OLD_POLICY="$(git -C "$REPO_ROOT" cat-file -p 636f1003bb0228e11136f8d78c284d8
   assert_eq "" "$(diff "$REPO_ROOT/$POLICY" "$P4/$POLICY" 2>&1 || true)" "...to the kit's current template"
   OUT="$(update_kit "$P4")"
   assert_eq "" "$(printf '%s\n' "$OUT" | grep -F "$POLICY" || true)" "...and a current copy is not mentioned again"
+  # A symlinked policy points somewhere the project does not own, so even an unedited
+  # old copy behind the link is never written through.
+  OUTSIDE="$TEMP_DIR/shared-policy.yaml"
+  printf '%s\n' "$OLD_POLICY" > "$OUTSIDE"
+  rm -f "$P4/$POLICY" && ln -s "$OUTSIDE" "$P4/$POLICY"
+  OUT="$(update_kit "$P4")"
+  assert_eq "$(printf '%s\n' "$OLD_POLICY")" "$(cat "$OUTSIDE")" "update.sh never writes through a symlinked policy"
+  assert_eq "link" "$([ -L "$P4/$POLICY" ] && echo link || echo replaced)" "...leaves the link itself in place"
+  assert_contains "$OUT" "[notice] $POLICY was edited or is a link, so it was kept" "...and says why it kept it"
 else
   echo "  SKIP: the old-policy refresh needs the kit's git history (shallow clone)"
 fi
