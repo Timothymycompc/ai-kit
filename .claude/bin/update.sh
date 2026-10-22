@@ -567,14 +567,26 @@ import hashlib, json, os, sys, tempfile
 
 def write_text(path, text):
     # mkstemp creates the scratch file itself (O_EXCL, random name), so a link a cloned
-    # repo plants at a fixed name beside the target cannot redirect the write.
+    # repo plants at a fixed name beside the target cannot redirect the write. The new
+    # file keeps the target's mode, and a failed write leaves no scratch file behind.
+    try:
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        um = os.umask(0)
+        os.umask(um)
+        mode = 0o666 & ~um
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="." + os.path.basename(path) + ".")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-    um = os.umask(0)
-    os.umask(um)
-    os.chmod(tmp, 0o666 & ~um)
-    os.replace(tmp, path)  # atomic: same directory
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)  # atomic: same directory
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 dry_run = sys.argv[1] == "true"
 target, config, upstream, temp = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -728,14 +740,26 @@ import json, os, sys, tempfile
 
 def write_text(path, text):
     # mkstemp creates the scratch file itself (O_EXCL, random name), so a link a cloned
-    # repo plants at a fixed name beside the target cannot redirect the write.
+    # repo plants at a fixed name beside the target cannot redirect the write. The new
+    # file keeps the target's mode, and a failed write leaves no scratch file behind.
+    try:
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        um = os.umask(0)
+        os.umask(um)
+        mode = 0o666 & ~um
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="." + os.path.basename(path) + ".")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-    um = os.umask(0)
-    os.umask(um)
-    os.chmod(tmp, 0o666 & ~um)
-    os.replace(tmp, path)  # atomic: same directory
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)  # atomic: same directory
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 dry_run, target, config, matcher = sys.argv[1] == "true", sys.argv[2], sys.argv[3], sys.argv[4]
 SETTINGS = os.path.join(target, config, "settings.json")
@@ -877,14 +901,26 @@ def load(path):
 
 def write_text(path, text):
     # mkstemp creates the scratch file itself (O_EXCL, random name), so a link a cloned
-    # repo plants at a fixed name beside the target cannot redirect the write.
+    # repo plants at a fixed name beside the target cannot redirect the write. The new
+    # file keeps the target's mode, and a failed write leaves no scratch file behind.
+    try:
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        um = os.umask(0)
+        os.umask(um)
+        mode = 0o666 & ~um
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="." + os.path.basename(path) + ".")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-    um = os.umask(0)
-    os.umask(um)
-    os.chmod(tmp, 0o666 & ~um)
-    os.replace(tmp, path)  # atomic: same directory
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)  # atomic: same directory
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def write_json(path, data):
@@ -1190,6 +1226,37 @@ if [ "$CONFIG_NAME" = ".claude" ] && [ -n "$POLICY_SRC" ] && [ -f "$POLICY_SRC" 
           || CHANGES="$CHANGES  [notice] $POLICY was edited, so it was kept. It does not let safe-ai-skill read varlock's .env.schema, which holds key names and never values: add \"**/.env.schema\" to secrets.allow_read_globs\n" ;;
     esac
   fi
+  # Enabled is not installed: Claude Code fetches a plugin from an external source only
+  # when each user runs the install, so say so on every update until it is. Its install
+  # list is an internal file, read best-effort; unreadable (High's read fence) is silent.
+  SAS_NOTE="$(python3 - "$TARGET_DIR" "$CONFIG_NAME" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" 2>/dev/null <<'PY' || true
+import json, os, sys
+target, config, cfg = sys.argv[1:4]
+sas = "safe-ai-skill@stbr"
+def plugins(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("enabledPlugins") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+on = plugins(os.path.join(target, config, "settings.local.json")).get(sas)
+if on is None:
+    on = plugins(os.path.join(target, config, "settings.json")).get(sas)
+if on is not True:
+    sys.exit(0)
+try:
+    with open(os.path.join(cfg, "plugins", "installed_plugins.json"), encoding="utf-8") as f:
+        recs = (json.load(f).get("plugins") or {}).get(sas, [])
+except FileNotFoundError:
+    recs = []
+except (OSError, ValueError, AttributeError):
+    sys.exit(0)
+here = os.path.realpath(target)
+if not any(r.get("scope") == "user" or os.path.realpath(r.get("projectPath") or "/nonexistent") == here for r in recs):
+    print("  [notice] safe-ai-skill is enabled but not installed, so none of its gates run. In your shell, in this directory: claude plugin install %s --scope project" % sas)
+PY
+)"
+  [ -z "$SAS_NOTE" ] || CHANGES="$CHANGES$SAS_NOTE\n"
   if [ -f "$GITIGNORE" ] && grep -qF ">>> solana-ai-kit config" "$GITIGNORE" \
     && ! sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$GITIGNORE" | tr -d '\r' | grep -qxF ".safe-ai-skill/"; then
     if [ "$DRY_RUN" = true ]; then

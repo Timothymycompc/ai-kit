@@ -52,7 +52,7 @@ That's it. Claude now has Solana superpowers.
 
 > A full install starts on the **Relaxed** firewall tier, meant for local development: it blocks SSH and GPG keys, keychains, browser profiles, shell startup files and history, and it deliberately leaves your Solana config dir and the project's `.env` readable so the toolchain works. `/firewall` switches tier; [README → Firewall tiers](README.md#firewall-tiers) has the full matrix and [docs/firewall.md](docs/firewall.md) the limits.
 
-> The kit's security firewall, [safe-ai-skill](https://github.com/solanabr/safe-ai-skill), is a Claude Code plugin that `.claude/settings.json` enables. After you trust the folder, install it once with `claude plugin install safe-ai-skill@stbr --scope project`. The README's "Security firewall: safe-ai-skill" section covers what it gates and how to opt out.
+> The kit's security firewall, [safe-ai-skill](https://github.com/solanabr/safe-ai-skill), is a Claude Code plugin that `.claude/settings.json` enables and the installer installs with the `claude` CLI (`--no-safe-ai-skill` skips it). If the installer could not, it prints the command to run once: `claude plugin install safe-ai-skill@stbr --scope project`. The README's "Security firewall: safe-ai-skill" section covers what it gates and how to opt out.
 
 ---
 

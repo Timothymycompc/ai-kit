@@ -9,7 +9,10 @@ set -euo pipefail
 #   bash install.sh --agents /path/to/project   # installs into .agents/ instead of .claude/
 #   bash install.sh --with sendai,jupiter /path/to/project   # core skill packs plus these extensions (--with all: every one)
 #   bash install.sh --tier=medium /path/to/project   # firewall tier: off, relaxed (default), medium, high
-# Env: SOLANA_AI_KIT_UPSTREAM overrides the repo cloned (as in update.sh and skills.sh)
+#   bash install.sh --no-safe-ai-skill /path/to/project   # leave the safe-ai-skill plugin uninstalled
+# Env: SOLANA_AI_KIT_UPSTREAM overrides the repo cloned (as in update.sh and skills.sh).
+#      SOLANA_AI_KIT_SAFE_AI_SKILL=0 skips the safe-ai-skill plugin install; =1 runs it even
+#      with a local source or a file:// upstream, which otherwise skip it (tests, offline).
 
 REPO_URL="${SOLANA_AI_KIT_UPSTREAM:-https://github.com/solanabr/ai-kit.git}"
 SCRIPT_VERSION="dev"
@@ -25,6 +28,7 @@ WITH_NEXT=false
 TIER="relaxed"
 TIER_EXPLICIT=false
 TIER_NEXT=false
+SAS_MODE="${SOLANA_AI_KIT_SAFE_AI_SKILL:-auto}"
 for arg in "$@"; do
   if [ "$WITH_NEXT" = true ]; then WITH_SKILLS="$WITH_SKILLS,$arg"; WITH_NEXT=false; continue; fi
   if [ "$TIER_NEXT" = true ]; then TIER="$arg"; TIER_EXPLICIT=true; TIER_NEXT=false; continue; fi
@@ -34,9 +38,15 @@ for arg in "$@"; do
     --with=*) WITH_SKILLS="$WITH_SKILLS,${arg#--with=}" ;;
     --tier) TIER_NEXT=true ;;
     --tier=*) TIER="${arg#--tier=}"; TIER_EXPLICIT=true ;;
+    --no-safe-ai-skill) SAS_MODE=0 ;;
     *) TARGET_ARG="$arg" ;;
   esac
 done
+case "$SAS_MODE" in
+  0|false|no|off|FALSE|NO|OFF|False|No|Off) SAS_MODE=0 ;;
+  1|true|yes|on|TRUE|YES|ON|True|Yes|On) SAS_MODE=1 ;;
+  *) SAS_MODE=auto ;;
+esac
 case "$TIER" in
   off|relaxed|medium|high) ;;
   *) printf 'install.sh: unknown --tier "%s" (expected off, relaxed, medium or high)\n' "$TIER" >&2; exit 1 ;;
@@ -474,6 +484,67 @@ if [ "$AGENTS_ONLY" = false ] && [ -f "$TEMP_DIR/repo/$POLICY" ] && [ ! -f "$TAR
   ok "Created $POLICY (safe-ai-skill checks .claude/skills, not ~/.claude/skills)"
 fi
 
+# The safe-ai-skill plugin itself. settings.json enables it, but Claude Code installs a
+# plugin from an external source only when each user runs the install, so a full install
+# runs it here. Skipped where its engine has no build: it fails closed there and would
+# block every tool call (solanabr/safe-ai-skill#6). The platforms below mirror its
+# launcher's, which ships binaries for exactly these four; musl Linux cannot run them.
+SAS_ID="safe-ai-skill@stbr"
+SAS_CMD="claude plugin install $SAS_ID --scope project"
+SAS_STATE=""
+# Whether Claude Code already records it as installed for this project. That list is an
+# internal file (format 2 in Claude Code 2.1), read best-effort: any surprise reads as
+# "not installed", and the CLI install below settles it.
+sas_installed() {
+  python3 - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" "$1" "$SAS_ID" 2>/dev/null <<'PY'
+import json, os, sys
+try:
+    target = os.path.realpath(sys.argv[2])
+    for e in json.load(open(sys.argv[1])).get("plugins", {}).get(sys.argv[3], []):
+        if e.get("scope") == "user" or os.path.realpath(e.get("projectPath") or "/nonexistent") == target:
+            sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PY
+}
+if [ "$AGENTS_ONLY" = false ]; then
+  SAS_PLATFORM="$(uname -s 2>/dev/null || echo unknown)/$(uname -m 2>/dev/null || echo unknown)"
+  case "$SAS_PLATFORM" in
+    Darwin/arm64|Darwin/aarch64|Darwin/x86_64|Darwin/amd64) SAS_PLATFORM=ok ;;
+    Linux/x86_64|Linux/amd64|Linux/aarch64|Linux/arm64)
+      case "$(ldd --version 2>&1 || true)" in *musl*) SAS_PLATFORM="musl Linux" ;; *) SAS_PLATFORM=ok ;; esac ;;
+  esac
+  if [ "$SAS_MODE" = 0 ]; then
+    SAS_STATE=skipped
+  elif [ "$SAS_PLATFORM" != ok ]; then
+    SAS_STATE=unsupported
+    warn "safe-ai-skill has no engine build for $SAS_PLATFORM and would block every tool call there, so it was not installed (solanabr/safe-ai-skill#6)"
+  elif sas_installed "$TARGET_DIR"; then
+    SAS_STATE=installed
+  elif { [ -n "$LOCAL_SRC" ] || case "$REPO_URL" in file://*|/*|./*|../*) true ;; *) false ;; esac; } \
+    && [ "$SAS_MODE" != 1 ]; then
+    # A local source or a local upstream is a test or an offline run.
+    SAS_STATE=manual
+  elif ! command -v claude >/dev/null 2>&1; then
+    SAS_STATE=manual
+    warn "The claude CLI is not on PATH, so safe-ai-skill was not installed"
+  else
+    step "Installing the safe-ai-skill plugin ($SAS_ID)..."
+    # A new machine has never registered the kit's marketplace, so a first failure adds it
+    # and retries. stdin is /dev/null: under `curl | bash` the script itself is stdin.
+    if (cd "$TARGET_DIR" && claude plugin install "$SAS_ID" --scope project) < /dev/null > "$TEMP_DIR/sas.log" 2>&1 \
+      || { (cd "$TARGET_DIR" && claude plugin marketplace add "$REPO_URL") < /dev/null >> "$TEMP_DIR/sas.log" 2>&1 \
+           && (cd "$TARGET_DIR" && claude plugin install "$SAS_ID" --scope project) < /dev/null >> "$TEMP_DIR/sas.log" 2>&1; }; then
+      SAS_STATE=installed
+      ok "Installed safe-ai-skill: its gates load with your next Claude Code session"
+    else
+      SAS_STATE=manual
+      warn "Could not install safe-ai-skill: $(tail -1 "$TEMP_DIR/sas.log" | sed -E 's#://[^/@ ]*@#://#g')"
+    fi
+  fi
+fi
+
 # Copy CLAUDE-solana.md as the instruction file (CLAUDE.md, or AGENTS.md with --agents).
 # Back up only real edits: re-running the installer must not overwrite an earlier
 # backup of the user's own file with the kit's copy.
@@ -711,6 +782,13 @@ if [ "$AGENTS_ONLY" = true ]; then
 else
   BOX_LINES+=("Firewall tier: $TIER. Switch any time with /firewall <tier>")
   BOX_LINES+=("(off, relaxed, medium, high).")
+  case "$SAS_STATE" in
+    installed) BOX_LINES+=("Security plugin: safe-ai-skill is installed.") ;;
+    manual) BOX_LINES+=("Security plugin: safe-ai-skill is enabled but not installed." \
+                        "Install it once, in this directory:" "  $SAS_CMD") ;;
+    skipped) BOX_LINES+=("Security plugin: safe-ai-skill skipped. To add it later:" "  $SAS_CMD") ;;
+    unsupported) BOX_LINES+=("Security plugin: safe-ai-skill has no build for this platform.") ;;
+  esac
 fi
 IGNORED_LIST="$CONFIG_DIR/, .mcp.json and .gitmodules are"
 [ "$AGENTS_ONLY" = true ] || IGNORED_LIST="$CONFIG_DIR/, .mcp.json, .gitmodules and .safe-ai-skill/ are"

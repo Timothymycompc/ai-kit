@@ -1736,10 +1736,17 @@ def write_atomic(path, text):
     # mkstemp creates the scratch file itself (O_EXCL, random name), so a link a cloned
     # repo plants at a fixed name beside the target cannot redirect the write.
     fd, tmp = tempfile.mkstemp(dir=directory, prefix="." + os.path.basename(path) + ".")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def container(root, path, create):

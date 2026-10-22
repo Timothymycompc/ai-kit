@@ -59,7 +59,8 @@ PROBLEMS="$(python3 - "$REGISTRY" "$REPO_ROOT/.gitmodules" <<'PY'
 import json, re, sys
 reg = json.load(open(sys.argv[1]))
 paths = re.findall(r"^\s*path\s*=\s*(\S+)\s*$", open(sys.argv[2]).read(), re.M)
-kit = [e for e in reg["entries"] if "tier" in e]
+# A core plugin is not a pack: it is checked against the marketplace in its own block.
+kit = [e for e in reg["entries"] if "tier" in e and e["tier"] != "core-plugin"]
 ids = [e["id"] for e in kit]
 out = []
 if len(ids) != len(set(ids)):
@@ -102,6 +103,29 @@ print("\n".join(out) or "OK")
 PY
 )"
 assert_eq "OK" "$PROBLEMS" "Every submodule has one registry entry (tier, path, triggers, install command) and vice versa"
+# A core plugin carries the same pin as the marketplace that installs it, or the registry
+# would describe a commit no install receives.
+CORE_PLUGINS="$(python3 - "$REGISTRY" "$REPO_ROOT/.claude-plugin/marketplace.json" <<'PY'
+import json, re, sys
+reg = json.load(open(sys.argv[1]))
+market = {p["name"]: p for p in json.load(open(sys.argv[2]))["plugins"]}
+out, seen = [], 0
+for e in reg["entries"]:
+    if e.get("tier") != "core-plugin":
+        continue
+    seen += 1
+    i = e["id"]
+    if e.get("type") != "plugin" or e.get("default_installed") is not True or "path" in e:
+        out.append(f"{i}: a core plugin is type plugin, default_installed true, and has no path")
+    if (e.get("install") or {}).get("command") != f"claude plugin install {i}@stbr --scope project":
+        out.append(f"{i}: install command must be claude plugin install {i}@stbr --scope project")
+    sha = ((market.get(i) or {}).get("source") or {}).get("sha", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", e.get("commit", "")) or e.get("commit") != sha:
+        out.append(f"{i}: commit {e.get('commit', '')[:12]} is not the marketplace's pin {sha[:12] or '(none)'}")
+print("\n".join(out) or ("OK" if seen else "no core-plugin entry"))
+PY
+)"
+assert_eq "OK" "$CORE_PLUGINS" "Every core-plugin entry matches the marketplace's pin and installs as a plugin"
 # A renamed upstream keeps working through GitHub's redirect until the old name is reused,
 # so .gitmodules must clone the repo the registry names, not a redirect to it.
 URL_DRIFT="$(python3 - "$REGISTRY" "$REPO_ROOT/.gitmodules" <<'PY'
@@ -130,7 +154,7 @@ fi
 
 # skills.sh parses the registry with awk (no jq or python on user machines), so its view
 # must match a JSON parser's. A reformatted registry (keys not one per line) fails here.
-LISTED="$(bash "$SKILLS_SH" list | awk '$2 == "core" || $2 == "extension" { print $1 "/" $2 }' | sort | tr '\n' ' ' | sed 's/ $//')"
+LISTED="$(bash "$SKILLS_SH" list | awk '$2 == "core" || $2 == "extension" || $2 == "core-plugin" { print $1 "/" $2 }' | sort | tr '\n' ' ' | sed 's/ $//')"
 EXPECTED="$(python3 - "$REGISTRY" <<'PY'
 import json, sys
 reg = json.load(open(sys.argv[1]))
