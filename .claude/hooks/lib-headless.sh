@@ -222,20 +222,24 @@ ctx_index, or run it through Bash where the OS sandbox also applies."
 # kit_size_cap — a Bash command too large for the guards to read in time is refused,
 # as kit_mcp_normalize refuses an MCP payload past 32 KB.  Every guard is registered
 # with timeout 10 and a hook that times out does not block the call, so padding a
-# command would otherwise wave it past every gate, the irreversible set included.
-# Measured before this cap: 117 KB on one line kept egress-guard busy 8.1 s, and 234 KB
-# of line continuations 17.2 s.  A heredoc body the shell does not run is copied, not
-# parsed (433 KB: under a second in every guard), so only the code outside such
-# bodies counts toward the 32 KB, where the slowest shape measured, 16,000
-# `;`-separated statements, took egress-guard 2.4 s.  Past 1 MB in all, the whole
-# command is refused unread.  A failed measurement refuses too: unread is not safe.
+# command would otherwise wave it past every gate only a hook enforces.  Measured
+# before this cap: an echo carrying 234 KB ahead of a mainnet `anchor deploy` kept
+# onchain-guard busy 18 s.  Past 32 KB, kit-code-size.awk decides: the code in it
+# may not pass 32 KB, where the slowest shape measured, 16,000 `;`-separated
+# statements, took egress-guard 2.4 s, and the command may not pass 10,000 lines.
+# A heredoc body written to a file with cat or tee is copied, not parsed, so it is
+# left out of the 32 KB, on rules strict enough that a mistake refuses more.  The
+# line limit and the 256 KB total bound what every guard pays just to read its
+# input, which grows with lines times bytes: 10,000 lines in 256 KB measured
+# under a second.  A failed measurement refuses too: unread is not safe.
 kit_size_cap() {
   [ ${#KIT_CMD} -gt 32768 ] || return 0
-  if [ ${#KIT_CMD} -le 1048576 ]; then
-    _code=$(printf '%s' "$KIT_CMD" | awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/kit-code-size.awk" 2>/dev/null) || _code=
-    case $_code in '' | *[!0-9]*) ;; *) [ "$_code" -gt 32768 ] || return 0 ;; esac
+  if [ ${#KIT_CMD} -le 262144 ]; then
+    _fit=$(printf '%s' "$KIT_CMD" | KIT_CODE_LIMIT=32768 KIT_LINE_LIMIT=10000 \
+      awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/kit-code-size.awk" 2>/dev/null) || _fit=
+    [ "$_fit" != ok ] || return 0
   fi
-  kit_deny "This command is too large for the firewall hooks to read within their timeout: past 32 KB of shell code outside heredoc bodies, or 1 MB in all (${#KIT_CMD} bytes). A hook that times out does not block the call, so it is refused rather than waved through. Put large data in a heredoc body or a file written with the Write tool, or split the command."
+  kit_deny "This command is too large for the firewall hooks to read within their timeout: past 32 KB of shell code, 10,000 lines, or 256 KB in all (${#KIT_CMD} bytes). A hook that times out does not block the call, so it is refused rather than waved through. Write a large file with the Write tool, or with cat or tee and a quoted heredoc (cat > f <<'EOF'), whose body does not count; put a long script in a file and run that; or split the command."
 }
 
 # kit_parse — fills KIT_CMD, KIT_PERMISSION_MODE, KIT_CWD from $KIT_INPUT.

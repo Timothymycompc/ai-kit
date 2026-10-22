@@ -565,7 +565,7 @@ END {
   # command it feeds is the one the head's last statement ends on, so neither
   # `cd x; bash <<EOF` nor `if true; then bash <<EOF` hides the shell; and a head
   # continued from the line before is one head, since raw is joined first.
-  text = ""; delim = ""
+  text = ""; delim = ""; hdq = ""
   nl = split(kit_shell_text(raw, 0), L, "\n")
   for (k = 1; k <= nl; k++) {
     l = L[k]
@@ -574,9 +574,15 @@ END {
       if (t == delim) delim = ""
       continue
     }
-    quoted = 0
-    if (match(l, HD_DQ) || match(l, HD_SQ)) quoted = 1
-    else if (!match(l, HD_BARE)) RSTART = 0
+    # Only an operator the shell reads opens a body (kit_hd_ops): `echo '<<X'`
+    # is an argument, and the lines after it are still commands.
+    hdn = kit_hd_ops(l, hdq); hdq = KH_QEND; RSTART = 0
+    for (hdj = 1; hdj <= hdn && RSTART == 0; hdj++) {
+      hdat = KH_P[hdj]; hds = substr(l, hdat); quoted = 0
+      if (match(hds, "^" HD_DQ) || match(hds, "^" HD_SQ)) quoted = 1
+      else if (!match(hds, "^" HD_BARE)) RSTART = 0
+      if (RSTART > 0) RSTART += hdat - 1
+    }
     if (RSTART > 0) {
       d = substr(l, RSTART, RLENGTH)
       sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)

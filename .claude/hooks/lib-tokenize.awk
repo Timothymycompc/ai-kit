@@ -289,6 +289,40 @@ function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k) {
 
 # ---------------------------------------------------------------- heredocs
 
+# kit_hd_ops — the `<<` heredoc operators the shell reads in l, starting in quote
+# stack q: KH_P[i] is where the i-th starts and KH_S[i] the stack there; returns
+# the count, and leaves the stack at the end of l in KH_QEND.  A `<<` inside '…'
+# or "…", or after a # that starts a comment, is text, and `<<<` is a
+# here-string: neither opens a body.  The rules are hd_open's in
+# onchain-guard.awk and secrets-guard.awk, so every reader agrees on what opens a
+# body.  Reading any `<<` as an opener let `echo '<<X'` turn every line after it
+# into a body nothing normalised or inspected: `git push \<newline>--force`
+# after it was silent at High.
+function kit_hd_ops(l, q,   i, L, c, top, k) {
+  k = 0; L = length(l)
+  for (i = 1; i <= L; i++) {
+    c = substr(l, i, 1); top = substr(q, length(q))
+    if (top == "s") { if (c == SQ) q = substr(q, 1, length(q) - 1); continue }
+    if (c == "\\") { i++; continue }
+    if (top == "d") {
+      if (c == "\"") q = substr(q, 1, length(q) - 1)
+      else if (substr(l, i, 2) == "$(") { q = q "p"; i++ }
+      else if (c == "`") q = q "b"
+      continue
+    }
+    if (c == SQ) q = q "s"
+    else if (c == "\"") q = q "d"
+    else if (c == "`") q = (top == "b") ? substr(q, 1, length(q) - 1) : q "b"
+    else if (c == "(") q = q "p"
+    else if (c == ")") { if (top == "p") q = substr(q, 1, length(q) - 1) }
+    else if (c == "#" && (i == 1 || substr(l, i - 1, 1) ~ /[ \t;&|(]/)) break
+    else if (substr(l, i, 3) == "<<<") i += 2
+    else if (substr(l, i, 2) == "<<") { KH_P[++k] = i; KH_S[k] = q; i++ }
+  }
+  KH_QEND = q
+  return k
+}
+
 # strip_heredocs — drop heredoc BODIES from a raw multi-line command, returning
 # what is left.  A document that merely names a gated command or a credential
 # path must never fire; writing one is not running it.
@@ -296,11 +330,11 @@ function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k) {
 # One exception: an UNQUOTED delimiter feeding something that executes its input
 # is code, not prose, so that body is kept and inspected.  The caller decides
 # what executes its input, via kit_heredoc_is_code.
-function strip_heredocs(raw,   text, delim, nl, L, k, l, t, quoted, d, head, hn, HT, HQ, hw, HD_DQ, HD_SQ, HD_BARE) {
+function strip_heredocs(raw,   text, delim, nl, L, k, l, t, quoted, d, head, hn, HT, HQ, hw, HD_DQ, HD_SQ, HD_BARE, q, np, j, at, s) {
   HD_DQ = "<<-?[ \t]*\"[A-Za-z_][A-Za-z0-9_]*\""
   HD_SQ = "<<-?[ \t]*" SQ "[A-Za-z_][A-Za-z0-9_]*" SQ
   HD_BARE = "<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*"
-  text = ""; delim = ""
+  text = ""; delim = ""; q = ""
   nl = split(raw, L, "\n")
   for (k = 1; k <= nl; k++) {
     l = L[k]
@@ -309,9 +343,13 @@ function strip_heredocs(raw,   text, delim, nl, L, k, l, t, quoted, d, head, hn,
       if (t == delim) delim = ""
       continue
     }
-    quoted = 0
-    if (match(l, HD_DQ) || match(l, HD_SQ)) quoted = 1
-    else if (!match(l, HD_BARE)) RSTART = 0
+    np = kit_hd_ops(l, q); q = KH_QEND; RSTART = 0
+    for (j = 1; j <= np && RSTART == 0; j++) {
+      at = KH_P[j]; s = substr(l, at); quoted = 0
+      if (match(s, "^" HD_DQ) || match(s, "^" HD_SQ)) quoted = 1
+      else if (!match(s, "^" HD_BARE)) RSTART = 0
+      if (RSTART > 0) RSTART += at - 1
+    }
     if (RSTART > 0) {
       d = substr(l, RSTART, RLENGTH)
       sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
@@ -396,12 +434,10 @@ function kit_unreserve(st,   lead) {
 # what keeps every other verdict where it was.
 #
 # A heredoc body is copied untouched, since a document's `\` and `then` are not
-# the shell's.  Any `<<WORD` opens one, quoted or not.  That over-counts — after
-# `echo "<<X"` nothing is normalised until a line reading X — and over-counting
-# can only leave a line as it was before this existed, whereas missing a body the
-# guard sees would join a body line onto its delimiter and hide the commands
-# after it.
-function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t, s, d, rest, st, sep, cmd) {
+# the shell's.  Only an operator the shell reads opens one (kit_hd_ops), quoted
+# delimiter or not: a `<<` inside quotes or a comment is text, and reading it as
+# an opener switched the normalising off for every line after `echo '<<X'`.
+function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t, s, d, rest, st, sep, cmd, np, j) {
   if (!kw && index(raw, "\\\n") == 0) return raw
   nl = split(raw, L, "\n")
   out = ""; first = 1; q = ""; nd = 0; di = 0
@@ -420,9 +456,10 @@ function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t,
         qj = kit_qscan(L[++k], qj, 0)
         l = l L[k]
       }
-      s = (index(l, "<<") > 0) ? l : ""
-      while (match(s, KIT_HDRE)) {
-        d = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+      np = (index(l, "<<") > 0) ? kit_hd_ops(l, q) : 0
+      for (j = 1; j <= np; j++) {
+        if (!match(substr(l, KH_P[j]), "^" KIT_HDRE)) continue
+        d = substr(l, KH_P[j], RLENGTH)
         sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
         D[++nd] = d
       }

@@ -1106,10 +1106,11 @@ fi
 
 # --- Size cap: a command too large to read in time is refused, not waved through ---
 # Every guard runs with timeout 10, and a hook that times out does not block the call.
-# Measured before the cap: 234 KB of line continuations kept egress-guard busy 17 s,
-# and a 240 KB body fed to bash kept secrets-guard 14 s. lib-headless.sh's
-# kit_size_cap holds code outside file-writing heredoc bodies to 32 KB and the whole
-# command to 1 MB, so a large `cat > f <<EOF` still writes its file.
+# Measured before the cap: an echo carrying 234 KB ahead of a mainnet anchor deploy
+# kept onchain-guard busy 18 s. lib-headless.sh's kit_size_cap holds a command past
+# 32 KB to 32 KB of code, 10,000 lines and 256 KB in all; kit-code-size.awk leaves
+# out a heredoc body written to a file with cat or tee, and only on rules strict
+# enough that each case below is refused when one of them is broken.
 echo "[size cap]"
 SZ="$WORK/size"; mkdir -p "$SZ"
 python3 - "$SZ" <<'PY'
@@ -1120,13 +1121,24 @@ def fill(unit, k, head=""):
     while len(s) < k:
         s += unit
     return s[:k]
+DA = "anchor deploy --provider.cluster mainnet"
+CODE = "\n".join(["x;" * 58] * 350)          # 41 KB of ; statements over 350 lines
+LINE = "some ordinary line of file text here\n"
 cases = {
     "line40k": fill("ab ", 40000, "echo "),
     "line30k": fill("ab ", 30000, "echo "),
     "final": "solana program set-upgrade-authority PID --final" + fill(" \\\n  x", 234000),
-    "cat433k": "cat > f.txt <<'EOF'\n" + "some ordinary line of file text here\n" * 12000 + "EOF",
-    "bash40k": "bash <<'EOF'\n" + "x;" * 20000 + "\nsolana program deploy --url mainnet-beta ./t.so\nEOF",
-    "huge": "cat > f.txt <<'EOF'\n" + "some ordinary line of file text here\n" * 31000 + "EOF",
+    "cat200k": "cat > f.txt <<'EOF'\n" + LINE * 5500 + "EOF",
+    "cat433k": "cat > f.txt <<'EOF'\n" + LINE * 12000 + "EOF",
+    "lines": "cat > f.txt <<'EOF'\n" + "yyy\n" * 10100 + "EOF",
+    "unqplain": "cat > f.txt <<EOF\n" + LINE * 1100 + "EOF",
+    "bash40k": "bash <<'EOF'\n" + CODE + "\n" + DA + "\nEOF",
+    # The shell reads none of these bodies as a file's text, so each has to count.
+    "fakemark": "cat '<<EOF'\n" + CODE + "\nEOF\n" + DA,
+    "pipebash": "cat <<'EOF' | bash\n" + CODE + "\n" + DA + "\nEOF",
+    "unqsubst": "cat <<EOF > f.txt\n$(\n" + CODE + "\n" + DA + "\n)\nEOF",
+    "unterm": "cat <<'EOF' > f.txt\n" + CODE,
+    "contbash": "bash \\\ncat <<'EOF'\n" + CODE + "\n" + DA + "\nEOF",
 }
 for name, cmd in cases.items():
     with open(d + "/" + name + ".json", "w") as f:
@@ -1154,20 +1166,34 @@ for t in off relaxed high; do
   assert_eq deny "$DECISION" "[$t] --final padded with 234 KB of continuations is still refused"
 done
 for g in "$M_CHAIN" "$M_SECRETS" "$M_EGRESS"; do
-  run_payload "$g" relaxed "$SZ/bash40k.json"
-  assert_eq deny "$DECISION" "a 40 KB body fed to bash counts as code and is refused"
-done
-for g in "$M_CHAIN" "$M_SECRETS" "$M_EGRESS"; do
   for t in relaxed high; do
-    run_payload "$g" "$t" "$SZ/cat433k.json"
-    assert_eq silent "$DECISION" "[$t] a 433 KB heredoc written to a file with cat is not code, and passes"
+    run_payload "$g" "$t" "$SZ/cat200k.json"
+    assert_eq silent "$DECISION" "[$t] a 200 KB file written with cat and a quoted heredoc is not code, and passes"
+  done
+  run_payload "$g" relaxed "$SZ/unqplain.json"
+  assert_eq silent "$DECISION" "an unquoted cat heredoc with no substitution in it is not code either"
+  # onchain-guard reads nothing that names no on-chain verb (its prefilter exits
+  # first), so it meets the cap only on the cases that carry the deploy.
+  cs="bash40k fakemark pipebash unqsubst contbash"
+  [ "$g" = "$M_CHAIN" ] || cs="$cs cat433k lines unterm"
+  for c in $cs; do
+    run_payload "$g" relaxed "$SZ/$c.json"
+    assert_contains "$OUT" "too large for the firewall hooks to read" "refused by the size cap: $c"
   done
 done
-run_payload "$M_SECRETS" relaxed "$SZ/huge.json"
-assert_eq deny "$DECISION" "a command past 1 MB is refused unread, file-writing heredoc or not"
+# Each planted failure breaks one rule, and the case that rule refuses passes again.
 MUT_SIZE="$(mutant size lib-headless.sh '[ -z "$KIT_CMD" ] || kit_size_cap' '[ -z "$KIT_CMD" ] || :')" || MUT_SIZE=
-MUT_SIZECAT="$(mutant sizecat kit-code-size.awk 'skip = (hw == "cat" || hw == "tee")' 'skip = 0')" || MUT_SIZECAT=
-for pair in "$MUT_SIZE|line40k|deny" "$MUT_SIZECAT|cat433k|silent"; do
+MUT_SIZECAT="$(mutant sizecat kit-code-size.awk 'exempt = (np == 1' 'exempt = 0 && (np == 1')" || MUT_SIZECAT=
+MUT_SIZEQ="$(mutant sizeq lib-tokenize.awk 'if (top == "s") { if (c == SQ) q = substr(q, 1, length(q) - 1); continue }' 'if (0) { }' \
+  kit-code-size.awk 'KH_S[1] == "" && ' '')" || MUT_SIZEQ=
+MUT_SIZEPIPE="$(mutant sizepipe kit-code-size.awk ' && x !~ /[|(`]/)' ')')" || MUT_SIZEPIPE=
+MUT_SIZESUBST="$(mutant sizesubst kit-code-size.awk 'if (!quoted && (index(l, "$(")' 'if (0 && (index(l, "$(")')" || MUT_SIZESUBST=
+MUT_SIZEUNTERM="$(mutant sizeunterm kit-code-size.awk 'if (delim != "" && exempt) SIZE += pend' 'if (0) SIZE += pend')" || MUT_SIZEUNTERM=
+MUT_SIZECONT="$(mutant sizecont kit-code-size.awk '!cont && !wascont && ' '')" || MUT_SIZECONT=
+MUT_SIZELINES="$(mutant sizelines kit-code-size.awk 'NR <= LINES' '1')" || MUT_SIZELINES=
+for pair in "$MUT_SIZE|line40k|deny" "$MUT_SIZECAT|cat200k|silent" "$MUT_SIZEQ|fakemark|deny" \
+            "$MUT_SIZEPIPE|pipebash|deny" "$MUT_SIZESUBST|unqsubst|deny" "$MUT_SIZEUNTERM|unterm|deny" \
+            "$MUT_SIZECONT|contbash|deny" "$MUT_SIZELINES|lines|deny"; do
   mdir="${pair%%|*}"; rest="${pair#*|}"; payload="${rest%%|*}"; was="${rest#*|}"
   run_payload "$M_EGRESS" relaxed "$SZ/$payload.json" "$mdir"
   TOTAL=$((TOTAL + 1))
@@ -1188,5 +1214,21 @@ else
   echo "  FAIL: plugin/hooks/kit-code-size.awk is missing, so a plugin install refuses every large command"
   FAIL=$((FAIL + 1))
 fi
+
+# --- A `<<` the shell reads as text opens no heredoc. Read as an opener, `echo '<<X'`
+# turned every line after it into a body nothing normalised, and the spellings above
+# were silent again behind it. kit_hd_ops reads quotes and comments as hd_open does.
+echo "[a quoted or commented << opens no heredoc]"
+M_FETCH="$(hook "$SETTINGS_MAIN" PreToolUse 'fetch-exec-guard')"
+MUT_HDQ="$(mutant hdq lib-tokenize.awk 'if (top == "s") { if (c == SQ) q = substr(q, 1, length(q) - 1); continue }' 'if (0) { }' \
+  lib-tokenize.awk 'if (top == "d") {' 'if (0) {')" || MUT_HDQ=
+MUT_HDC="$(mutant hdc lib-tokenize.awk 'else if (c == "#" && (i == 1 || substr(l, i - 1, 1) ~ /[ \t;&|(]/)) break' 'else if (0) break')" || MUT_HDC=
+same "$M_CHAIN" ask ask deny "$DA" "echo '<<X'${NL}anchor $BS${NL}deploy --provider.cluster mainnet" "$MUT_HDQ"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "echo '<<X'${NL}git push $BS${NL}--force origin main" "$MUT_HDQ"
+same "$M_EGRESS" ask deny deny "npm publish" "echo \"<<X\"${NL}if true; then npm publish; fi" "$MUT_HDQ"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "true # <<X${NL}git push $BS${NL}--force origin main" "$MUT_HDC"
+same "$M_FETCH" silent silent deny "npx -y x" "echo '<<X'${NL}if true; then npx -y x; fi" "$MUT_HDQ"
+same "$M_FETCH" silent silent deny "cargo install x" "echo '<<X'${NL}cargo $BS${NL}install x" "$MUT_HDQ"
+quiet "$M_EGRESS" "cat > notes.md <<'EOF'${NL}if true; then npm publish; fi${NL}EOF"
 
 print_summary
