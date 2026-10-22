@@ -47,6 +47,10 @@ for required in test_firewall test_egress_guard test_fetch_exec_guard test_doc_g
   fi
 done
 
+# install.sh's safe-ai-skill step calls the real `claude` CLI; keep every suite off it
+# (tests/helpers.sh sets the same for a suite run on its own).
+export SOLANA_AI_KIT_SAFE_AI_SKILL="${SOLANA_AI_KIT_SAFE_AI_SKILL:-0}"
+
 for test_file in "$SCRIPT_DIR"/test_*.sh; do
   test_name="$(basename "$test_file" .sh)"
   TOTAL_SUITES=$((TOTAL_SUITES + 1))

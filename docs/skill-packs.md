@@ -2,6 +2,15 @@
 
 The kit's Solana knowledge is not written here: it is pinned from the ecosystem's own skill repositories — Solana Foundation, Colosseum, Jupiter, Metaplex, MagicBlock, Helius, Alchemy, SendAI, Solana Mobile and more — and routed by [`.claude/skills/SKILL.md`](../.claude/skills/SKILL.md), which loads only the files a task needs.
 
+## The security layer under every pack: safe-ai-skill
+
+[safe-ai-skill](https://github.com/solanabr/safe-ai-skill) is core to the kit. It is not a skill pack but a Claude Code plugin, pinned by commit in the kit's own `stbr` marketplace and installed with the kit: as the kit plugin's dependency, or by `install.sh` in a full install. It is listed here because it governs what the packs below can do.
+- **Gates:** mainnet, authority and value-moving actions, including the transfers and swaps some packs and MCP servers describe, held to spend caps.
+- **Session-start checks:** it pins the installed packs and quarantines one whose content trips its heuristics.
+- **Add-ons:** an opt-in one is installed only after `safe-ai-skill add skill|mcp <source>` returns `proceed: true` (see `/skill-packs`).
+
+How it is installed, its project policy and its limits are in the [README](../README.md#security-firewall-safe-ai-skill). `skill-registry.json` lists it under its own tier, `core-plugin`. `skills.sh list` shows it with the state `plugin` and otherwise leaves it alone, and `tests/test_skill_extensions.sh` holds its recorded commit to the marketplace's pin.
+
 ## External Skill Submodules
 
 The kit pins every skill pack below as a git submodule, except `anthropic-skills`, which it pins to an upstream commit. Every entry records that commit in [`skill-registry.json`](../.claude/skills/skill-registry.json), and `validate.sh` fails if the record and the gitlink disagree — the registry is the only pin a user project carries, since ext/ packs arrive as vendored copies with their gitfiles stripped. **Core** packs install with every full install. **Extensions** are pinned the same way but install on demand, so a project carries only the packs it uses (in `--agents` installs, Codex and opencode load every nested `SKILL.md` they find, so each pack costs context on every request).
@@ -133,7 +142,7 @@ Featured add-ons by domain:
 
 For broader Solana coverage, see solana-new's vendored catalogs at `ext/solana-new/cli/data/` (MCPs, skills, clonable repos; install the solana-new extension first).
 
-See [`skill-registry.json`](../.claude/skills/skill-registry.json) for the complete extended catalog — every entry with its install command, license, and safety caveats. The same file records the tier and triggers of each pinned pack above; entries without a tier are these opt-in add-ons. The registry is a reference, not a browsing surface: the `skill-packs` skill is the short index that puts the useful add-ons next to the work they suit, with each one's caveat (no license, stale, writes hooks into `settings.json`) spelled out.
+See [`skill-registry.json`](../.claude/skills/skill-registry.json) for the complete extended catalog — every entry with its install command, license, and safety caveats. The same file records the tier and triggers of each pinned pack above, and safe-ai-skill under `core-plugin`; entries without a tier are these opt-in add-ons. The registry is a reference, not a browsing surface: the `skill-packs` skill is the short index that puts the useful add-ons next to the work they suit, with each one's caveat (no license, stale, writes hooks into `settings.json`) spelled out.
 
 ## Anthropic's skills in any agent
 

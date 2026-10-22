@@ -1,15 +1,32 @@
 {
   "version": "1.2",
-  "updated": "2026-10-04",
+  "updated": "2026-10-22",
   "tiers": {
     "core": "Pinned by the kit as a git submodule under .claude/skills/ext/ and installed by default.",
     "extension": "Pinned by the kit the same way and installed on demand: bash .claude/bin/skills.sh add <id>. An entry with a skills list is not a submodule: skills.sh fetches those folders from its source into .claude/skills/<name>/.",
+    "core-plugin": "A Claude Code plugin the kit pins by commit in its own stbr marketplace (.claude-plugin/marketplace.json) and installs with the kit: as the kit plugin's dependency, or by install.sh in a full install. skills.sh lists it but does not manage it; /doctor reports whether it is installed.",
     "add-on": "Entries without a tier are opt-in tools the kit does not pin. Install one only when the user asks."
   },
-  "commit": "Every core and extension entry records the commit it is pinned at: for a submodule, the gitlink validate.sh checks the entry against; for a skills-list pack, the commit skills.sh fetches and asserts against FETCH_HEAD. bash .claude/bin/skills.sh pins rechecks them, --write rewrites them from the gitlinks.",
+  "commit": "Every core, extension and core-plugin entry records the commit it is pinned at — for a core plugin, the sha the kit's marketplace pins: for a submodule, the gitlink validate.sh checks the entry against; for a skills-list pack, the commit skills.sh fetches and asserts against FETCH_HEAD. bash .claude/bin/skills.sh pins rechecks them, --write rewrites them from the gitlinks.",
   "triggers": "Display text: the INSTALL WHEN column of skills.sh list, for people and agents choosing a pack. Nothing matches on it.",
   "scope": "Skill packs, plugins, template repos and catalogs — things an installer can put on disk. MCP servers are not listed here and never were installable from here: skills.sh writes no .mcp.json and runs no claude mcp add. A default server lives in .mcp.json; an opt-in one is a line in .claude/commands/setup-mcp.md that the user runs.",
   "entries": [
+    {
+      "id": "safe-ai-skill",
+      "name": "safe-ai-skill",
+      "type": "plugin",
+      "tier": "core-plugin",
+      "domain": "security",
+      "commit": "2997280e2deaf074e9bf34a79797a0b71123b18a",
+      "description": "The kit's security plugin: Claude Code hooks that gate mainnet, authority and value-moving actions in Bash and in MCP tools, hold transfers to spend caps, block secret reads, and pin installed skills and MCPs at session start. Installed with the kit, as the kit plugin's dependency or by install.sh; skills.sh does not manage it.",
+      "triggers": ["always on", "mainnet gate", "spend caps", "secret reads", "skill and MCP vetting"],
+      "source": "https://github.com/solanabr/safe-ai-skill",
+      "install": { "method": "plugin-cli", "command": "claude plugin install safe-ai-skill@stbr --scope project", "env": [] },
+      "maintainer": "solanabr",
+      "default_installed": true,
+      "safety": "runs on every Bash, Read, Grep, Glob and MCP call, every prompt and every session start, through a prebuilt engine binary its shim picks by platform (macOS, glibc Linux; x64, arm64). Where no build matches, such as native Windows, it fails closed and blocks every gated call (solanabr/safe-ai-skill#6), so install.sh skips it there. Its session-start sweep can quarantine a skill pack on a plain-text heuristic match (solanabr/safe-ai-skill#5). Known gaps at this pin: its mainnet gate defers on shell keywords, wrappers and VAR= prefixes (#21), its secret-read gate covers cat and head but not other readers (#22), and its output redaction never fires in Claude Code (#24).",
+      "tags": ["security", "hooks", "mainnet", "spend-caps", "supply-chain", "core"]
+    },
     {
       "id": "solana-dev",
       "name": "Solana Dev Skill",

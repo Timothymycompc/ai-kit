@@ -94,6 +94,17 @@ assert_eq "$(sorted $CORE)" "$(ext_dirs "$P1/.claude/skills/ext")" "Only the cor
 assert_file_exists "$P1/.claude/skills/ext/solana-dev/SKILL.md" "A core pack arrives with its files"
 assert_eq "" "$(find "$P1/.claude/skills/ext" -name .git)" "Vendored packs carry no submodule gitfile"
 
+# A file:// upstream is a test or an offline mirror, so even in its default mode
+# install.sh does not reach for the claude CLI to install safe-ai-skill. A fake one first
+# on PATH records any call, and an empty CLAUDE_CONFIG_DIR stands in for its install list.
+mkdir -p "$TEMP_DIR/fakebin" "$TEMP_DIR/cc"
+printf '#!/bin/sh\necho "$*" >> "%s"\n' "$TEMP_DIR/claude.calls" > "$TEMP_DIR/fakebin/claude"
+chmod +x "$TEMP_DIR/fakebin/claude"
+P8="$(new_project local-upstream)"
+(env -u SOLANA_AI_KIT_SAFE_AI_SKILL PATH="$TEMP_DIR/fakebin:$PATH" CLAUDE_CONFIG_DIR="$TEMP_DIR/cc" \
+  bash "$REPO_ROOT/install.sh" "$P8" > "$QUIET_LOG" 2>&1) || quiet_fail "install.sh over a file:// upstream"
+assert_eq "" "$(cat "$TEMP_DIR/claude.calls" 2>/dev/null || true)" "Over a file:// upstream, install.sh never calls claude to install safe-ai-skill"
+
 echo "[--agents]"
 P2="$(new_project agents)"
 install_ok "install.sh --agents fetches only the core packs" --agents "$P2"
@@ -125,7 +136,7 @@ echo "[pin reporting]"
 PINS_OUT="$(cd "$KIT" && bash .claude/bin/skills.sh pins 2>&1)"
 # The same set cmd_pins counts: every tiered entry that is not an upstream pack, since
 # an upstream pack is fetched by commit and has no gitlink to compare in the first place.
-PINS_TOTAL="$(python3 -c 'import json, sys; print(sum(1 for e in json.load(open(sys.argv[1]))["entries"] if "tier" in e and "skills" not in e))' "$KIT/.claude/skills/skill-registry.json")"
+PINS_TOTAL="$(python3 -c 'import json, sys; print(sum(1 for e in json.load(open(sys.argv[1]))["entries"] if "tier" in e and "skills" not in e and e["tier"] != "core-plugin"))' "$KIT/.claude/skills/skill-registry.json")"
 assert_contains "$PINS_OUT" "Checked 5 of $PINS_TOTAL" "skills.sh pins says how many of the pins it actually checked"
 assert_eq "${PINS_OUT#✓ }" "$PINS_OUT" "a partial check does not lead with the ✓ a clean one earns"
 assert_cmd_success "cd '$KIT' && bash .claude/bin/skills.sh pins" "a partial check still exits 0 (a pack-free tree is legitimate)"

@@ -85,6 +85,9 @@ SHAPES = {
     # installs directly and a "marketplace add" step would be noise. (No apostrophes in
     # this heredoc: bash 3.2 mis-parses one inside a $(...) command substitution.)
     "plugin-install":      r"^/plugin install \S+@\S+$",
+    # The shell form, for a plugin installed from a script or the user's terminal with a
+    # scope: install.sh's step for the core-plugin entry.
+    "plugin-cli":          r"^claude plugin install \S+@\S+ --scope (user|project|local)$",
     "npx":                 r"(?:^|\s)(?:npx|dlx|bunx)\s",
     "remote-http-mcp":     r"--transport http\b.*\bhttps://",
 }
@@ -175,7 +178,7 @@ PY
 # How many packages the producer above actually found. The message below carries it,
 # because without it this check read "Every npx-method package resolves on the npm
 # registry" over an EMPTY set: the registry holds no `method: npx` entry at all today
-# (kit 46, submodule 14, git-clone 4, plugin-marketplace 2, plugin-install 1), so the one
+# (kit 46, submodule 14, git-clone 4, plugin-marketplace 2, plugin-install 1, plugin-cli 1), so the one
 # check this suite exists for — its own header names the invented pyth-pro-mcp package as
 # the reason — has been printing green while verifying nothing. Counted, that is visible
 # in the output instead of latent.

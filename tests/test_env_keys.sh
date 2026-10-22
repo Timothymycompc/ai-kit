@@ -209,6 +209,9 @@ if [ -f "$SCHEMA" ]; then
     /^[[:space:]]*$/ { n = 0; next }
     /^[A-Za-z_][A-Za-z0-9_]*=/ { if (++n == 2) { k = $0; sub(/=.*/, "", k); print k " shares a block with the key above it" } }' "$SCHEMA")"
   assert_eq "" "$SHARED" "every .env.schema block holds one KEY= line"
+  # The merge copies only what follows the header's `# ---` line; without exactly one,
+  # it would silently append nothing, or the wrong half.
+  assert_eq "1" "$(grep -c '^# ---' "$SCHEMA" || true)" ".env.schema has exactly one \`# ---\` line ending its header"
 fi
 
 # ── installed by install.sh ─────────────────────────────────────────────────

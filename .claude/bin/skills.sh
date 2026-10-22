@@ -656,7 +656,9 @@ cmd_pins() {
   fi
   check_registry "$reg"
   upstream="$(upstream_ids "$reg")"
-  for id in $(registry_rows "$reg" | cut -f1); do
+  # A core plugin is pinned in the marketplace, not by a gitlink: test_skill_extensions
+  # holds its commit to that pin instead.
+  for id in $(registry_rows "$reg" | awk -F'\t' '$2 != "core-plugin" { print $1 }'); do
     has_line "$upstream" "$id" && continue
     total=$((total + 1))
     path="$(entry_value "$reg" "$id" path)"
@@ -710,11 +712,12 @@ cmd_pins() {
 cmd_list() {
   local reg="$CONFIG_DIR/skills/skill-registry.json" id tier trig state
   check_registry "$reg"
-  printf '%-20s %-10s %-10s %s\n' PACK TIER STATE "INSTALL WHEN THE TASK INVOLVES"
+  printf '%-20s %-11s %-10s %s\n' PACK TIER STATE "INSTALL WHEN THE TASK INVOLVES"
   registry_rows "$reg" | while IFS=$'\t' read -r id tier trig; do
     state="-"
-    if installed "$CONFIG_DIR" "$id"; then state=installed; fi
-    printf '%-20s %-10s %-10s %s\n' "$id" "$tier" "$state" "$trig"
+    if [ "$tier" = core-plugin ]; then state=plugin
+    elif installed "$CONFIG_DIR" "$id"; then state=installed; fi
+    printf '%-20s %-11s %-10s %s\n' "$id" "$tier" "$state" "$trig"
   done
   echo ""
   echo "Install an extension: bash $CONFIG_NAME/bin/skills.sh add <id>"

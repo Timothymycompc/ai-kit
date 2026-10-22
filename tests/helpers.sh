@@ -18,6 +18,10 @@ _KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # needs the pack actually installed exports its own mirror over this, as
 # tests/test_anthropic_skills.sh does.
 export SOLANA_AI_KIT_PACK_MIRROR="${SOLANA_AI_KIT_PACK_MIRROR:-${TMPDIR:-/tmp}/sak-no-pack-mirror.$$}"
+# install.sh installs the safe-ai-skill plugin with the real `claude` CLI on a normal run.
+# No test may reach it: it would install into the developer's own Claude Code. The
+# suite that covers the step sets this itself and puts a fake `claude` first on PATH.
+export SOLANA_AI_KIT_SAFE_AI_SKILL="${SOLANA_AI_KIT_SAFE_AI_SKILL:-0}"
 
 # QUIET_LOG / quiet_fail — for a command whose output is noise right up until it fails.
 #

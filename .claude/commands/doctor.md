@@ -3,7 +3,7 @@ description: "Read-only check of toolchain and kit config, with one fix-it comma
 model: sonnet
 ---
 
-Run the ten checks below, then report. Status values: `OK` healthy, `WARN` works but fix soon, `FAIL` blocks workflows, `n/a` not applicable.
+Run the eleven checks below, then report. Status values: `OK` healthy, `WARN` works but fix soon, `FAIL` blocks workflows, `n/a` not applicable.
 
 ## Checks
 
@@ -161,6 +161,53 @@ PY
 
 One ambiguity this check cannot resolve: `older_guards: 3` with this one guard surgically removed looks exactly like an install that predates it. It is reported as "predates", so if the removal was deliberate, ignore the row — or set the firewall tier to `off`, which disables every guard explicitly.
 
+**11. safe-ai-skill.** The kit's security plugin: it gates mainnet, authority and value-moving actions, MCP tools included, and pins skills and MCPs at session start. A full install enables it in `.claude/settings.json`, but Claude Code installs a plugin from an external source only when each user runs the install, so "enabled" and "installed" are separate questions. Claude Code's install list is an internal file, read best-effort; never run `claude` here.
+```bash
+python3 - <<'PY'
+import json, os, pathlib, platform
+def load(p):
+    return json.loads(pathlib.Path(p).read_text())
+pid = "safe-ai-skill@stbr"
+enabled = None
+for f in (".claude/settings.json", ".claude/settings.local.json"):  # the local file wins
+    try:
+        v = (load(f).get("enabledPlugins") or {}).get(pid)
+    except (OSError, ValueError):
+        continue
+    if v is not None:
+        enabled = v
+cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+here = os.path.realpath(".")
+try:
+    recs = (load(os.path.join(cfg, "plugins", "installed_plugins.json")).get("plugins") or {}).get(pid, [])
+    hits = [r for r in recs if r.get("scope") == "user" or os.path.realpath(r.get("projectPath") or "/nonexistent") == here]
+    installed = ", ".join("%s@%s" % (r.get("scope"), (r.get("gitCommitSha") or "?")[:7]) for r in hits) or "no"
+except FileNotFoundError:
+    installed = "no"
+except (OSError, ValueError):
+    installed = "unknown"
+try:
+    entry = [p for p in load(os.path.join(cfg, "plugins", "marketplaces", "stbr", ".claude-plugin", "marketplace.json"))["plugins"] if p.get("name") == "safe-ai-skill"]
+    pinned = (entry[0].get("source") or {}).get("sha", "?")[:7]
+except (OSError, ValueError, KeyError, IndexError):
+    pinned = "unknown"
+print("enabled:", enabled)
+print("installed:", installed)
+print("pinned:", pinned)
+print("platform:", platform.system())
+print("full_install:", pathlib.Path(".claude/VERSION").is_file())
+PY
+```
+Read these in order; stop at the first that matches.
+- `n/a` no `.claude/` directory: an `--agents` install. Its hooks are Claude Code only; vet add-ons with `npx @stbr/safe-ai-skill add skill|mcp <source>`.
+- WARN `enabled: False`: turned off in `settings.local.json`. That is a choice: report it and offer no fix.
+- WARN `platform` is neither `Darwin` nor `Linux`: it has no engine build here and fails closed, blocking every tool call (solanabr/safe-ai-skill#6). Keep it off: `"safe-ai-skill@stbr": false` under `enabledPlugins` in `.claude/settings.local.json`.
+- WARN `installed: unknown`: Claude Code's install list is unreadable here (High's read fence covers `~/`). Ask the user to run `claude plugin list` in their own shell.
+- FAIL `installed: no` and `enabled: True`: enabled but not installed, so none of its gates run. In the user's shell, in this directory: `claude plugin install safe-ai-skill@stbr --scope project`. If that cannot find the plugin, add the kit's marketplace first: `claude plugin marketplace add https://github.com/solanabr/ai-kit.git`.
+- WARN `installed: no` and `enabled: None` and `full_install: True`: an install from before safe-ai-skill was core. The same install command enables it too.
+- WARN `installed` shows a sha other than `pinned`: the plugin lags the kit's pin. `claude plugin update safe-ai-skill@stbr`.
+- OK otherwise: report its scope and sha.
+
 ## Output
 
 One table, then fix-its for the non-OK rows only, in the order to run them:
@@ -180,11 +227,13 @@ One table, then fix-its for the non-OK rows only, in the order to run them:
 | 8 | Dual-install guard | OK     | full install only (no plugin)   |
 | 9 | Firewall tier      | OK     | relaxed declared = enforced     |
 | 10| Fetch-exec guard   | OK     | registered; reports at relaxed  |
+| 11| safe-ai-skill      | FAIL   | enabled, not installed          |
 
 ### Fix-its (run in order)
 1. `git submodule update --init --recursive`
 2. `/setup-mcp`
 3. `solana airdrop 2 --url devnet`
+4. In your shell: `claude plugin install safe-ai-skill@stbr --scope project`
 ```
 
 ## Guardrails
