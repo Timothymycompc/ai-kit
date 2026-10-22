@@ -8,3 +8,9 @@
 # rather than all of ext/.
 supply_chain:
   verify_skills_dirs: [".claude/skills"]
+
+# The default denies reads of **/.env.*, which covers varlock's .env.schema: key
+# names and which are secret, never values. An allow glob wins over a deny, and this
+# list replaces the default's, so .env.example is listed again. .env stays denied.
+secrets:
+  allow_read_globs: ["**/.env.example", "**/.env.schema"]

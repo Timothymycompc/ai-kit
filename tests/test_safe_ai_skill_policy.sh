@@ -39,8 +39,14 @@ if [ "$status" -eq 2 ]; then
   echo "  SKIP: no YAML parser (ruby or python3 with PyYAML) to parse $POLICY"
 else
   assert_eq "0" "$status" "$POLICY parses as YAML"
-  assert_eq "True" "$(printf '%s' "$JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin) == {"supply_chain": {"verify_skills_dirs": [".claude/skills"]}})')" \
-    "It sets only supply_chain.verify_skills_dirs, to [.claude/skills]"
+  assert_eq "True" "$(printf '%s' "$JSON" | python3 -c 'import json, sys; print(json.load(sys.stdin) == {"supply_chain": {"verify_skills_dirs": [".claude/skills"]}, "secrets": {"allow_read_globs": ["**/.env.example", "**/.env.schema"]}})')" \
+    "It sets only supply_chain.verify_skills_dirs, to [.claude/skills], and secrets.allow_read_globs"
+  # The default's deny_read_globs has **/.env.*, which matches .env.schema; an allow glob
+  # wins over it. A list replaces the default's instead of merging, so .env.example has to
+  # be restated or the override would make it unreadable.
+  ALLOW="$(printf '%s' "$JSON" | python3 -c 'import json, sys; print(" ".join(json.load(sys.stdin).get("secrets", {}).get("allow_read_globs", [])))')"
+  assert_contains "$ALLOW" "**/.env.schema" "secrets.allow_read_globs lets the agent read .env.schema"
+  assert_contains "$ALLOW" "**/.env.example" "...and keeps **/.env.example, which a replacing list would otherwise drop"
 fi
 assert_file_not_contains "$REPO_ROOT/$POLICY" "verify_ext_submodules:" "verify_ext_submodules stays at its default (false would scan ext/ as one skill)"
 
