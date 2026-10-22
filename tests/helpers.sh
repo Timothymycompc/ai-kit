@@ -119,6 +119,28 @@ ext_packs_uninitialized() {
   return 1
 }
 
+# --- The kit's .gitignore block in an installed project ------------------------------
+
+# config_block <dir> — the kit's marked .gitignore block, CRs dropped
+config_block() { sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$1/.gitignore" 2>/dev/null | tr -d '\r'; }
+# ignore_status <dir> <path> — git check-ignore's exit status there: 0 ignored, 1 not,
+# 128 not a work tree. Assert the number, never "it failed": 128 fails too, and proves
+# nothing about the .gitignore. The machine's global and system git config are shut out,
+# so a developer's own core.excludesFile cannot decide the result; XDG_CONFIG_HOME names a
+# directory nothing creates, which hides the default ~/.config/git/ignore as well.
+ignore_status() {
+  local rc=0
+  (cd "$1" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 XDG_CONFIG_HOME="${TMPDIR:-/tmp}/sak-no-xdg.$$" \
+    git check-ignore -q "$2") || rc=$?
+  echo "$rc"
+}
+# add_to_block <dir> <entry> — write <entry> into the kit's block, as an older install did
+add_to_block() {
+  local tmp="${TMPDIR:-/tmp}/sak-gitignore.$$"
+  awk -v e="$2" '/^# <<< solana-ai-kit config <<</ { print e } { print }' "$1/.gitignore" > "$tmp" \
+    && cat "$tmp" > "$1/.gitignore" && rm -f "$tmp"
+}
+
 assert_eq() {
   local expected="$1"
   local actual="$2"

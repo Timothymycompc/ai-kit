@@ -7,7 +7,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
 TEMP_DIR="$(new_tmp)" || exit 1
-trap 'rm -rf "$TEMP_DIR"' EXIT
+WORK="$(new_tmp)" || exit 1
+trap 'rm -rf "$TEMP_DIR" "$WORK"' EXIT
 
 echo "[test_install] Installing to temp directory: $TEMP_DIR"
 
@@ -58,9 +59,26 @@ GITIGNORE_CONTENT="$(cat "$TEMP_DIR/.gitignore")"
 assert_contains "$GITIGNORE_CONTENT" ".claude/skills/ext/" ".gitignore contains ext/ entry"
 assert_contains "$GITIGNORE_CONTENT" "CLAUDE.local.md" ".gitignore contains CLAUDE.local.md entry"
 assert_contains "$GITIGNORE_CONTENT" ".gitmodules" ".gitignore contains .gitmodules (config gitignored by default)"
-assert_contains "$GITIGNORE_CONTENT" "CLAUDE.md" ".gitignore contains CLAUDE.md (config gitignored by default)"
 assert_contains "$GITIGNORE_CONTENT" ".mcp.json" ".gitignore contains .mcp.json (config gitignored by default)"
 assert_contains "$GITIGNORE_CONTENT" "solana-ai-kit config" ".gitignore has config markers for /commit-claude-config"
+# Grok Build reads CLAUDE.md as well as AGENTS.md and skips an instruction file that
+# .gitignore lists, so a default install that ignored CLAUDE.md gave Grok no house rules.
+# Asked of git rather than of the block, since check-ignore applies every rule that
+# matches: a stray CLAUDE.md line anywhere fails it. .mcp.json is the control — still
+# ignored, so the 1 is not a missing file.
+assert_eq "" "$(config_block "$TEMP_DIR" | grep -xF 'CLAUDE.md' || true)" \
+  ".gitignore config block does not list CLAUDE.md"
+assert_eq "1" "$(ignore_status "$TEMP_DIR" CLAUDE.md)" \
+  "git does not ignore CLAUDE.md (Grok Build skips an ignored instruction file)"
+assert_eq "0" "$(ignore_status "$TEMP_DIR" .mcp.json)" \
+  "...while the rest of the kit config stays ignored (.mcp.json)"
+# CLAUDE.local.md holds private notes, so it stays ignored, from the local-only section:
+# /commit-claude-config deletes the marked block, and must not un-ignore it with the rest.
+assert_eq "0" "$(ignore_status "$TEMP_DIR" CLAUDE.local.md)" "git ignores CLAUDE.local.md (private notes)"
+COMMITTED="$WORK/committed"; mkdir -p "$COMMITTED"; git -C "$COMMITTED" init -q
+sed '/# >>> solana-ai-kit config/,/# <<< solana-ai-kit config <<</d' "$TEMP_DIR/.gitignore" > "$COMMITTED/.gitignore"
+assert_eq "0" "$(ignore_status "$COMMITTED" CLAUDE.local.md)" \
+  "...and still does once /commit-claude-config deletes the config block"
 
 # Check .claude/VERSION exists
 assert_file_exists "$TEMP_DIR/.claude/VERSION" ".claude/VERSION file exists"
@@ -70,6 +88,62 @@ assert_file_exists "$TEMP_DIR/.claude/bin/update.sh" ".claude/bin/update.sh exis
 assert_file_exists "$TEMP_DIR/.claude/bin/resync.sh" ".claude/bin/resync.sh exists"
 assert_file_exists "$TEMP_DIR/.claude/bin/skills.sh" ".claude/bin/skills.sh exists for /add-skill"
 assert_file_exists "$TEMP_DIR/.claude/commands/add-skill.md" "/add-skill is installed"
+
+# ── A default install that still lists CLAUDE.md in the gitignore block ──────
+# Every default install made before CLAUDE.md left the block still lists it there, so
+# Grok Build gets no house rules until it goes. /update and a re-install take it out of
+# the marked block only: a CLAUDE.md line the user wrote outside it is theirs to keep,
+# and a block that lost its end marker is not a block. The --agents suite runs the same
+# cases for AGENTS.md.
+echo "[CLAUDE.md leaves an existing default install's gitignore block]"
+# install_default <dir> — returns install.sh's exit code; output goes to $WORK/last.log
+install_default() { SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$REPO_ROOT/install.sh" "$1" >"$WORK/last.log" 2>&1; }
+# update_default <dir> [args] — update.sh's output, stderr included
+update_default() { (cd "$1" && shift && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh "$@" 2>&1); }
+for PREV in "$WORK/prev-update" "$WORK/prev-reinstall"; do
+  mkdir -p "$PREV"; git -C "$PREV" init -q
+  install_default "$PREV" || true
+  add_to_block "$PREV" CLAUDE.md
+done
+PREV="$WORK/prev-update"
+assert_eq "0" "$(ignore_status "$PREV" CLAUDE.md)" "setup: the earlier install's block makes git ignore CLAUDE.md"
+cp "$PREV/.gitignore" "$WORK/gitignore.prev"
+UPD_OUT="$(update_default "$PREV" --dry-run)" || true
+assert_contains "$UPD_OUT" "[would update] .gitignore — CLAUDE.md removed from the kit config block" \
+  "update.sh --dry-run reports taking CLAUDE.md out of the block"
+assert_cmd_success "cmp -s '$WORK/gitignore.prev' '$PREV/.gitignore'" "...and writes nothing"
+UPD_OUT="$(update_default "$PREV")" || true
+assert_contains "$UPD_OUT" "[updated] .gitignore — CLAUDE.md removed from the kit config block" \
+  "update.sh takes CLAUDE.md out of the block"
+assert_eq "1" "$(ignore_status "$PREV" CLAUDE.md)" "...so git no longer ignores CLAUDE.md"
+assert_eq "" "$(grep -vxF 'CLAUDE.md' "$WORK/gitignore.prev" | diff - "$PREV/.gitignore" || true)" \
+  "...and that line is the only change to .gitignore"
+cp "$PREV/.gitignore" "$WORK/gitignore.once"
+UPD_OUT="$(update_default "$PREV")" || true
+assert_eq "" "$(printf '%s\n' "$UPD_OUT" | grep -F 'CLAUDE.md removed' || true)" "a second update.sh has nothing to remove"
+assert_cmd_success "cmp -s '$WORK/gitignore.once' '$PREV/.gitignore'" "...and leaves .gitignore as it was"
+# The user's own CLAUDE.md line below the block, on a CRLF checkout (Git for Windows)
+add_to_block "$PREV" CLAUDE.md
+printf '# mine\nCLAUDE.md\n' >> "$PREV/.gitignore"
+awk '{ printf "%s\r\n", $0 }' "$PREV/.gitignore" > "$WORK/gi" && cat "$WORK/gi" > "$PREV/.gitignore"
+update_default "$PREV" > "$QUIET_LOG" || quiet_fail "update.sh over a CRLF .gitignore" || true
+assert_eq "" "$(config_block "$PREV" | grep -xF 'CLAUDE.md' || true)" "update.sh takes a CRLF CLAUDE.md line out of the block"
+assert_eq "1" "$(tr -d '\r' < "$PREV/.gitignore" | grep -cxF 'CLAUDE.md' || true)" \
+  "...and keeps the user's own CLAUDE.md line outside it"
+# No end marker, so no block: everything after the opening line could be the user's
+printf '# >>> solana-ai-kit config — gitignored by default; run /commit-claude-config to version it >>>\n.claude/\nCLAUDE.md\n' > "$PREV/.gitignore"
+update_default "$PREV" > "$QUIET_LOG" || quiet_fail "update.sh over an unterminated block" || true
+assert_eq "1" "$(grep -cxF 'CLAUDE.md' "$PREV/.gitignore" || true)" "update.sh leaves CLAUDE.md alone when the block has no end marker"
+PREV="$WORK/prev-reinstall"
+install_default "$PREV" || true
+assert_file_contains "$WORK/last.log" "Removed CLAUDE.md from the gitignore config block" \
+  "install.sh re-install reports taking CLAUDE.md out of the block"
+assert_eq "" "$(config_block "$PREV" | grep -xF 'CLAUDE.md' || true)" "...takes it out"
+assert_eq "1" "$(ignore_status "$PREV" CLAUDE.md)" "...so git no longer ignores CLAUDE.md"
+add_to_block "$PREV" $'CLAUDE.md\r'
+install_default "$PREV" || true
+assert_eq "" "$(config_block "$PREV" | grep -xF 'CLAUDE.md' || true)" \
+  "a re-install takes a CRLF CLAUDE.md line out of the block"
 
 # An unreachable upstream used to exit 128 with nothing on either stream: under set -e
 # with pipefail the failing git ls-remote made its assignment fatal, so the fallback to

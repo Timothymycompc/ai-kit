@@ -94,24 +94,8 @@ export SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" NO_COLOR=1
 
 # install_agents <dir> — returns install.sh's exit code; output goes to $WORK/last.log
 install_agents() { bash "$REPO_ROOT/install.sh" --agents "$1" >"$WORK/last.log" 2>&1; }
-
-# config_block <dir> — the kit's marked .gitignore block, CRs dropped
-config_block() { sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$1/.gitignore" 2>/dev/null | tr -d '\r'; }
-# ignore_status <dir> <path> — git check-ignore's exit status there: 0 ignored, 1 not,
-# 128 not a work tree. Assert the number, never "it failed": 128 fails too, and proves
-# nothing about the .gitignore. The machine's global and system git config are shut out,
-# so a developer's own core.excludesFile cannot decide the result.
-ignore_status() {
-  local rc=0
-  (cd "$1" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 XDG_CONFIG_HOME="$WORK/no-xdg" \
-    git check-ignore -q "$2") || rc=$?
-  echo "$rc"
-}
-# add_to_block <dir> <entry> — write <entry> into the kit's block, as an older install did
-add_to_block() {
-  awk -v e="$2" '/^# <<< solana-ai-kit config <<</ { print e } { print }' "$1/.gitignore" > "$WORK/gi" \
-    && cat "$WORK/gi" > "$1/.gitignore"
-}
+# config_block, ignore_status and add_to_block live in helpers.sh: test_install.sh asks
+# the same questions of a default install.
 
 # Project-relative .claude/ paths would dangle in an agents-mode install (this mode
 # never creates .claude/). Intentional ones are skipped: ~/.claude/ and $HOME/.claude/
@@ -497,15 +481,17 @@ echo "[dual install gitignore, --agents first]"
 REV="$WORK/dual-agents-first"; mkdir -p "$REV"; git -C "$REV" init -q
 install_agents "$REV" || true
 bash "$REPO_ROOT/install.sh" "$REV" >/dev/null 2>&1 || true
-for entry in .claude/ CLAUDE.md .agents/; do
+for entry in .claude/ .agents/; do
   assert_eq "1" "$(sed -n '/>>> solana-ai-kit config/,/<<< solana-ai-kit config/p' "$REV/.gitignore" | grep -cxF "$entry" || true)" \
     "--agents first: $entry is listed once in the gitignore config block"
 done
-assert_eq "0" "$(config_block "$REV" | grep -cxF 'AGENTS.md' || true)" \
-  "--agents first: AGENTS.md is not in the gitignore config block"
-assert_eq "" "$(cd "$REV" && git status --porcelain --untracked-files=normal | grep -E '\.claude|CLAUDE\.md|\.agents' || true)" \
-  "--agents first: no kit path left untracked but AGENTS.md"
-assert_eq "1" "$(ignore_status "$REV" AGENTS.md)" "--agents first: git does not ignore AGENTS.md"
+for f in AGENTS.md CLAUDE.md; do
+  assert_eq "0" "$(config_block "$REV" | grep -cxF "$f" || true)" \
+    "--agents first: $f is not in the gitignore config block"
+  assert_eq "1" "$(ignore_status "$REV" "$f")" "--agents first: git does not ignore $f"
+done
+assert_eq "" "$(cd "$REV" && git status --porcelain --untracked-files=normal | grep -E '\.claude|\.agents' || true)" \
+  "--agents first: no kit path left untracked but the two instruction files"
 cp "$REV/.gitignore" "$WORK/gitignore.before"
 bash "$REPO_ROOT/install.sh" "$REV" >/dev/null 2>&1 || true
 install_agents "$REV" || true

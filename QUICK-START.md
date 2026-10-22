@@ -48,7 +48,7 @@ Take the LSP lines for the languages you actually write — Rust for programs, T
 
 That's it. Claude now has Solana superpowers.
 
-> The installer gitignores the kit (`.claude/`, `CLAUDE.md`, `.mcp.json`, `.gitmodules`, `.safe-ai-skill/`) by default to keep your repo clean. To version it instead (team setup), run `/commit-claude-config`.
+> The installer gitignores the kit (`.claude/`, `.mcp.json`, `.gitmodules`, `.safe-ai-skill/`) by default to keep your repo clean, but not `CLAUDE.md`: Grok Build skips an instruction file that `.gitignore` lists. To version the rest instead (team setup), run `/commit-claude-config`.
 
 > A full install starts on the **Relaxed** firewall tier, meant for local development: it blocks SSH and GPG keys, keychains, browser profiles, shell startup files and history, and it deliberately leaves your Solana config dir and the project's `.env` readable so the toolchain works. `/firewall` switches tier; [README → Firewall tiers](README.md#firewall-tiers) has the full matrix and [docs/firewall.md](docs/firewall.md) the limits.
 
