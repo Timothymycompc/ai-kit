@@ -489,45 +489,87 @@ print(" ".join(r for r in ids if r not in pool))' 2>/dev/null || echo "__ERROR__
   fi
 fi
 
-# A mid-pattern * does not match an empty string, so Bash(anchor * --final*) sat in the deny
-# list without stopping `anchor --final`. Every two-wildcard rule needs its zero-gap twin,
-# or another rule that covers the collapsed command.
-if [ -f .claude/settings.json ]; then
-  gap_rules="$(python3 -c '
-import fnmatch, json, re
+# Every wildcard in a Bash deny or ask rule has to hold with its gap empty, judged by
+# Claude Code's own matcher. fnmatch is not that matcher and disagrees with it in both
+# directions, so gap_probe ports it (code.claude.com/docs/en/permissions; the matcher in
+# the 2.1.286 binary). Two facts decide every case:
+#   * runs of spaces collapse in rule and command alike, then each `*` stands for any text,
+#     so a `*` with a space on BOTH sides cannot be empty: Bash(anchor * --final*) never
+#     stopped `anchor --final`, and Bash(git log * main) does not match `git log main`;
+#   * a trailing ` *` that is the rule's ONLY wildcard is optional, so Bash(git prune *)
+#     does deny a bare `git prune` — but a trailing ` *` in a rule with a second wildcard
+#     is not, which is how Bash(git push * -f *) let `git push origin -f` through.
+# So each rule is probed with every mix of empty and filled gaps, and every probe must be
+# matched by some rule in the same list. The check this replaced looked only at the
+# middle stars of two-wildcard rules, through fnmatch, and could not see a trailing gap,
+# a spaced star in a one-wildcard rule, or a leading one. Escapes and `**` are refused
+# rather than modelled: no kit rule uses either.
+gap_probe() { # gap_probe <label=settings.json>... -> one line per command no rule stops
+  python3 - "$@" <<'PY'
+import itertools, json, re, sys
 
-def zero_gap(pat):
-    for i, ch in enumerate(pat):
-        if ch == "*" and 0 < i < len(pat) - 1:
-            cand = re.sub(r" +", " ", pat[:i] + pat[i + 1:]).strip()
-            if cand and cand != pat:
-                yield cand
+def ws(s):
+    return re.sub(r"[ \t]+", " ", s)
 
-def probe(pat):
-    p = pat[:-1] if pat.endswith("*") else pat
-    return re.sub(r" +", " ", p.replace("*", "ZZZ")).strip()
+def matches(rule, cmd):
+    """Claude Code's Bash rule matcher: an exact rule, a legacy `prefix:*`, or a wildcard."""
+    m = re.fullmatch(r"(.+):\*", rule)
+    if m:
+        return ws(cmd) == ws(m.group(1)) or ws(cmd).startswith(ws(m.group(1)) + " ")
+    if "*" not in rule:
+        return rule == cmd
+    pat = ws(rule.strip())
+    rx = re.sub(r"""[.+?^${}()|\[\]\\'"]""", lambda s: "\\" + s.group(0), pat).replace("*", ".*")
+    if rx.endswith(" .*") and pat.count("*") == 1:
+        rx = rx[:-3] + "( .*)?"
+    return re.fullmatch(rx, ws(cmd), re.S) is not None
 
-perms = json.load(open(".claude/settings.json")).get("permissions") or {}
-bad = []
-for key in ("deny", "ask"):
-    pats = [r[5:-1] for r in perms.get(key) or []
-            if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
-    have = set(pats)
-    for pat in pats:
-        if pat.count("*") < 2:
+def probes(pat):
+    """Every spelling of pat that leaves at least one wildcard's gap empty."""
+    stars = [i for i, ch in enumerate(pat) if ch == "*"]
+    for empty in itertools.product((False, True), repeat=len(stars)):
+        if not any(empty):
             continue
-        for twin in zero_gap(pat):
-            if twin in have:
+        out, last = "", 0
+        for i, gap_empty in zip(stars, empty):
+            out += pat[last:i] + ("" if gap_empty else "ZZZ")
+            last = i + 1
+        cmd = re.sub(r" +", " ", out + pat[last:]).strip()
+        if cmd:
+            yield cmd
+
+# The documented examples. A port that disagrees with one makes every verdict suspect.
+DOCUMENTED = [("ls *", "ls", True), ("ls *", "lsof", False), ("ls*", "lsof", True),
+              ("npm run *", "npm run", True), ("git log * main", "git log main", False),
+              ("git * main", "git log", False), ("* --version", "node --version", True),
+              ("* --help *", "npm --help x", True), ("* --help *", "npm --help", False),
+              ("ls:*", "ls", True), ("npm run build", "npm run build --watch", False)]
+bad = ["the matcher port disagrees with the documented example Bash(%s) on %r" % (r, c)
+       for r, c, want in DOCUMENTED if matches(r, c) != want]
+for arg in sys.argv[1:]:
+    label, _, path = arg.partition("=")
+    perms = json.load(open(path)).get("permissions") or {}
+    for key in ("deny", "ask"):
+        pats = [r[5:-1] for r in perms.get(key) or []
+                if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
+        for pat in pats:
+            if "\\" in pat or "**" in pat:
+                bad.append("%s %s: Bash(%s) uses an escape or **, which gap_probe does not model"
+                           % (label, key, pat))
                 continue
-            cmd = probe(twin)
-            if any(fnmatch.fnmatchcase(cmd, o) for o in pats if o != pat):
-                continue
-            bad.append("%s: Bash(%s) needs Bash(%s)" % (key, pat, twin))
-print("\n".join(sorted(set(bad))))' 2>/dev/null || echo "__ERROR__")"
+            for cmd in probes(pat):
+                if not any(matches(o, cmd) for o in pats):
+                    bad.append("%s %s: Bash(%s) does not stop %r" % (label, key, pat, cmd))
+print("\n".join(sorted(set(bad))))
+PY
+}
+
+if [ -f .claude/settings.json ]; then
+  gap_rules="$(gap_probe "settings.json=.claude/settings.json" 2>/dev/null || echo "__ERROR__")"
   if [ -z "$gap_rules" ]; then
-    check "Every two-wildcard Bash rule has a zero-gap twin" 0
+    check "Every Bash deny wildcard holds with its gap empty, by Claude Code's matcher (settings.json)" 0
   else
-    echo "  FAIL: two-wildcard rules with no zero-gap twin (a mid-pattern * never matches empty):"
+    echo "  FAIL: a wildcard that cannot be empty leaves a command no rule in its list stops:"
     printf '%s\n' "$gap_rules" | head -8 | sed 's/^/         /'
     FAIL=$((FAIL + 1))
   fi
@@ -573,6 +615,30 @@ if [ -f .claude/bin/firewall.sh ] && [ -f .claude/security.json ]; then
         check "settings.json is what firewall.sh generates for the declared tier ($fw_tier)" 0
       else
         check "settings.json is what firewall.sh generates for the declared tier ($fw_tier) — run: bash .claude/bin/firewall.sh apply $fw_tier" 1
+      fi
+      # The gap probe above, over every tier the generator emits rather than the one
+      # committed: Medium and High carry a Bash deny Relaxed does not (gh api), and a rule
+      # added to any tier-varying group would otherwise never meet the probe.
+      gen_ok=0
+      for t in off relaxed medium high; do
+        if fw_run "$t"; then
+          cp "$fw_tmp/.claude/settings.json" "$fw_tmp/gen.$t.json"
+        else
+          gen_ok=1
+        fi
+      done
+      if [ "$gen_ok" -ne 0 ]; then
+        check "firewall.sh generates all four tiers for the gap probe" 1
+      else
+        gap_rules="$(gap_probe "off=$fw_tmp/gen.off.json" "relaxed=$fw_tmp/gen.relaxed.json" \
+          "medium=$fw_tmp/gen.medium.json" "high=$fw_tmp/gen.high.json" 2>/dev/null || echo "__ERROR__")"
+        if [ -z "$gap_rules" ]; then
+          check "Every Bash deny wildcard holds with its gap empty at all four generated tiers" 0
+        else
+          echo "  FAIL: a generated tier has a wildcard that cannot be empty and no rule behind it:"
+          printf '%s\n' "$gap_rules" | head -8 | sed 's/^/         /'
+          FAIL=$((FAIL + 1))
+        fi
       fi
     else
       check "firewall.sh apply <tier> runs in a clean copy" 1
