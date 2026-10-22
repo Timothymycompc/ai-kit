@@ -584,6 +584,7 @@
       "Bash(bash -lc *)",
       "Bash(zsh -c *)",
       "Bash(git -c *)",
+      "Bash(git --config-env*)",
       "Bash(git -C *)",
       "Bash(git config *alias.*)",
       "Bash(git config alias.*)",
@@ -639,6 +640,8 @@
       "Bash(git gc --prune*)",
       "Bash(git prune *)",
       "Bash(git reflog expire *)",
+      "Bash(git reflog delete *)",
+      "Bash(git reflog drop *)",
       "Bash(git push *--mirror*)",
       "Bash(git push --mirror*)",
 

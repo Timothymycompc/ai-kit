@@ -14,9 +14,9 @@
 
   "enforced": {
     "tier": "relaxed",
-    "ruleSetVersion": 6,
+    "ruleSetVersion": 7,
     "target": ".claude/settings.json",
-    "sha256": "88a0d55e77fede07c6ccfb439e9c7921ed97ee29380a23964603b3aff10aceb9",
+    "sha256": "a40bc508b40e6f89f340e4836684a13b61bd124aacde314738aa51a8eeafdf7d",
     "ruleIds": [
       "Bash(anchor *)",
       "Bash(cargo build*)",
@@ -323,6 +323,7 @@
       "Bash(bash -lc *)",
       "Bash(zsh -c *)",
       "Bash(git -c *)",
+      "Bash(git --config-env*)",
       "Bash(git -C *)",
       "Bash(git config *alias.*)",
       "Bash(git config alias.*)",
@@ -375,6 +376,8 @@
       "Bash(git gc --prune*)",
       "Bash(git prune *)",
       "Bash(git reflog expire *)",
+      "Bash(git reflog delete *)",
+      "Bash(git reflog drop *)",
       "Bash(git push *--mirror*)",
       "Bash(git push --mirror*)",
       "Bash(git push *--receive-pack*)",
