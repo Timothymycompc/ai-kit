@@ -365,9 +365,29 @@ function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
 # the glob matches the substring anywhere, so a pathspec containing `--ha` fires
 # the rule but not the hook.  Narrower is allowed here; stricter is not.
 #
+# Mirroring a glob includes its bare form.  In Claude Code's matcher a trailing
+# ` *` that is a rule's ONLY wildcard is optional, so `Bash(git clean *)` denies
+# `git clean` with nothing after it (documented, and verified live: bare `chown`
+# is refused by `Bash(chown *)` with no twin beside it).  The first version of
+# this pass required an argument after clean, restore, `checkout --` and
+# `reflog expire`, on the belief that the glob did too, and that left the
+# prefixed bare form covered by neither layer.  It matters for clean: with
+# `clean.requireForce` false, a bare `git clean` deletes untracked files, and
+# `git --config-env=clean.requireForce=V clean` sets that inside the same
+# command line, behind an option no glob sees past.
+#
 # WHAT IS IN, and why each earns the parsing surface:
 #   reflog expire   FIREWALL-SPEC.md section 3.4 singles this out as the command
 #                   that makes history unrecoverable.  Strongest case in the set.
+#   prune           with no --expire it deletes every unreachable loose object,
+#                   whatever its age.  Those are what `git fsck` recovers a
+#                   dropped stash from, or a deleted branch no reflog still
+#                   reaches, so prune is the step that makes that loss final.
+#                   `Bash(git prune *)` denies it at every tier, and an open
+#                   prefixed spelling made that rule decorative.  The subcommand
+#                   only: `worktree prune`, `remote prune`, `prune-packed` and
+#                   `fetch --prune` are other commands, and GW_SUB never equals
+#                   "prune" for any of them.
 #   clean, restore, checkout -- <path>, reset --hard
 #                   these destroy UNCOMMITTED work, which is in no reflog.
 #   push --mirror   overwrites every ref on the remote, for everyone, and is not
@@ -383,7 +403,10 @@ function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
 #                   in the set: -D against a safe -d, -f clustered inside -Df,
 #                   and `--sort=-date` already tripped a `-d` matcher in this
 #                   same guard once.  Friction without safety.
-#   gc --prune, prune           reach only unreferenced objects.
+#   gc --prune      deletes the same unreachable set prune does, so the reason
+#                   prune is in applies here as well.  Left out as a recorded
+#                   gap, not as a judgment that it is safe: its prefixed form
+#                   is open, and only the glob rules stand behind the plain one.
 #
 # KNOWN MISSES, stated rather than papered over: a variable-indirected command
 # (`G=git; $G clean -fd`) is invisible to this walk, and so is git inside a
@@ -392,26 +415,29 @@ function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
 # and `git checkout --force -- .` are open in BOTH layers, because the glob is
 # `git checkout -- *` and this pass mirrors it rather than widening it.
 
-function gd_scan(stage,   n, T, i, nargs) {
+function gd_scan(stage,   n, T, i) {
   n = tokenize(stage, T); if (n == 0) return ""
   if (!git_walk(T, n)) return ""
   if (!GW_PREFIXED) return ""          # the glob rules own the unprefixed form
   i = GW_I
-  nargs = n - i + 1
 
-  if (GW_SUB == "clean" && nargs >= 1)
+  # No argument count on any of these: each glob's trailing ` *` matches the
+  # bare subcommand too, so the bare prefixed form is denied to match.
+  if (GW_SUB == "clean")
     return "runs git clean behind a git-level option, deleting untracked files"
-  if (GW_SUB == "restore" && nargs >= 1)
+  if (GW_SUB == "restore")
     return "runs git restore behind a git-level option, overwriting the working tree"
-  if (GW_SUB == "checkout" && T[i] == "--" && nargs >= 2)
+  if (GW_SUB == "checkout" && i <= n && T[i] == "--")
     return "runs git checkout -- <path> behind a git-level option, discarding uncommitted changes"
+  if (GW_SUB == "prune")
+    return "runs git prune behind a git-level option, deleting the unreachable objects a dropped stash or a deleted branch could still be recovered from"
   if (GW_SUB == "reset") {
     for (; i <= n; i++)
       if (T[i] ~ /^--ha/)             # --hard, and the --ha abbreviation git accepts
         return "runs git reset --hard behind a git-level option, discarding uncommitted changes"
     return ""
   }
-  if (GW_SUB == "reflog" && T[i] == "expire" && nargs >= 2)
+  if (GW_SUB == "reflog" && i <= n && T[i] == "expire")
     return "runs git reflog expire behind a git-level option, which is what makes history unrecoverable"
   if (GW_SUB == "push") {
     for (; i <= n; i++) {

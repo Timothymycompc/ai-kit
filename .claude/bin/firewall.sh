@@ -358,11 +358,15 @@ ALLOW = [
 # the tier, and those denies then cannot be lifted.
 #
 # Two matcher facts the patterns below are built around:
-#   * A mid-pattern `*` does not match the empty string: Bash(anchor * --final*) did
-#     NOT stop `anchor --final`. Every two-wildcard rule therefore ships its zero-gap
-#     twin.
+#   * A `*` with a space on BOTH sides cannot be empty, because runs of spaces collapse
+#     before matching: Bash(anchor * --final*) did NOT stop `anchor --final`. A `*` that
+#     touches a non-space can be (`git branch *-D*` matches `git branch -D x`). Every
+#     two-wildcard rule ships its zero-gap twin anyway: needed for the first kind,
+#     belt-and-braces for the second, free either way.
 #   * A trailing ` *` DOES match the bare command, but only when it is the rule's only
-#     wildcard, so Bash(gh auth token *) already covers bare `gh auth token`.
+#     wildcard, so Bash(gh auth token *) already covers bare `gh auth token`. In a rule
+#     with a second wildcard it does not: Bash(* --help *) misses `npm --help`.
+# validate.sh's gap_probe checks every rule here against a port of the matcher.
 
 DENY_POLICY_ESCAPE = [
     # Unconditional at every tier, Off included. What these have in common is that none
@@ -666,11 +670,12 @@ DENY_WRAPPERS = [
     # in DENY_WHOLE_BINARY (aliases expand inside gh, invisible to the matcher) with
     # one extra turn of the screw: a gh alias has to be re-expanded by gh, while a git
     # alias is persisted in a config file and applies to every later session.
-    # Two rules because a mid-pattern * never matches the empty string: the gapped form
-    # covers `--global`, `--local`, `--file F`, `--add`, `--replace-all` and the newer
-    # `git config set` subcommand, and the zero-gap twin covers the bare
-    # `git config alias.z …`. Both leave `git config user.email …` and every other key
-    # untouched, which is the point of not denying `git config` as a whole.
+    # Two rules: the gapped form covers `--global`, `--local`, `--file F`, `--add`,
+    # `--replace-all` and the newer `git config set` subcommand, and the zero-gap twin
+    # names the bare `git config alias.z …` — which the gapped form also matches, its
+    # `*` touching `alias`, so the twin is belt-and-braces. Both leave
+    # `git config user.email …` and every other key untouched, which is the point of
+    # not denying `git config` as a whole.
     # These two rules are deliberately partial, and the rest is a hook. What a glob
     # cannot reach: git config section and variable names are case-insensitive while a
     # permission glob is not, so `git config Alias.z` walks past both (verified:
@@ -752,10 +757,12 @@ DENY_UNRECOVERABLE_GIT = [
     # all ran. The rest is closed by egress-guard.awk's GITDESTRUCT pass, which walks the
     # global options and classifies the subcommand; it mirrors these rules rather than
     # extending them, firing only on the prefixed spelling, and covers `clean`,
-    # `restore`, `checkout -- <path>`, `reset --ha*`, `reflog expire`, `push --mirror`
-    # and the transport overrides below. `branch -D`/`-f` and `gc --prune`/`prune` are
-    # out of that pass on purpose (reflog-recoverable, or unreferenced objects only), so
-    # for those the rules here are the only layer and the prefixed form stays open.
+    # `restore`, `checkout -- <path>`, `reset --ha*`, `reflog expire`, `prune`,
+    # `push --mirror` and the transport overrides below — each in its bare form too,
+    # because a trailing ` *` that is a rule's only wildcard matches the bare command.
+    # `branch -D`/`-f` is out of that pass on purpose (reflog-recoverable), and
+    # `gc --prune` is out as a recorded gap; for those two the rules here are the only
+    # layer and the prefixed form stays open.
     "Bash(git clean *)",            # git clean is never non-destructive; -xdf, -dfx, --f -d
     "Bash(git restore *)",          # the modern spelling of `git checkout -- .`
     "Bash(git checkout -- *)",
@@ -788,7 +795,8 @@ DENY_UNRECOVERABLE_GIT = [
 #    with the OS sandbox lifted for the whole command line. No tier has a reason to
 #    allow one, and no Solana toolchain emits one — the only legitimate use is reaching
 #    a git binary at a non-standard path on a server, which a human does by hand.
-#    Each carries its zero-gap twin: a mid-pattern * never matches the empty string.
+#    Each carries its zero-gap twin, belt-and-braces: the `*` touches the flag, so the
+#    gapped rule already matches the flag in first position.
 # 2. `gh issue delete` and `gh repo delete`. GitHub does not undo either — not from the
 #    UI, not from the API. They are the two `gh` subcommands with no recoverable form,
 #    which is why they are denies where `gh pr merge` in the same promise is a hook ask:
