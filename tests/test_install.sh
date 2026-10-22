@@ -158,4 +158,27 @@ assert_eq "1" "$UNREACH_RC" "an unreachable upstream exits 1, not 128"
 assert_contains "$(cat "$UNREACH/err")" "Could not clone" "an unreachable upstream says why on stderr"
 assert_contains "$(cat "$UNREACH/err")" "(main)" "the fallback to main runs when the tag lookup fails"
 
+# A token in SOLANA_AI_KIT_UPSTREAM (a private fork) must not reach the terminal or a CI
+# log through our own message; git already keeps it out of its own.
+echo "[upstream credentials]"
+CREDS="$(new_tmp)" || exit 1
+SOLANA_AI_KIT_UPSTREAM="file://tok3n-s3cr3t@/nonexistent/no-such-repo.git" \
+  bash "$SCRIPT_DIR/../install.sh" "$CREDS" > "$CREDS/out" 2> "$CREDS/err" || true
+assert_contains "$(cat "$CREDS/err")" "Could not clone file:///nonexistent/no-such-repo.git" "the failure names the upstream without its credentials"
+assert_file_not_contains "$CREDS/err" "tok3n-s3cr3t" "no credential from the upstream URL reaches stderr"
+assert_file_not_contains "$CREDS/out" "tok3n-s3cr3t" "no credential from the upstream URL reaches stdout"
+
+# A local source without .claude/ used to fall through to the network clone silently,
+# so an install meant to test a local tree installed whatever GitHub served instead.
+echo "[local source without .claude/]"
+NOSRC="$(new_tmp)" || exit 1
+mkdir -p "$NOSRC/src" "$NOSRC/target"
+NOSRC_RC=0
+SOLANA_AI_KIT_LOCAL_SRC="$NOSRC/src" SOLANA_AI_KIT_UPSTREAM="file:///nonexistent/no-such-repo.git" \
+  bash "$SCRIPT_DIR/../install.sh" "$NOSRC/target" > "$NOSRC/out" 2> "$NOSRC/err" || NOSRC_RC=$?
+assert_eq "1" "$NOSRC_RC" "a local source without .claude/ exits 1"
+assert_contains "$(cat "$NOSRC/err")" "SOLANA_AI_KIT_LOCAL_SRC=$NOSRC/src has no .claude/" "the refusal names the local source"
+assert_file_not_contains "$NOSRC/err" "Could not clone" "it refuses before trying the network"
+assert_dir_not_exists "$NOSRC/target/.claude" "nothing is installed"
+
 print_summary

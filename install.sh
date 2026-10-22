@@ -92,6 +92,8 @@ step() { printf '▸ %s\n' "$*"; }
 ok()   { printf '✓ %s\n' "$*"; }
 warn() { printf '! %s\n' "$*" >&2; }
 fail() { printf '✗ %s\n' "$*" >&2; }
+# A URL safe to print: git keeps credentials out of its own errors, so ours do too.
+redact_url() { printf '%s' "$1" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1#'; }
 
 print_banner
 
@@ -101,6 +103,10 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 # Support local source for testing: SOLANA_AI_KIT_LOCAL_SRC=/path/to/repo
 # (SOLANA_CLAUDE_LOCAL_SRC honored as legacy fallback)
 LOCAL_SRC="${SOLANA_AI_KIT_LOCAL_SRC:-${SOLANA_CLAUDE_LOCAL_SRC:-}}"
+if [ -n "$LOCAL_SRC" ] && [ ! -d "$LOCAL_SRC/.claude" ]; then
+  fail "SOLANA_AI_KIT_LOCAL_SRC=$LOCAL_SRC has no .claude/; nothing was installed"
+  exit 1
+fi
 if [ -n "$LOCAL_SRC" ] && [ -d "$LOCAL_SRC/.claude" ]; then
   step "Using local source: $LOCAL_SRC"
   mkdir -p "$TEMP_DIR/repo"
@@ -130,7 +136,7 @@ else
   # A failed clone stops here with git's whole error, instead of keeping its last line
   # and carrying on into an install with nothing to copy.
   if ! git clone -q --depth 1 --branch "$BRANCH" "$REPO_URL" "$TEMP_DIR/repo" 2>"$TEMP_DIR/clone.err"; then
-    fail "Could not clone $REPO_URL ($BRANCH)"
+    fail "Could not clone $(redact_url "$REPO_URL") ($BRANCH)"
     sed 's/^/  /' "$TEMP_DIR/clone.err" >&2
     exit 1
   fi
@@ -166,7 +172,7 @@ if [ -d "$TEMP_DIR/repo/.git" ] && [ -f "$TEMP_DIR/repo/.gitmodules" ]; then
     # those nested pins so validate.sh notices when they move; the packs that use one
     # test for it and fall back when it is absent.
     if ! git -C "$TEMP_DIR/repo" submodule update -q --init --depth 1 --jobs "$JOBS" -- "${PACK_PATHS[@]}"; then
-      fail "Could not fetch the skill packs from $REPO_URL"
+      fail "Could not fetch the skill packs from $(redact_url "$REPO_URL")"
       exit 1
     fi
   fi

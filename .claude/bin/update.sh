@@ -101,10 +101,21 @@ done
 # .claude/ only when one exists, so a SOLANA_AI_KIT_LOCAL_SRC run always passes this.
 # It protects only installs already on this code: a failed fetch overwrote nothing, so
 # an older update.sh runs on in its own code.
+# A URL safe to print: git keeps credentials out of its own errors, so ours do too.
+redact_url() { printf '%s' "$1" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1#'; }
+# The frozen region also falls back to the network, silently, when a local source has
+# no .claude/. Name the path either way: as the reason a fetch failed, or as a warning
+# when the clone worked, since the copy loop above has already applied it by now.
+LOCAL_SRC_NOTE=""
+if [ -n "$LOCAL_SRC" ] && [ ! -d "$LOCAL_SRC/.claude" ]; then
+  LOCAL_SRC_NOTE="SOLANA_AI_KIT_LOCAL_SRC=$LOCAL_SRC has no .claude/, so the upstream was used instead"
+fi
 if [ ! -d "$TEMP_DIR/repo/.claude" ]; then
-  echo "Error: could not fetch $REPO_URL ($BRANCH); nothing was updated." >&2
+  if [ -n "$LOCAL_SRC_NOTE" ]; then echo "Error: $LOCAL_SRC_NOTE." >&2; fi
+  echo "Error: could not fetch $(redact_url "$REPO_URL") ($BRANCH); nothing was updated." >&2
   exit 1
 fi
+if [ -n "$LOCAL_SRC_NOTE" ]; then echo "Warning: $LOCAL_SRC_NOTE: $(redact_url "$REPO_URL")." >&2; fi
 
 # hooks/ arrived after that frozen UPDATE_DIRS list, which cannot grow. Same
 # semantics as the loop: overwrite with upstream, but into a pre-created
