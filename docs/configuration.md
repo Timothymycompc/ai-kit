@@ -149,7 +149,7 @@ ls .memsearch/memory/
 
 Those memories are plain markdown you can read, edit and commit; the Milvus index is a derived cache that can be rebuilt from them, not the source of truth. Recall is `/memory-recall <question>`, or just asking naturally — the skill self-invokes when a question needs history.
 
-Note that `.memsearch/` lands in the **project** directory, not only in `~`. This repository's `.gitignore` lists it; `install.sh` does not add it to yours, so add `.memsearch/` to your project's `.gitignore` before you commit, or you will check in a memory index.
+Note that `.memsearch/` lands in the **project** directory, not only in `~`. `install.sh` adds `.memsearch/` to your project's `.gitignore`, and `/update` adds it to projects installed before that, so the memory index stays out of your commits.
 
 Beyond the standard install: Zilliz Cloud (managed, free tier) if you want memory shared across machines or a team, or self-hosted Milvus via Docker. Both are alternatives to the local file, not prerequisites.
 
