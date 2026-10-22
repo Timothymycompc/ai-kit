@@ -20,7 +20,7 @@ TARGET_DIR="$(cd "$CONFIG_DIR/.." && pwd)"
 cd "$TARGET_DIR"
 
 if [ ! -d "$TARGET_DIR/$CONFIG_NAME/skills/ext" ]; then
-  echo "Error: $CONFIG_NAME/skills/ext/ not found. Run from your project root."
+  echo "Error: $CONFIG_NAME/skills/ext/ not found. Run from your project root." >&2
   exit 1
 fi
 
@@ -49,10 +49,10 @@ if [ "$IN_GIT" = true ]; then
   # skill-registry.json recording the old ones. validate.sh fails on that gap, so say
   # what closes it before the failure arrives unexplained.
   if [ -f "$SCRIPT_DIR/skills.sh" ] && ! PINS="$(bash "$SCRIPT_DIR/skills.sh" pins 2>&1)"; then
-    echo "Registry pins now lag the submodules this run moved:"
-    printf '%s\n' "$PINS" | sed 's/^/  /'
-    echo "  Review what changed in each pack, then record it: bash $CONFIG_NAME/bin/skills.sh pins --write"
-    echo ""
+    echo "Registry pins now lag the submodules this run moved:" >&2
+    printf '%s\n' "$PINS" | sed 's/^/  /' >&2
+    echo "  Review what changed in each pack, then record it: bash $CONFIG_NAME/bin/skills.sh pins --write" >&2
+    echo "" >&2
   fi
 else
   echo "Not a git repository: skipping the submodule update (ext/ skills are vendored copies here)."

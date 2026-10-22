@@ -12,7 +12,6 @@ What is in the kit repository, which parts reach an installed project, and the w
 ├── .mcp.json                    # MCP server configurations (project root)
 ├── .safe-ai-skill/policy.yaml   # safe-ai-skill project policy (install.sh copies it)
 ├── install.sh                   # One-liner installer
-├── update.sh                    # Deprecation wrapper → .claude/bin/update.sh
 ├── validate.sh                  # Config integrity checker
 ├── LICENSE                      # MIT
 ├── tests/                       # Config integrity test suite
@@ -80,7 +79,6 @@ An install copies the named `.claude/` subdirectories (`agents`, `skills`, `comm
 | Script | Purpose |
 |--------|---------|
 | `install.sh` | One-liner installer: copies config to your project (`--agents` for non-Claude tools, `--with <ids>` for skill extensions) |
-| `update.sh` | Deprecation wrapper → `.claude/bin/update.sh` |
 | `validate.sh` | Validates all config integrity (agents, commands, skills, settings, versioning) |
 | `tests/run_all.sh` | Runs full test suite for config validation |
 
