@@ -70,17 +70,48 @@ echo "MY_SECRET=preserved" > "$TEMP_DIR/.env"
 (cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
 assert_file_contains "$TEMP_DIR/.env" "MY_SECRET=preserved" ".env not overwritten by update"
 
-# --- Retired rules: the kit's old globs: copies go, rules the user wrote stay ---
+# --- Retired rules: unedited kit copies go; edited copies and the user's own stay ---
+# A copy counts as the kit's only when it is byte-identical (CRs aside) to a version the
+# kit shipped. rust.md below has the kit's name and globs: but content no version ever
+# had, which is what a user's hand-corrected copy looks like, so it must survive.
 echo "[retired rules]"
 mkdir -p "$TEMP_DIR/.claude/rules"
 printf -- '---\nglobs:\n  - "**/*.rs"\n---\n# Rust Code Standards for Solana\n' > "$TEMP_DIR/.claude/rules/rust.md"
 printf -- '---\npaths:\n  - "src/**/*.ts"\n---\n# Team API rules\n' > "$TEMP_DIR/.claude/rules/team-api.md"
+# Unedited copies come from the v2.1.0 tag, dotnet.md with the CRLF endings a Windows
+# checkout gives it. Without the tag (shallow clone, no network) skip those, loudly.
+RULE_TAG_OK=yes
+for f in anchor.md dotnet.md; do
+  if ! git -C "$REPO_ROOT" show "v2.1.0:.claude/rules/$f" > "$TEMP_DIR/$f.shipped" 2>/dev/null; then
+    git -C "$REPO_ROOT" fetch -q --depth=1 origin tag v2.1.0 >/dev/null 2>&1 || true
+    git -C "$REPO_ROOT" show "v2.1.0:.claude/rules/$f" > "$TEMP_DIR/$f.shipped" 2>/dev/null || RULE_TAG_OK=no
+  fi
+done
+if [ "$RULE_TAG_OK" = yes ]; then
+  cp "$TEMP_DIR/anchor.md.shipped" "$TEMP_DIR/.claude/rules/anchor.md"
+  sed 's/$/\r/' "$TEMP_DIR/dotnet.md.shipped" > "$TEMP_DIR/.claude/rules/dotnet.md"
+fi
+rm -f "$TEMP_DIR/anchor.md.shipped" "$TEMP_DIR/dotnet.md.shipped"
 DRY_RULES="$(cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh --dry-run 2>&1)"
-assert_contains "$DRY_RULES" "[would remove] .claude/rules/rust.md" "--dry-run reports the retired kit rule"
-assert_file_exists "$TEMP_DIR/.claude/rules/rust.md" "--dry-run leaves the retired kit rule in place"
+assert_contains "$DRY_RULES" "[notice] .claude/rules/rust.md was edited after install, so it was kept" \
+  "--dry-run reports the edited kit rule as kept, and why it still loads everywhere"
+printf '%s\n' "$DRY_RULES" > "$TEMP_DIR/rules-dry.out"
+assert_file_not_contains "$TEMP_DIR/rules-dry.out" "[would remove] .claude/rules/rust.md" "--dry-run does not plan to remove the edited copy"
+if [ "$RULE_TAG_OK" = yes ]; then
+  assert_contains "$DRY_RULES" "[would remove] .claude/rules/anchor.md" "--dry-run reports the unedited kit rule"
+  assert_contains "$DRY_RULES" "[would remove] .claude/rules/dotnet.md" "--dry-run matches a CRLF copy of a shipped rule"
+  assert_file_exists "$TEMP_DIR/.claude/rules/anchor.md" "--dry-run leaves the unedited kit rule in place"
+else
+  echo "  SKIP: removal of unedited kit rules needs the v2.1.0 tag (shallow clone and no network)"
+fi
 (cd "$TEMP_DIR" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh) > "$QUIET_LOG" 2>&1 || quiet_fail "update.sh"
-assert_file_not_exists "$TEMP_DIR/.claude/rules/rust.md" "Retired kit rule removed by update"
+if [ "$RULE_TAG_OK" = yes ]; then
+  assert_file_not_exists "$TEMP_DIR/.claude/rules/anchor.md" "Unedited kit rule removed by update"
+  assert_file_not_exists "$TEMP_DIR/.claude/rules/dotnet.md" "Unedited kit rule with CRLF endings removed by update"
+fi
+assert_file_exists "$TEMP_DIR/.claude/rules/rust.md" "Edited kit rule kept by update"
 assert_file_exists "$TEMP_DIR/.claude/rules/team-api.md" "User-written rule kept by update"
+rm -f "$TEMP_DIR/.claude/rules/rust.md" "$TEMP_DIR/rules-dry.out"
 
 # --- Retired kit defaults: what kit <= 2.1.0 wrote into settings.json and .mcp.json ---
 echo "[retired kit defaults]"
