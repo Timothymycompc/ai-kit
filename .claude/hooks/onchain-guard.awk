@@ -62,16 +62,20 @@ function strip(st, cmd,   n, A, i, j, w, b, cur, hadw, keep, out) {
     # reads ANCHOR_PROVIDER_URL= out of this string, and the regex already allows
     # a run of assignments in front of the verb.
     if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { keep = keep w " "; i++; continue }
+    # `coproc NAME { … }` and `function NAME` are headers; the command follows.
+    if (cmd && w == "coproc" && i + 2 <= n && A[i + 2] == "{") { i += 2; continue }
     if (cmd && kit_reserved(w)) { i++; continue }
+    if (cmd && w == "function" && i < n) { i += 2; continue }
     if (!wrapper(b)) break
     cur = b; hadw = 1; i++
     while (i <= n) {
       if (A[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { keep = keep A[i] " "; i++; continue }
       if (A[i] == "--") { i++; break }
       if (A[i] ~ /^[-+]/) { if (kit_wrapper_optarg(cur, A[i]) && i < n) i++; i++; continue }
-      if (cur == "timeout" && A[i] ~ /^[0-9]/) { i++; continue }
       break
     }
+    # One operand at most: timeout's duration, flock's lock file.
+    if (i <= n && kit_wrapper_operand(cur, A[i])) i++
   }
   out = ""
   for (j = i; j <= n; j++) out = out (out == "" ? "" : " ") A[j]
@@ -275,7 +279,7 @@ END {
   # statement and line to line: a statement starting inside a plain quote is an
   # argument, so its leading `then` stays and the regex never anchors on it.
   nl = split(hd_strip(kit_shell_text(raw, 0)), LN, "\n")
-  qs = ""
+  qs = ""; KP = ""
   for (k = 1; k <= nl; k++) {
     line = LN[k]; out = ""
     if (k == nl && line == "") break
@@ -286,7 +290,9 @@ END {
         sep = substr(line, RSTART, RLENGTH)
         line = substr(line, RSTART + RLENGTH)
       } else { st = line; sep = ""; line = "" }
-      out = out strip(st, !KQ_COMMENT && kit_code_top(qs)) sep
+      cmd = !KQ_COMMENT && kit_code_top(qs)
+      out = out strip(st, cmd)
+      out = out kit_stmt_sep(st, sep, qs, ST_PAYLOAD)
       qs = kit_qscan(st sep, qs, ST_PAYLOAD)
     }
     print out
