@@ -1,8 +1,8 @@
 ---
-description: "Settle a question by verified panel and triage, then record it or ask; no argument lists open ones"
+description: "Settle a question by verified panel, or bring the user the points to decide and what unblocks you"
 ---
 
-The question, if any: `$ARGUMENTS`; `--no-sheet` in it skips the decision sheet (below). The user decides what is theirs; a verified panel decides the rest, records it and says so. With no question, gather every open decision — the record's proposed and provisional entries (`bash .claude/bin/decisions.sh export --handoff` groups them by status), the conversation's Open items, the decisions subagents reported needing — show them as briefs (below) and record nothing new.
+The question, if any: `$ARGUMENTS`; `--no-sheet` in it skips the decision sheet (below). The user decides what is theirs; a verified panel decides the rest, records it and says so. With no question, and whenever the user asks for the points they need to decide or what you need from them to carry on, gather every open decision — the record's proposed and provisional entries (`bash .claude/bin/decisions.sh export --handoff` groups them by status), the conversation's Open items, the decisions subagents reported needing — show them as briefs (below) and record nothing new. Asked to explain them better, give each one's why in plain words: what each choice changes and what waits on it.
 
 ## The record
 
@@ -43,10 +43,10 @@ Group them as **Needs your call**, **Decided while you were away** (one-way call
 
 ## Decision sheet
 
-On by default whenever a brief needs the user: a local HTML page with a card per brief, its options as buttons, its context folded away, a notes box, and a Copy answers button. Skip it for `--no-sheet`, or where `.claude/bin/decision-sheet.sh` is missing (a plugin install).
+On by default whenever a brief needs the user, the round with no question included, a new page each run: a local HTML page with a card per brief, its options as buttons, its context folded away, a notes box, and a Copy answers button. Skip it for `--no-sheet`, or where `.claude/bin/report-page.sh` is missing (a plugin install).
 
-1. **Write the briefs as JSON,** in the shape the script's header gives: a title no other sheet uses today (the same title on the same day replaces that sheet), and per brief its number in the numbered list, its record id as `id`, the options with the recommended one, `why`, `premises`, `reversible`, `blocks`, and the panel's arguments and artifacts as `context`. Save it as `decide-<YYYY-MM-DD>-<slug>.json` in `sheets/` under the directory `bash .claude/bin/decisions.sh path` prints, when that directory exists; otherwise (no record yet, the helper missing or failing, or that write refused) under `$TMPDIR`. Never in `.claude/context/`: a project that commits `.claude/` would publish private decisions.
-2. **Render it** from the project root: `bash .claude/bin/decision-sheet.sh <the JSON's path>`. It prints the sheet's path, beside the record or under `$TMPDIR`, and never opens it; this session's sandbox cannot open it either, so tell the user to run `! open <path>` (`! xdg-open <path>` on Linux; the script's stderr names the right one). On exit 1, show its one-line reason, fix the JSON once if the data was refused, and otherwise carry on with the list alone.
+1. **Write the briefs as JSON** to a file under `$TMPDIR`, not under `.claude/`, where the file tools ask before every write. The shape is in the script's header: a title, and per brief its number in the numbered list, its record id as `id`, the options with the recommended one, `why`, `premises`, `reversible`, `blocks`, the panel's arguments and artifacts as `context`, and as `links` every PR, issue, commit and file it names (a full https URL, or a path from the project root with its line).
+2. **Render it** from the project root: `bash .claude/bin/report-page.sh decisions <the JSON's path>`. The page and a copy of its JSON go to `.claude/reports/`, which git ignores even in a project that commits `.claude/`, and every earlier page there gains this one in its navigation bar. The script prints the page's path and never opens it, and this session's sandbox cannot either, so tell the user to run the command its stderr prints, prefixed with `!` (`! open <path>`, or `! xdg-open <path>` on Linux). On exit 1, show its one-line reason, fix the JSON once if the data was refused, and otherwise carry on with the list alone.
 3. **Answers come back** as a pasted block that starts `Decision answers:`, one line per brief: `<n>. [<id>] <question> → <the choice> | notes: <their notes>`. Each answered line is the user's words. When the record exists, record it word for word on the proposal its `[id]` names, through a quoted heredoc so quotes and paths in the notes reach the helper as data (`add --by you --kind decision` with a `question:` line where the id is not a record id):
    ```bash
    bash .claude/bin/decisions.sh supersede <id> --by you --stdin <<'DECISION_END'
@@ -58,4 +58,4 @@ On by default whenever a brief needs the user: a local HTML page with a card per
 
 ## Output
 
-The briefs, grouped; the sheet's path with the `! open <path>` line for the user to run; and the ids the record gained.
+The briefs, grouped; the page's `! open <path>` line for the user to run; and the ids the record gained.
