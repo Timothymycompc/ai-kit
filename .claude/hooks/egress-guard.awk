@@ -412,9 +412,10 @@ function gc_scan(stage,   n, T, Q, i, j, tok, o, mode, nop, OP, key) {
 #
 # Every destructive-git deny is a glob anchored on the literal subcommand, so a
 # git-level option in front of it sits where the glob expects `git`, and none of
-# them match.  `Bash(git -C *)` is the only one of those doors shut for that
-# reason; `-c` and `--config-env` are denied as config setters, which shuts them
-# too, but only in first position (GITCFG below is the rest of that).
+# them match.  `git -C` is the only one of those doors the rules shut for that
+# reason, with a `-C`-prefixed twin of each destructive rule (DENY_GIT_DASH_C in
+# firewall.sh); `-c` and `--config-env` are denied as config setters, which shuts
+# them too, but only in first position (GITCFG below is the rest of that).
 # Measured against the live `Bash(git clean *)`:
 #
 #   git --no-pager clean --dry-run           ran
@@ -831,8 +832,122 @@ BEGIN {
     GC_SECTION[gcs] = 1
   }
 }
+# ---- destructive-system pass: catastrophic `rm -rf` and process kills ---------
+#
+# A separate pass (KIT_RMKILL), run BEFORE egress-guard.sh's Off early-exit, so it
+# holds at every tier — the one place in the hooks that classifies these, since a
+# permission rule matches an `rm` target only as typed (another flag spelling, a
+# variable or an expanded home passes it) and the kill rules sit at Medium+High
+# (so Relaxed can kill stuck validators).  This pass is
+# the every-tier floor: a catastrophic target in any spelling, `kill` of PID -1,
+# and pkill/killall of a peer agent (claude/codex/orca).
+#
+# Targets are expanded the way the shell would: ~, $HOME and the known path vars to
+# their values, in-command `VAR=value` assignments to theirs, and an unknown
+# variable to EMPTY — which is the classic `rm -rf "$UNSET/sub"` -> `/sub` disaster.
+# An ordinary target (./target, .next, /tmp/x, $TMPDIR/x, "$S/up-game" under a
+# scratch path) is left alone; the classifier fires only when a target resolves to
+# /, a first-level absolute or home child, ~, $HOME, ., .., .git, a root/home glob,
+# or the project root.
+function rmk_varval(name,   v) {
+  if (name in RMK_ASSIGN) { v = RMK_ASSIGN[name]; if (v ~ /[$~]/) return rmk_expand(v); return v }
+  if (name in ENVIRON) return ENVIRON[name]
+  return ""                                          # unset: the empty-variable disaster
+}
+function rmk_expand(t,   out, L, i, c, j, name) {
+  out = ""; L = length(t); i = 1
+  if (substr(t, 1, 1) == "~" && (L == 1 || substr(t, 2, 1) == "/")) { out = RMK_HOME; i = 2 }
+  while (i <= L) {
+    c = substr(t, i, 1)
+    if (c == "$") {
+      if (substr(t, i + 1, 1) == "{") { j = index(substr(t, i), "}"); if (j == 0) { out = out c; i++; continue }
+        name = substr(t, i + 2, j - 3); i = i + j }
+      else { j = i + 1; name = ""; while (j <= L && substr(t, j, 1) ~ /[A-Za-z0-9_]/) { name = name substr(t, j, 1); j++ }
+        if (name == "") { out = out c; i++; continue } ; i = j }
+      out = out rmk_varval(name)
+    } else { out = out c; i++ }
+  }
+  return out
+}
+function rm_catastrophic(x,   y) {
+  if (x == "") return 0                              # empty target: rm errors, harmless
+  if (x == "/*" || x == "~/*" || (RMK_HOME != "" && x == RMK_HOME "/*")) return 1   # root/home glob
+  y = x; sub(/\/+$/, "", y); gsub(/^(\.\/)+/, "", y)
+  if (y == "") y = (x ~ /^\//) ? "/" : "."
+  if (y == "/" || y == "." || y == ".." || y == "*" || y == ".git") return 1
+  if (y == "~" || (RMK_HOME != "" && y == RMK_HOME)) return 1
+  if (RMK_PROJ != "" && y == RMK_PROJ) return 1
+  if (RMK_CWD != "" && y == RMK_CWD) return 1
+  if (y ~ /^\/[^\/]+$/) return 1                     # first-level absolute child: /x, /usr, and $UNSET/sub
+  if (RMK_HOME != "" && y == RMK_HOME "/*") return 1
+  return 0
+}
+function rm_scan(T, n,   i, rec, afterdd, a, tg) {
+  rec = 0; afterdd = 0
+  for (i = CWI + 1; i <= n; i++) {                   # CWI set by cmdword_x in rmkill_main
+    a = T[i]
+    if (!afterdd && a == "--") { afterdd = 1; continue }
+    if (!afterdd && a ~ /^--recursive/) { rec = 1; continue }
+    if (!afterdd && a ~ /^-[^-]*[rR]/) { rec = 1; continue }   # -r -R -rf -fr -Rf clusters
+    if (!afterdd && a ~ /^-/) continue                        # other flag (-f, --force, -v, -i)
+    tg = rmk_expand(a)
+    if (rec && rm_catastrophic(tg)) return "removes a catastrophic target recursively: " unmark(a)
+  }
+  return ""
+}
+# kill of PID -1 (every process the user owns / the process group): the last
+# operand is the target, so `kill -1 1234` (SIGHUP to 1234) is fine while
+# `kill -9 -1` is not.
+function kill_scan(T, n,   last) {
+  last = T[n]
+  if (last == "-1") return "signals process group -1 (every process you own), which is not recoverable"
+  return ""
+}
+# pkill/killall naming a peer agent.  Killing node/vitest workers by name stays
+# allowed; only claude, codex and orca (any case) are refused.
+function pkill_scan(c0, T, n,   i, a) {
+  for (i = CWI + 1; i <= n; i++) {
+    a = unmark(T[i])
+    if (a ~ /^-/ && a !~ /[A-Za-z].*claude|codex|orca/) continue   # a flag with no agent name attached
+    if (a ~ /[Cc][Ll][Aa][Uu][Dd][Ee]|[Cc][Oo][Dd][Ee][Xx]|[Oo][Rr][Cc][Aa]/)
+      return c0 " targets a peer agent process (claude, codex or orca) by name"
+  }
+  return ""
+}
+function rmkill_assign(ST, nst,   q, ng, G, g, n, T, i, nm) {
+  for (q = 1; q <= nst; q++) {
+    ng = split(ST[q], G, /\002/)
+    for (g = 1; g <= ng; g++) {
+      n = tokenize(G[g], T)
+      for (i = 1; i <= n; i++) {
+        if (T[i] !~ /^[A-Za-z_][A-Za-z0-9_]*=/) break
+        nm = T[i]; sub(/=.*$/, "", nm); RMK_ASSIGN[nm] = substr(T[i], length(nm) + 2)
+      }
+    }
+  }
+}
+function rmkill_main(   rtx, rnst, RST, q, ng, G, g, n, T, c0, why) {
+  RMK_HOME = ENVIRON["HOME"]; RMK_CWD = ENVIRON["KIT_CWD"]; RMK_PROJ = ENVIRON["CLAUDE_PROJECT_DIR"]
+  rtx = split_cmd(kit_shell_text(raw, 0))
+  rnst = split(rtx, RST, /\001/)
+  rmkill_assign(RST, rnst)
+  for (q = 1; q <= rnst; q++) {
+    ng = split(RST[q], G, /\002/)
+    for (g = 1; g <= ng; g++) {
+      n = tokenize(G[g], T); if (n == 0) continue
+      c0 = cmdword_x(T, n, 1, 1); if (c0 == "") continue
+      if (c0 == "rm") { why = rm_scan(T, n); if (why != "") { print "RM " why; exit } }
+      else if (c0 == "kill") { why = kill_scan(T, n); if (why != "") { print "KILL " why; exit } }
+      else if (c0 == "pkill" || c0 == "killall") { why = pkill_scan(c0, T, n); if (why != "") { print "KILL " why; exit } }
+    }
+  }
+}
+
 { raw = raw $0 "\n" }
 END {
+  # ---- destructive-system pass (rm / kill), run before the Off early-exit.
+  if (ENVIRON["KIT_RMKILL"] != "") { rmkill_main(); exit }
+
   # ---- the text egress-guard.sh's position-anchored publish and git patterns
   # read, instead of a verdict: continuations joined and the reserved words that
   # lead a command dropped, quotes left alone (kit_shell_text), and every heredoc

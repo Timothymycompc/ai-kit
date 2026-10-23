@@ -285,6 +285,66 @@ function go_scan(T, n, i, runner,   a) {
   return (index(T[i], "@") > 0) ? report("go", runner, T[i]) : 0
 }
 
+# ---- nested claude with permission-weakening flags (the policy-escape hole).
+#
+# The permission layer denies a plain `claude` carrying each policy-weakening flag
+# (one rule per flag, DENY_POLICY_ESCAPE in firewall.sh), but no rule matches a
+# path-named binary (`/opt/homebrew/bin/claude`) or a package-runner launch
+# (`npx @anthropic-ai/claude-code`), and at Relaxed/Medium the runner forms were
+# only NOTED here.  A nested agent started with --dangerously-skip-permissions,
+# --permission-mode, --settings/--setting-sources, --allowedTools, --add-dir,
+# --mcp-config, --plugin-dir, --plugin-url, --permission-prompt-tool, or
+# CLAUDE_CONFIG_DIR= runs outside this policy, so this is denied at every ACTIVE
+# tier — the caller handles the tier.  A plain `claude --version` / `claude plugin
+# validate .` carries no weakening flag, is not caught here, and no rule denies it.
+function is_weaken_flag(a,   f) {
+  f = a; sub(/=.*$/, "", f)
+  return (f == "--dangerously-skip-permissions" || f == "--permission-mode" \
+       || f == "--settings" || f == "--setting-sources" || f == "--allowedTools" \
+       || f == "--allowed-tools" || f == "--disallowedTools" || f == "--add-dir" \
+       || f == "--mcp-config" || f == "--strict-mcp-config" || f == "--plugin-dir" \
+       || f == "--plugin-url" || f == "--permission-prompt-tool")
+}
+function has_weaken(T, n,   i) {
+  for (i = 1; i <= n; i++) {
+    if (T[i] ~ /^CLAUDE_CONFIG_DIR=/) return 1
+    if (is_weaken_flag(T[i])) return 1
+  }
+  return 0
+}
+# names_claude — this stage launches a Claude Code agent: a command word basenamed
+# claude (plain or path-named); a package runner given @anthropic-ai/claude-code as
+# its package (`-p`/`--package` and their `=` forms included) or starting a command
+# basenamed claude; or a JS runtime running a claude-basenamed script.  The runners
+# are the ones decide() routes (npx, bunx, npm exec/x, bun x, pnpm/yarn dlx) plus
+# pnpm/yarn exec, which fetch nothing but do start an installed bin.
+function names_claude(c0, T, n,   i, s1, a, at) {
+  if (c0 == "claude") return 1                         # cmdword() already basenamed it
+  s1 = (CWI + 1 <= n) ? T[CWI + 1] : ""
+  at = 0
+  if (c0 == "npx" || c0 == "bunx") at = CWI + 1
+  else if ((c0 == "npm" && (s1 == "exec" || s1 == "x")) || (c0 == "bun" && s1 == "x") \
+        || ((c0 == "pnpm" || c0 == "yarn") && (s1 == "dlx" || s1 == "exec"))) at = CWI + 2
+  if (at) {
+    for (i = at; i <= n; i++) {
+      a = T[i]; sub(/^(-p|--package)=/, "", a)
+      if (node_name(a) == "@anthropic-ai/claude-code") return 1
+    }
+    for (i = at; i <= n; i++) {                        # the command the runner starts
+      a = T[i]
+      if (a == "-p" || a == "--package" || a == "-c" || a == "--call" || a == "-w" || a == "--workspace") { i++; continue }
+      if (a ~ /^-/) continue                           # another flag, or `--`
+      return (base(node_name(a)) == "claude")
+    }
+    return 0
+  }
+  if (c0 == "node" || c0 == "deno" || c0 == "bun" || c0 == "tsx" || c0 == "ts-node") {
+    for (i = CWI + 1; i <= n; i++) { if (T[i] ~ /^-/) continue; return (base(T[i]) == "claude") }
+  }
+  return 0
+}
+function claude_weaken(c0, T, n) { return (names_claude(c0, T, n) && has_weaken(T, n)) }
+
 # decide — route one stage's command word to its ecosystem.
 function decide(c0, T, n,   s1, s2) {
   s1 = (CWI + 1 <= n) ? T[CWI+1] : ""
@@ -343,6 +403,7 @@ END {
       n = tokenize(STG[g], T, Q); if (n == 0) continue
       c0 = cmdword(T, n)
       if (c0 == "") continue
+      if (claude_weaken(c0, T, n)) { print "CLAUDEWEAKEN|" c0; exit }
       if (decide(c0, T, n)) exit
     }
   }

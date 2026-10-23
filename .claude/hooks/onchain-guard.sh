@@ -163,6 +163,19 @@ fi
 # scheme, path, query and userinfo out, so an api-key cannot reach the prompt.
 CL=$(printf '%s' "${CL#=}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9:/._?=&%~-')
 HOST=$(printf '%s' "$CL" | sed -e 's#^[a-z][a-z0-9+.-]*://##' -e 's#[/?].*$##' -e 's#^[^@]*@##')
+# HOST with the IPv6 brackets and the :port stripped, for an EXACT local-host test.
+HNP=$(printf '%s' "$HOST" | sed -e 's#^\[##' -e 's#\].*$##' -e 's#:[0-9]*$##')
+
+# is_localnet — the cluster is a loopback the agent runs itself.  EXACT hosts only:
+# the old `*localhost*` glob also matched localhost.attacker.example, an
+# attacker-controlled host, and labelled an on-chain write to it "localnet".  Such a
+# host now falls through to the possibly-mainnet branch, which is stricter.  `l` and
+# `localnet` are the solana CLI's own shorthands (`-ul`).
+is_localnet() {
+  case $CL in l | localnet) return 0 ;; esac
+  case $HNP in localhost | 127.0.0.1 | ::1 | 0.0.0.0) return 0 ;; esac
+  return 1
+}
 
 case $CL in
   m | *mainnet*)
@@ -174,8 +187,18 @@ case $CL in
     ;;
   d | *devnet*) kit_ask "On-chain write to devnet (from $SRC)." ;;
   t | *testnet*) kit_ask "On-chain write to testnet (from $SRC)." ;;
-  l | localnet | *localhost* | *127.0.0.1*) kit_ask "On-chain write to localnet (from $SRC)." ;;
-  '') kit_ask "On-chain write to an unknown cluster (no --url, -C config, ANCHOR_PROVIDER_URL, Anchor.toml or solana config found). Check the target before approving." ;;
-  *) kit_ask "On-chain write to the RPC host ${HOST:-unknown} (from $SRC). That host is not a public Solana cluster name, so it may well be mainnet — check before approving." ;;
+  *)
+    if is_localnet; then
+      # Localnet is silent at Relaxed — a local validator is day-to-day work and
+      # Relaxed must not get in the way.  Medium and High still ask (an interactive
+      # prompt, ignored headless), so the exact-host fix is what changes here.
+      [ "$TIER" = "relaxed" ] && exit 0
+      kit_ask "On-chain write to localnet (from $SRC)."
+    elif [ -z "$CL" ]; then
+      kit_ask "On-chain write to an unknown cluster (no --url, -C config, ANCHOR_PROVIDER_URL, Anchor.toml or solana config found). Check the target before approving."
+    else
+      kit_ask "On-chain write to the RPC host ${HOST:-unknown} (from $SRC). That host is not a public Solana cluster name, so it may well be mainnet — check before approving."
+    fi
+    ;;
 esac
 exit 0

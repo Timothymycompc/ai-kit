@@ -451,6 +451,66 @@ assert_file_contains "$GUARD" "KIT_FETCH_EXEC_ALLOW" "the allowlist ships inside
 assert_file_not_contains "$REPO_ROOT/.claude/settings.json" "KIT_FETCH_EXEC_ALLOW" \
   "the allowlist is not in settings.json, which /update cannot rewrite"
 
+# ── nested Claude Code agent with permission-weakening flags ─────────────────
+# The per-flag `Bash(claude *--<flag>*)` rules deny a plain `claude` with a weakening
+# flag, but no rule matches a path-named one nor a package runner (npx, bunx, npm
+# exec/x, bun x, pnpm/yarn dlx or exec of @anthropic-ai/claude-code or the claude bin),
+# and the launcher forms were only NOTED at Relaxed. A nested agent started with a
+# policy-weakening flag (or CLAUDE_CONFIG_DIR=) runs outside this policy, so it is
+# denied at EVERY active tier. A plain claude form (no weakening flag) is not this
+# guard's to block, so it stays silent here.
+echo "[nested claude: weakening-flag launchers denied at every active tier]"
+for t in relaxed high; do
+  for C in \
+    "npx @anthropic-ai/claude-code -p --dangerously-skip-permissions x" \
+    "npx -y @anthropic-ai/claude-code@latest --permission-mode bypassPermissions" \
+    "bunx @anthropic-ai/claude-code --dangerously-skip-permissions" \
+    "pnpm dlx @anthropic-ai/claude-code --allowedTools Bash" \
+    "yarn dlx @anthropic-ai/claude-code --add-dir /" \
+    "npm exec @anthropic-ai/claude-code -- --dangerously-skip-permissions -p hi" \
+    "npm x -y @anthropic-ai/claude-code --permission-mode bypassPermissions" \
+    "bun x @anthropic-ai/claude-code --dangerously-skip-permissions" \
+    "npx --package=@anthropic-ai/claude-code claude --settings /tmp/s.json" \
+    "npm exec --package=@anthropic-ai/claude-code -- claude --add-dir /" \
+    "npx claude --dangerously-skip-permissions" \
+    "pnpm exec claude --dangerously-skip-permissions" \
+    "yarn exec claude --mcp-config /tmp/x.json" \
+    "npx @anthropic-ai/claude-code --mcp-config /tmp/x.json" \
+    "npx @anthropic-ai/claude-code --plugin-dir /tmp/p" \
+    "npx @anthropic-ai/claude-code --plugin-url https://example.com/p" \
+    "/opt/homebrew/bin/claude --dangerously-skip-permissions" \
+    "claude --dangerously-skip-permissions -p hi" \
+    "CLAUDE_CONFIG_DIR=/tmp/x claude -p hi" \
+    "env CLAUDE_CONFIG_DIR=/tmp/x claude -p hi" \
+    "timeout 60 claude -p --permission-mode=bypassPermissions hi"; do
+    run "$t" "$C"
+    assert_eq "deny|2" "$DECISION|$RC" "[$t] nested claude with a weakening flag is denied :: $C"
+  done
+done
+# Off runs no gate, and a plain claude (no weakening flag) is the permission layer's,
+# not this hook's — both must stay silent so the guard neither over-reaches nor
+# hard-fails a legitimate version check.
+run off "npx @anthropic-ai/claude-code -p --dangerously-skip-permissions x"
+assert_eq "silent|0" "$DECISION|$RC" "Off runs no gate even for a nested weakening launcher"
+# Plain claude forms carry no weakening flag: this guard leaves them to the
+# permission layer. (`npx @anthropic-ai/claude-code --version` is a separate
+# matter — a package fetch — and the tiers/allowlist sections above cover it.)
+for C in "claude --version" "claude plugin validate ." "claude -p summarize" \
+         "readlink \"\$(command -v claude)\""; do
+  run relaxed "$C"
+  assert_eq "silent" "$DECISION" "a plain claude form carries no weakening flag :: $C"
+done
+# A runner that starts something other than claude is not a nested agent, whatever
+# flags follow: a fetch stays a report at Relaxed, and an installed bin stays silent.
+for C in "npx some-random-cli --settings /tmp/s.json" \
+         "npm exec some-random-cli -- --add-dir /tmp" \
+         "npx some-random-cli claude --settings /tmp/s.json"; do
+  run relaxed "$C"
+  assert_eq "note" "$DECISION" "a runner starting another package is a fetch report, not a nested claude :: $C"
+done
+run relaxed "pnpm exec eslint --settings x"
+assert_eq "silent" "$DECISION" "pnpm exec of another bin with a weakening-like flag stays silent"
+
 # ── planted failures ─────────────────────────────────────────────────────────
 # The near-miss assertions above are only worth having if they can fail. Two
 # mutants prove they can: each is the shipped guard with one thing broken, and

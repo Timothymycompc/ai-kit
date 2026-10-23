@@ -56,7 +56,7 @@ KIT_INPUT=$(cat)
 KIT_PRE="$KIT_INPUT
 $(kit_unquoted "$KIT_INPUT")"
 case $KIT_PRE in
-  *npx* | *dlx* | *bunx* | *uvx* | *pipx* | *npm* | *bun* | *yarn* | *pnpm* | *'\\\n'*) ;;
+  *npx* | *dlx* | *bunx* | *uvx* | *pipx* | *npm* | *bun* | *yarn* | *pnpm* | *claude* | *'\\\n'*) ;;
   *cargo*) case $KIT_PRE in *install*) ;; *) exit 0 ;; esac ;;
   *uv*) case $KIT_PRE in *run* | *tool*) ;; *) exit 0 ;; esac ;;
   *go*) case $KIT_PRE in *install* | *run*) ;; *) exit 0 ;; esac ;;
@@ -86,6 +86,17 @@ esac
 # installed typescript is the common case, and it never needs to know the tier.
 TIER=$(kit_tier)
 [ "$TIER" = "off" ] && exit 0
+
+# A nested Claude Code agent launched with permission-weakening flags runs outside
+# this policy — the whole firewall is one child process away.  Denied at every
+# active tier (Off already exited), closing the package-runner and path-named routes
+# that the per-flag `Bash(claude *--<flag>*)` rules cannot see.  Those rules stay the
+# loud first layer for the plain spelling; this hook is what catches the ones they miss.
+case $VERDICT in
+  CLAUDEWEAKEN\|*)
+    kit_deny "launches a nested Claude Code agent with permission-weakening flags (--dangerously-skip-permissions, --permission-mode, --settings, --setting-sources, --allowedTools, --add-dir, --mcp-config, --plugin-dir, --plugin-url, --permission-prompt-tool, or CLAUDE_CONFIG_DIR). A nested agent started this way runs with no firewall, so it is denied at every tier. Run plain \`claude\` forms, or the user starts a nested session themselves."
+    ;;
+esac
 
 # GATE|<ecosystem>|<runner>|<name>|<package>
 # NAME is the package name normalised by the awk (scope kept, version dropped),
@@ -142,9 +153,9 @@ kit_note() {
 #
 # ONLY WHAT THE KIT RUNS ITSELF.  A package the kit merely suggests to the user
 # is not on it.  Nor is one the kit reaches only as `claude mcp add <name> --
-# npx <pkg>`: that command word is `claude`, which this guard never inspects and
-# which `Bash(claude *)` denies at every tier, so the MCP servers `/setup-mcp`
-# offers — @playwright/mcp, chrome-devtools-mcp, @supabase/mcp-server-supabase,
+# npx <pkg>`: that command word is `claude`, which this guard's fetch gate never
+# inspects and `Bash(claude mcp add*)` denies at every tier, so the MCP servers
+# `/setup-mcp` offers — @playwright/mcp, chrome-devtools-mcp, @supabase/mcp-server-supabase,
 # @phantom/mcp-server — are the user's to run, and an entry for them would
 # advertise a gate that does not exist here.  prettier, playwright and tsc are
 # absent for the opposite reason: each is a declared devDependency wherever the

@@ -537,30 +537,59 @@ import itertools, json, re, sys
 def ws(s):
     return re.sub(r"[ \t]+", " ", s)
 
+def ustars(pat):
+    """Indices of a `*` with an even run of preceding backslashes — a real wildcard.
+    A `\\*` is a literal star (Claude Code's matcher: ESCAPED_STAR), so it is not a gap
+    and does not make a rule a wildcard; a rule with none is matched as an exact string."""
+    out = []
+    for i, ch in enumerate(pat):
+        if ch == "*":
+            b, j = 0, i - 1
+            while j >= 0 and pat[j] == "\\":
+                b += 1; j -= 1
+            if b % 2 == 0:
+                out.append(i)
+    return out
+
+def unescape(s):
+    return s.replace("\\*", "*").replace("\\\\", "\\")
+
 def matches(rule, cmd):
     """Claude Code's Bash rule matcher: an exact rule, a legacy `prefix:*`, or a wildcard."""
     m = re.fullmatch(r"(.+):\*", rule)
     if m:
         return ws(cmd) == ws(m.group(1)) or ws(cmd).startswith(ws(m.group(1)) + " ")
-    if "*" not in rule:
-        return rule == cmd
+    if not ustars(rule):
+        return rule == cmd            # exact: `\*` stays literal, so it matches verbatim
     pat = ws(rule.strip())
-    rx = re.sub(r"""[.+?^${}()|\[\]\\'"]""", lambda s: "\\" + s.group(0), pat).replace("*", ".*")
-    if rx.endswith(" .*") and pat.count("*") == 1:
+    g, i = [], 0                      # tokenize \* and \\ before building the regex
+    while i < len(pat):
+        if pat[i] == "\\" and i + 1 < len(pat) and pat[i + 1] in ("*", "\\"):
+            g.append("\x00ES\x00" if pat[i + 1] == "*" else "\x00EB\x00"); i += 2
+        else:
+            g.append(pat[i]); i += 1
+    rx = re.sub(r"""[.+?^${}()|\[\]\\'"]""", lambda s: "\\" + s.group(0), "".join(g)).replace("*", ".*")
+    rx = rx.replace("\x00ES\x00", r"\*").replace("\x00EB\x00", r"\\")
+    if rx.endswith(" .*") and len(ustars(rule)) == 1:
         rx = rx[:-3] + "( .*)?"
     return re.fullmatch(rx, ws(cmd), re.S) is not None
 
 def probes(pat):
-    """Every spelling of pat that leaves at least one wildcard's gap empty."""
-    stars = [i for i, ch in enumerate(pat) if ch == "*"]
+    """Every spelling of pat that leaves at least one wildcard's gap empty. Only an
+    unescaped `*` is a gap, and the `-C <dir>` operand is never empty (git requires the
+    path), so it is forced filled — `git -C * clean*` denies `git -C . clean`, not a
+    path-less `git -C clean`."""
+    stars = ustars(pat)
+    mand = {i for i in stars if re.search(r"(?:^|\s)-C\s*$", pat[:i])}
     for empty in itertools.product((False, True), repeat=len(stars)):
-        if not any(empty):
+        combo = dict(zip(stars, empty))
+        if not any(empty) or any(combo[i] for i in mand):
             continue
         out, last = "", 0
-        for i, gap_empty in zip(stars, empty):
-            out += pat[last:i] + ("" if gap_empty else "ZZZ")
+        for i in stars:
+            out += pat[last:i] + ("" if combo[i] else "ZZZ")
             last = i + 1
-        cmd = re.sub(r" +", " ", out + pat[last:]).strip()
+        cmd = re.sub(r" +", " ", unescape(out + pat[last:])).strip()
         if cmd:
             yield cmd
 
@@ -579,8 +608,8 @@ for arg in sys.argv[1:]:
         pats = [r[5:-1] for r in perms.get(key) or []
                 if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
         for pat in pats:
-            if "\\" in pat or "**" in pat:
-                bad.append("%s %s: Bash(%s) uses an escape or **, which gap_probe does not model"
+            if "**" in pat:
+                bad.append("%s %s: Bash(%s) uses **, which gap_probe does not model"
                            % (label, key, pat))
                 continue
             for cmd in probes(pat):

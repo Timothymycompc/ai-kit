@@ -1048,18 +1048,18 @@ same "$M_SECRETS" deny deny deny "bash <<'EOF'${NL}cat ~/.ssh/id_rsa${NL}EOF" \
   "bash $BS${NL}<<'EOF'${NL}cat ~/.ssh/id_rsa${NL}EOF" "$MUT_CONT"
 same "$M_SECRETS" deny deny deny "bash <<'EOF'${NL}gh auth token${NL}EOF" \
   "sudo -u me bash <<'EOF'${NL}gh auth token${NL}EOF" "$MUT_HDOPT"
-# A shell's -c string is code, so every statement in it is one, not only the first:
-# the reserved-word form inside a payload, a second statement, a second line.
-same "$M_SECRETS" deny deny deny "bash -c 'gh auth token'" "bash -c 'if true; then gh auth token; fi'" "$MUT_EXPAND"
-same "$M_SECRETS" deny deny deny "bash -c 'gh auth token'" "bash -c 'cd /tmp; gh auth token'" "$MUT_EXPAND"
-same "$M_SECRETS" deny deny deny "bash -c 'gh auth token'" "bash -c \"echo hi${NL}gh auth token\"" "$MUT_EXPAND"
+# A shell's -c string is code, but every bash/sh/zsh/dash/ksh -c is hard-blocked in
+# secrets-guard (SHELLC) except memsearch's one line, so a `bash -c` carrying a
+# credential read is denied by that block whatever its inner shape (the dedicated
+# cases are in tests/test_secrets_guard.sh). kit_expand_code (the inner-statement
+# expansion) is still exercised here through eval, which is not a blocked shell, and
+# through M_CHAIN/M_EGRESS/M_FETCH below.
 same "$M_SECRETS" deny deny deny "eval 'gh auth token'" "env FOO=1 eval 'cd /tmp; gh auth token'" "$MUT_EXPAND"
 # Only a shell's -c string and eval's argument: anything else is an argument, the
 # wrapped command's message or a script's parameter. The message carries "sh"
 # (refresh), so it gets past kit_expand_code's cheap pre-check to the real test.
 quiet "$M_SECRETS" "nice git commit -m \"refresh; gh auth token\"" "$MUT_ANYARG"
 quiet "$M_SECRETS" "bash ./x.sh \"a; gh auth token\"" "$MUT_SCRIPTARG"
-quiet "$M_SECRETS" "bash -c 'git commit -m \"x; gh auth token\"'"
 quiet "$M_SECRETS" "git commit -m \"if true; then gh auth token; fi\""
 quiet "$M_SECRETS" "cat > notes.md <<'EOF'${NL}if true; then gh auth token; fi${NL}EOF" "$MUT_DOC"
 # A newline inside a quoted argument is not a statement boundary. The awk macOS ships
@@ -1824,5 +1824,44 @@ quiet "$M_EGRESS" 'git commit -m "fix: npm publish flow"'
 quiet "$M_EGRESS" 'echo "npm" "publish"'
 quiet "$M_EGRESS" "python3 - <<'EOF'${NL}print(['a', 'b'])${NL}EOF"
 quiet "$M_EGRESS" 'git log --format="%h %s" -3'
+# --- The firewall-friction PR's hook halves, checked for the property that puts them
+# --- in a hook at all: the rm/kill floor and the nested-claude deny hold at EVERY
+# --- active tier (the rm/kill pass runs BEFORE egress-guard's Off early-exit, so Off
+# --- included), and the localnet relaxation is silent only at Relaxed. The per-guard
+# --- suites carry the breadth; this is the cross-tier invariant in one place.
+echo "[firewall-friction hooks: the every-tier / pre-Off-exit floor]"
+# Item 2 — a catastrophic rm target, in a spelling the permission globs miss, is denied
+# at every tier including Off; ordinary cleanup is not.
+for t in off relaxed high; do
+  run_bash "$M_EGRESS" "$t" 'rm -fr /'; assert_eq deny "$DECISION" "[$t] rm -fr / is denied before the Off exit"
+  run_bash "$M_EGRESS" "$t" 'rm -rf "$HOME"'; assert_eq deny "$DECISION" "[$t] rm -rf \"\$HOME\" is denied"
+  run_bash "$M_EGRESS" "$t" 'rm -rf ./target'; assert_eq silent "$DECISION" "[$t] ordinary cleanup is untouched"
+done
+# Item 4 — kill of the process group, and pkill/killall of a peer agent, denied at every
+# tier; signalling a specific PID or one's own worker is not.
+for t in off relaxed high; do
+  run_bash "$M_EGRESS" "$t" 'kill -9 -1'; assert_eq deny "$DECISION" "[$t] kill -9 -1 (the process group) is denied"
+  run_bash "$M_EGRESS" "$t" 'pkill -f claude'; assert_eq deny "$DECISION" "[$t] pkill of a peer agent is denied"
+  run_bash "$M_EGRESS" "$t" 'pkill -f vitest'; assert_eq silent "$DECISION" "[$t] killing one's own worker is allowed"
+  run_bash "$M_EGRESS" "$t" 'kill -9 1234'; assert_eq silent "$DECISION" "[$t] a specific PID is allowed"
+done
+# Item 3 — a nested Claude Code agent with a weakening flag is denied at every active
+# tier (Off runs no gate); a plain claude form is left to the permission layer.
+run_bash "$M_FETCH" off 'npx @anthropic-ai/claude-code -p --dangerously-skip-permissions x'
+assert_eq silent "$DECISION" "[off] the nested-claude gate, like every gate, is off at Off"
+for t in relaxed high; do
+  run_bash "$M_FETCH" "$t" 'npx @anthropic-ai/claude-code -p --dangerously-skip-permissions x'
+  assert_eq deny "$DECISION" "[$t] a nested weakening launcher is denied"
+  run_bash "$M_FETCH" "$t" '/opt/homebrew/bin/claude --dangerously-skip-permissions'
+  assert_eq deny "$DECISION" "[$t] a path-named claude with a weakening flag is denied"
+done
+# Item 6 — localnet is silent only at Relaxed; an external host that merely contains a
+# loopback string is possibly-mainnet, never silent.
+run_bash "$M_CHAIN" relaxed 'solana program deploy --url http://localhost:8899 p.so'
+assert_eq silent "$DECISION" "[relaxed] a local validator write is silent"
+run_bash "$M_CHAIN" high 'solana program deploy --url http://localhost:8899 p.so'
+assert_eq ask "$DECISION" "[high] a local validator write still asks"
+run_bash "$M_CHAIN" relaxed 'solana program deploy --url https://localhost.attacker.example p.so'
+assert_eq ask "$DECISION" "[relaxed] an external host containing 'localhost' is not localnet"
 
 print_summary

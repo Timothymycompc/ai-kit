@@ -869,11 +869,17 @@ PY
   # hooks/ copy above, which is why a hook gate reaches an install whose ruleSetVersion
   # is already current (rule set 5 shipped four of those).
   #
-  # Rule set 6 is entirely in the corpus, so this catch-up is the ONLY route by which it
-  # reaches an install that already has a security.json: `gh repo delete` and
-  # `git config alias.*` denied at every tier, and Playwright's executors denied by name
-  # at Medium and High (`browser_evaluate` at High only). Purely additive, like v5's
-  # Bash half, so the re-apply adds rules and removes none.
+  # Rule set 9 is the reason this matters most: it both ADDS and DROPS corpus rules, and
+  # the catch-up is the only route either half reaches an install that already has a
+  # security.json. The apply subtracts the recorded enforced.ruleIds before writing the
+  # new block, so the drops (`Bash(git -C *)`, the `rm -rf /*` globs, `git branch -D`, the
+  # `Bash(claude *)` blanket, and kill/docker leaving the every-tier set) land exactly as
+  # the adds do (the `-C` twins, the policy-weakening claude flags,
+  # `~/.config/gh/hosts.yml` at Medium and High, the decisions.sh and decision-sheet.sh
+  # allows). Its hook halves -- the rm/kill floor, the nested-claude launchers, the
+  # branch-`-D` High ask -- do NOT come through here; they arrive with the hooks/ copy
+  # above. HOOK_SET_VERSION gates only registering a hook an install is not yet running,
+  # and rule set 9 registers none.
   FW_SH="$TARGET_DIR/$CONFIG_NAME/bin/firewall.sh"
   SEC_JSON="$TARGET_DIR/$CONFIG_NAME/security.json"
   if [ -f "$FW_SH" ] && [ -f "$SEC_JSON" ]; then

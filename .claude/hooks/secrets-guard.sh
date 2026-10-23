@@ -31,6 +31,32 @@ KIT_INPUT=$(cat)
 kit_parse
 [ -n "$KIT_CMD" ] || exit 0
 
+# ---- Shell -c: a hard block, and the one line it lets through.
+#
+# Every `bash|sh|zsh|dash|ksh -c` is denied below (SHELLC) at every tier, Off
+# included: a -c string is a program no permission rule can read.  In a full install
+# the permission layer denies `sh -c *`, `bash -c *`, `bash -lc *` and `zsh -c *` at
+# every tier too (DENY_WRAPPERS in firewall.sh), so there this block is a second
+# layer; in a plugin install, which carries no permission rules, it is the only one.
+#
+# The one exception is memsearch's memory-recall collection-derivation line, matched
+# WHOLE: not a prefix, not a pattern, nothing prepended or appended, so nothing can
+# ride a second command in behind it.  The string is memory-recall/SKILL.md's inline
+# command verbatim, with `${CLAUDE_PLUGIN_ROOT}` and `$MEMSEARCH_DIR` left as written;
+# tests/test_secrets_guard.sh pins it and the near-misses.  It does not make recall
+# work where the permission rules are in force: Claude Code checks a skill's inline
+# command against them, and evaluates deny rules whatever a hook returns, so
+# `Bash(bash -c *)` still stops the skill there.  That needs a change on memsearch's
+# side.  kit_allow rather than a silent exit, because a silent exit hands the call to
+# the normal permission flow, which prompts for it wherever no rule decides.
+MEMSEARCH_CMD=$(cat <<'KIT_MEMSEARCH_EOF'
+bash -c 'if [ -n "${MEMSEARCH_DIR:-}" ]; then bash "${CLAUDE_PLUGIN_ROOT}/scripts/derive-collection.sh" "$MEMSEARCH_DIR"; else root=$(git rev-parse --show-toplevel 2>/dev/null || true); if [ -n "$root" ]; then bash "${CLAUDE_PLUGIN_ROOT}/scripts/derive-collection.sh" "$root"; else bash "${CLAUDE_PLUGIN_ROOT}/scripts/derive-collection.sh"; fi; fi'
+KIT_MEMSEARCH_EOF
+)
+if [ "$KIT_CMD" = "$MEMSEARCH_CMD" ]; then
+  kit_allow "memsearch memory-recall collection-derivation line (the one shell -c this guard lets through)."
+fi
+
 [ -f "$HOOK_DIR/lib-tokenize.awk" ] && [ -f "$HOOK_DIR/secrets-guard.awk" ] || exit 0
 
 # The regex travels in the environment, not through -v: awk processes escape
@@ -43,6 +69,9 @@ case $VERDICT in
     # Fail closed, like the size cap: a command whose code strings nest deeper than
     # the hooks can read in time is refused, not read in part and let through.
     kit_deny_deep
+    ;;
+  SHELLC*)
+    kit_deny "runs a shell with -c (bash, sh, zsh, dash or ksh), which executes an arbitrary program the firewall cannot inspect. It is denied at every tier. Run the command directly instead of wrapping it in a shell -c."
     ;;
   WIPE*)
     # Destroying key material, not reading it, so the "use solana address instead"

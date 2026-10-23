@@ -375,6 +375,19 @@ kit_ask() {
 # without them, which a glob on the raw text never saw (#297).
 kit_unquoted() { printf '%s' "$1" | tr -d "\"'\\\\"; }
 
+# kit_allow <reason> — approve a call, skipping its permission prompt.  The
+# guards almost never grant: their job is to restrict, and a silent exit 0
+# already defers to the permission rules.  An allow cannot lift a rule either:
+# Claude Code evaluates deny and ask rules whatever a hook returns, so it decides
+# only where no rule does.  The one caller is secrets-guard.sh's exact allowlist
+# for memsearch's collection-derivation line, a `bash -c` the DENY_WRAPPERS rules
+# still deny wherever they ship.  The match that reaches it must be whole-string
+# exact, never a prefix or a pattern.
+kit_allow() {
+  _kit_emit allow "$1"
+  exit 0
+}
+
 # kit_deny <reason> — hard block.  Both shapes: the JSON decision for harnesses
 # that read stdout, stderr + exit 2 for Claude Code (and for Grok Build, which
 # fails open on output it cannot parse).
