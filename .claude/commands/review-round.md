@@ -24,23 +24,23 @@ Review `$ARGUMENTS` independently: a PR number, a branch, a range `A..B`, or `si
    - **Ripple and counts:** shared files (CHANGELOG, VERSION, lockfiles, test registries, counts) and the project's own ripple rules, where its instruction file keeps them.
    - **Product:** what a user sees and does, the way `/product-review` looks at it.
    - **Decisions:** the change against the decisions in force, with `bash .claude/bin/decisions.sh export` for their history and the agents' reports where they are on disk: a decision contradicted, a call made without the user that was theirs ([triage](decide.md)), a call reported as decided whose premises nobody verified.
-4. **Reconcile adversarially, reproducing High and Critical findings first.** Each High or Critical finding goes to a fresh agent that reproduces it against the review worktree without editing the reviewed files (a scratch test goes in its own temp directory), and returns the command and its output. A peer that sees the claim and the reproduction, but not the reviewer's argument, then answers CONFIRM, DISPUTE or DOWNGRADE with its reason. A finding that does not reproduce is never reported as High or Critical: it is unverified.
+4. **Triage the findings, then reconcile adversarially.** Merge duplicate findings, then label them with [/explore's triage](explore.md#triage); with `/adversarial` or `/adv` in front, all of them are adversarial. Each High or Critical finding, and each one labelled adversarial, goes to a fresh agent that reproduces it against the review worktree without editing the reviewed files (a scratch test goes in its own temp directory), and returns the command and its output. A finding labelled adversarial then goes to a peer that sees the claim and the reproduction, but not the reviewer's argument, and answers CONFIRM, DISPUTE or DOWNGRADE with its reason; one labelled user is an `ask` item. A finding that does not reproduce is never reported as High or Critical: it is unverified.
 5. **Sheet.** Merge duplicates, then number every item once, each with a default action: `fix` (confirmed or self-evident, and the fix is clear and fits this change), `ask` (the user's call: taste or product, scope, an interface, a decision in force, or a dispute the proof does not settle) or `defer` (real, but not this change). Write it to `.claude/context/review-<YYYY-MM-DD>-<slug>.md`, the slug ending in the short head SHA, even when it holds no items: it is the record `/ship` checks. Then remove the review worktree (outside the sandbox if it refuses).
 
-Lenses and reproducers are independent, so run them as a dynamic workflow when the session can run one, with a findings schema per lens and the decisions in force in each prompt, so the user can watch it in `/workflows`; else as background subagents launched in one message (`/tasks`), with the reproducers as a second batch. A workflow takes no input mid-run, so questions wait for the sheet.
+Lenses and reproducers are independent, so run them as a dynamic workflow when the session can run one, with a findings schema per lens and the decisions in force in each prompt, so the user can watch it in `/workflows`; else as background subagents launched in one message (`/tasks`), with the triage, the reproducers and the peers as later batches. A workflow takes no input mid-run, so questions wait for the sheet.
 
 ## Output
 
 ```
-REVIEW ROUND: <target> @ <full head SHA> vs <base> | <n> items | lenses run; skipped (why)
+REVIEW ROUND: <target> @ <full head SHA> vs <base> | <n> items | lenses run; skipped (why) | triage: <n> adversarial, <n> parallel, <n> serial, <n> user
 ## Needs your call
-<n>. [<severity>][<lens>] <file:line> — <the problem in plain words>
+<n>. [<severity>][<lens>][<label>] <file:line> — <the problem in plain words>
      Recommend: <action>, because <why>. Against: <the best case against>.
-     Evidence: <command → result> | unverified. Verdict (High and Critical): CONFIRM | DISPUTE | DOWNGRADE.
+     Evidence: <command → result> | unverified. Verdict (labelled adversarial): CONFIRM | DISPUTE | DOWNGRADE.
 ## Fix by default
-<n>. [<severity>][<lens>] <file:line> — <problem> → <fix>. Evidence: <command → result>
+<n>. [<severity>][<lens>][<label>] <file:line> — <problem> → <fix>. Evidence: <command → result>
 ## Deferred
-<n>. [<severity>][<lens>] <file:line> — <problem>. Not now because: <reason>
+<n>. [<severity>][<lens>][<label>] <file:line> — <problem>. Not now because: <reason>
 ## Disputed and dropped
 - <claim> — <why the proof rejected it>
 ```

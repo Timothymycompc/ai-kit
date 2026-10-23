@@ -16,7 +16,7 @@ Plan `$ARGUMENTS` — a goal, an intake item, or a research or decision file; wi
    - **Gate:** the command that proves it done and the output that means pass (`/test-rust`, `/test-ts`, `/diff-review`, plus `/audit-solana` for code that holds funds). A gate that ran zero tests or reported SKIP has not passed.
 4. **Shared files** have one owner, an integrator task after each wave: lockfiles (`Cargo.lock`, the package lockfile), `Anchor.toml`, the IDL and generated clients, `declare_id!`, CHANGELOG, VERSION and counts. Other tasks put the change they need there in their report instead of making it.
 5. **Waves.** Order the tasks into waves by dependency; tasks in one wave write disjoint files. Merges happen one at a time, and they are the user's call.
-6. **Attack the plan before handing it off.** An adversary subagent looks for a file two tasks write, an interface nobody produces, a gate that cannot fail, a premise nobody verified. Fix what it finds.
+6. **Check the plan, then attack what needs it, before handing it off.** Check here that no file is written by two tasks and every interface has a producer. Then label the plan's premises, design calls and gates with [/explore's triage](explore.md#triage), all of them adversarial with `/adversarial` or `/adv` in front. An adversary subagent attacks the ones labelled adversarial, above all for a premise nobody verified and a gate that cannot fail; the parallel and serial ones get the check their label describes, with no adversary, and a user one becomes a brief under Stops. Fix what they find.
 
 ## Plan file
 
@@ -28,4 +28,4 @@ Plan `$ARGUMENTS` — a goal, an intake item, or a research or decision file; wi
 
 ## Output
 
-The plan's path, one line per wave, and the briefs. Then stop for the user's approval: implementation starts with `/implement` or their go-ahead, never from this command.
+The plan's path, one line per wave, the triage lines from step 6, and the briefs. Then stop for the user's approval: implementation starts with `/implement` or their go-ahead, never from this command.

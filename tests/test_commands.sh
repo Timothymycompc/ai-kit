@@ -46,6 +46,47 @@ assert_eq "disable-model-invocation: true" "$(printf '%s\n' "$SHIP_FRONT" | grep
   "/ship is user-only (disable-model-invocation: true in its frontmatter)"
 
 echo ""
+echo "[test_commands] Checking /explore, the short aliases and composition..."
+# Project commands have no alias field, so each short name is a file that has the model read
+# its full command and follow it. It must name a target that exists (rep's, report.md, ships
+# in its own change) and stay user-only like /explore, which keeps both out of every
+# session's listing and leaves /adversarial and /parallel to start only from the user.
+# Frontmatter is read on its own, as for /ship above.
+front() { awk 'NR==1 && $0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$1" 2>/dev/null || true; }
+for pair in adv:adversarial par:parallel rep:report res:research exp:explore; do
+  short="${pair%%:*}"; full="${pair#*:}"
+  f="$CMDS_DIR/$short.md"
+  assert_file_exists "$f" "/$short exists"
+  assert_file_contains "$f" "\`.claude/commands/$full.md\`" "/$short forwards to .claude/commands/$full.md"
+  assert_file_exists "$CMDS_DIR/$full.md" "/$short's target /$full exists"
+  assert_eq "description: \"Short for /$full: " "$(front "$f" | grep -o "^description: \"Short for /$full: " || true)" \
+    "/$short's description starts 'Short for /$full:'"
+  # Claude Code replaces every \$ARGUMENTS in a command body with the user's text, so a
+  # second one, meant to name the target's placeholder, would arrive as that text instead.
+  assert_eq "1" "$(grep -o '\$ARGUMENTS' "$f" 2>/dev/null | wc -l | tr -d ' ')" "/$short uses \$ARGUMENTS exactly once"
+done
+for name in adv par rep res exp explore; do
+  assert_eq "disable-model-invocation: true" "$(front "$CMDS_DIR/$name.md" | grep -x 'disable-model-invocation:[[:space:]]*true' || true)" \
+    "/$name is user-only (disable-model-invocation: true in its frontmatter)"
+  assert_eq "" "$(front "$CMDS_DIR/$name.md" | grep '^model:' || true)" "/$name sets no model: line"
+done
+EXPLORE="$CMDS_DIR/explore.md"
+for label in adversarial parallel serial user; do
+  assert_cmd_success "grep -qx -e '- \*\*$label\*\*: .*' '$EXPLORE'" "explore.md's triage rubric defines the $label label"
+done
+assert_file_not_contains "$EXPLORE" "**single**" "explore.md's rubric says serial, not the calibration run's single"
+assert_file_contains "$EXPLORE" "## Triage rubric" "explore.md keeps the rubric under the heading its Triage section names"
+assert_file_contains "$EXPLORE" 'model: "sonnet"' "explore.md runs the triage on Sonnet"
+for f in research.md plan-work.md review-round.md; do
+  assert_file_contains "$CMDS_DIR/$f" "(explore.md#triage)" "$f triages its items with /explore's rubric before the adversarial pass"
+done
+assert_file_contains "$CMDS_DIR/parallel.md" "## Composition" "parallel.md carries the composition rules"
+assert_file_contains "$CMDS_DIR/adversarial.md" "(parallel.md#composition)" "adversarial.md points at /parallel's composition rules"
+for f in parallel.md adversarial.md; do
+  assert_file_not_contains "$CMDS_DIR/$f" "that command did not load" "$f runs a call that did not load instead of skipping it"
+done
+
+echo ""
 echo "[test_commands] Checking setup-mcp.md covers every .env.example key..."
 
 ENV_EXAMPLE="$REPO_ROOT/.env.example"
