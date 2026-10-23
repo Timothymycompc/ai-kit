@@ -873,13 +873,13 @@ PY
   # the catch-up is the only route either half reaches an install that already has a
   # security.json. The apply subtracts the recorded enforced.ruleIds before writing the
   # new block, so the drops (`Bash(git -C *)`, the `rm -rf /*` globs, `git branch -D`, the
-  # `Bash(claude *)` blanket, and kill/docker leaving the every-tier set) land exactly as
-  # the adds do (the `-C` twins, the policy-weakening claude flags,
-  # `~/.config/gh/hosts.yml` at Medium and High, the decisions.sh and decision-sheet.sh
+  # `Bash(claude *)` blanket, and kill/docker and `bash -c` leaving the every-tier set)
+  # land exactly as the adds do (the `-C` twins, the policy-weakening claude flags,
+  # `~/.config/gh/hosts.yml` at Medium and High, the decisions.sh and report-page.sh
   # allows). Its hook halves -- the rm/kill floor, the nested-claude launchers, the
   # branch-`-D` High ask -- do NOT come through here; they arrive with the hooks/ copy
   # above. HOOK_SET_VERSION gates only registering a hook an install is not yet running,
-  # and rule set 9 registers none.
+  # which is how secrets-guard.sh's new Read and Grep entry arrives (hook set 3, below).
   FW_SH="$TARGET_DIR/$CONFIG_NAME/bin/firewall.sh"
   SEC_JSON="$TARGET_DIR/$CONFIG_NAME/security.json"
   if [ -f "$FW_SH" ] && [ -f "$SEC_JSON" ]; then
@@ -912,12 +912,16 @@ PY
   # is the structural reason a correction can land upstream and reach nobody.
   #
   # What this does: append a kit hook entry the project does not already run. Never
-  # rewrite, reorder or remove one — an entry the user wrote, or edited, is theirs, and
-  # an entry naming a kit script is taken as already handled whatever its matcher or
-  # shape. "A kit hook" means the command names a file the kit ships in hooks/, so a
-  # guard added later is carried over by this same code with no edit here; the SessionStart
-  # banner names no such file and is deliberately left out, being cosmetic and having no
-  # identity stable enough to avoid appending a second copy of it.
+  # rewrite, reorder or remove one — an entry the user wrote, or edited, is theirs. A
+  # shipped entry counts as already run when a live entry names the same kit script and
+  # its matcher selects at least one tool the shipped matcher names, whatever its shape:
+  # so a guard the user narrowed or rewrote is left alone, while a second registration of
+  # a script the project already runs, on tools its entry does not cover (secrets-guard.sh
+  # on Read and Grep beside its Bash entry), is still added. "A kit hook" means the command
+  # names a file the kit ships in hooks/, so a guard added later is carried over by this
+  # same code with no edit here; the SessionStart banner names no such file and is
+  # deliberately left out, being cosmetic and having no identity stable enough to avoid
+  # appending a second copy of it.
   #
   # Gate: HOOK_SET_VERSION below, bumped when the kit's hook set changes, compared with
   # what the last run recorded — the same shape as the rule-set catch-up above. It is
@@ -931,9 +935,14 @@ PY
   # the top of this file regardless of this number — the bump forces one more
   # registration pass, which matters for a project whose settings.json is missing a kit
   # guard entry, since the fingerprint beside this gate would otherwise match and skip.
-  HOOK_SET_VERSION=2
+  # 2 -> 3: secrets-guard.sh is also registered on the Read and Grep tools, matcher
+  # `Read|Grep`, to keep gh's host file from them. The entry names a script every older
+  # install already runs on Bash, which is why "already run" now also asks whether the
+  # live entry's matcher selects the shipped entry's tools: on the script alone, this
+  # entry would never be added.
+  HOOK_SET_VERSION=3
   cat > "$TEMP_DIR/kit_hooks.py" <<'PY'
-import hashlib, json, os, sys, tempfile
+import hashlib, json, os, re, sys, tempfile
 
 dry_run = sys.argv[1] == "true"
 target, config, upstream, security_path = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -1030,6 +1039,39 @@ def scripts_of(entry):
     return found
 
 
+def named_tools(entry):
+    """The plain tool names a matcher lists: `Read|Grep` gives Read and Grep. A regex
+    alternative such as `mcp__context-mode__.*` names no single tool and is left out."""
+    matcher = entry.get("matcher") if isinstance(entry, dict) else None
+    if not isinstance(matcher, str):
+        return set()
+    return set(a for a in (p.strip() for p in matcher.split("|"))
+               if re.fullmatch(r"[A-Za-z0-9_]+", a))
+
+
+def selects(matcher, tool):
+    """Whether a matcher selects a tool, read as Claude Code reads one: none, "" or "*"
+    is every tool, a name or a `|` list of names is exact, anything else a regex."""
+    if not isinstance(matcher, str) or matcher.strip() in ("", "*"):
+        return True
+    if re.fullmatch(r"[A-Za-z0-9_|]+", matcher):
+        return tool in [a.strip() for a in matcher.split("|")]
+    try:
+        return re.search(matcher, tool) is not None
+    except re.error:
+        return False
+
+
+def runs(live_entry, entry, wanted):
+    """A live entry already runs a shipped one: it names one of the same kit scripts and
+    its matcher selects a tool the shipped matcher names. A shipped matcher that names
+    no plain tool is matched on the script alone."""
+    if not isinstance(live_entry, dict) or not (scripts_of(live_entry) & wanted):
+        return False
+    tools = named_tools(entry)
+    return not tools or any(selects(live_entry.get("matcher"), t) for t in tools)
+
+
 if os.path.islink(SETTINGS):
     sys.exit(0)
 settings = load(SETTINGS)
@@ -1054,19 +1096,17 @@ for event, shipped_entries in shipped.items():
     live = hooks.get(event)
     if live is not None and not isinstance(live, list):
         continue
-    present = set()
-    for entry in live or []:
-        present |= scripts_of(entry)
     for entry in shipped_entries:
         wanted = scripts_of(entry)
-        if not wanted or wanted & present:
-            continue  # not a kit hook, or this project already runs it
+        if not wanted or any(runs(l, entry, wanted) for l in live or []):
+            continue  # not a kit hook, or this project already runs it on those tools
         if live is None:
             live = []
             hooks[event] = live
         live.append(json.loads(json.dumps(entry)))
-        present |= wanted
-        added.extend("%s/%s" % (event, name) for name in sorted(wanted))
+        on = entry.get("matcher") if isinstance(entry.get("matcher"), str) else ""
+        added.extend("%s/%s%s" % (event, name, " (%s)" % on if on else "")
+                     for name in sorted(wanted))
 
 if added and not dry_run:
     settings["hooks"] = hooks

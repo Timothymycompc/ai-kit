@@ -256,15 +256,15 @@ function code_hits(a,   i, n, P, t) {
 # ---- shell -c, a hard block at every tier.
 #
 # bash/sh/zsh/dash/ksh invoked with -c (or -lc/-ic) runs an arbitrary program the
-# permission matcher cannot read.  The permission layer denies `sh -c *`, `bash -c *`,
-# `bash -lc *` and `zsh -c *` at every tier (DENY_WRAPPERS), and this block is the
-# layer behind those rules: on the Bash-tool and MCP surface, where this hook fires,
-# every shell -c is denied at every tier including Off — the forms the rules name and
-# the ones they never covered (dash, ksh, the -ic variant, and env/command/exec
-# prefixes the tokenizer walks past) alike.  In a plugin install, which ships no
-# permission rules, it is the only layer.  The one memsearch line is cleared
-# (kit_allow) in secrets-guard.sh before this awk runs.  fish and ash are out of
-# scope: the block covers the five shells above.
+# permission matcher cannot read.  The permission layer denies `sh -c *`, `bash -lc *`
+# and `zsh -c *` at every tier (DENY_WRAPPERS) and `bash -c *` at Medium and High
+# (DENY_BASH_C).  On the Bash-tool and MCP surface, where this hook fires, every shell
+# -c is denied at every tier including Off — the forms the rules name and the ones they
+# never covered (dash, ksh, the -ic variant, and env/command/exec prefixes the
+# tokenizer walks past) alike.  For `bash -c` at Off and Relaxed, and for every form in
+# a plugin install, which ships no permission rules, it is the only layer.  The one
+# memsearch line is cleared (kit_allow) in secrets-guard.sh before this awk runs.  fish
+# and ash are out of scope: the block covers the five shells above.
 function is_cshell(c) { return (c == "sh" || c == "bash" || c == "zsh" || c == "dash" || c == "ksh") }
 # shellc_hit — the stage's real command, past wrappers, is one of those shells run
 # with a -c flag.  A shell given a script path (`bash x.sh`) or a bare `-` is not a

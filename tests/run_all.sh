@@ -94,9 +94,11 @@ echo ""
 # gate whose whole value is in what it does NOT fire on — delete it and a false positive
 # on `git config user.email` reaches users silently. test_gh_api_guard is the same shape
 # for gh api: delete it and a deny on an ordinary issue comment would go unnoticed.
-# test_secrets_guard holds the shell -c block, a second layer behind the deny rules and the
-# only one in a plugin install, and its one exact memsearch exception: without it, a hook
-# change that let any other shell -c through would go unnoticed where no rule backs it. test_onchain_guard
+# test_secrets_guard holds the shell -c block, the only layer for an agent's bash -c at Off
+# and Relaxed and in a plugin install and a second one elsewhere, and its one exact
+# memsearch exception: without it, a hook change that let any other shell -c through would
+# go unnoticed where no rule backs it. It also holds the Read and Grep refusal on gh's host
+# file, the only thing between those tools and gh's token at Off and Relaxed. test_onchain_guard
 # holds the exact local-host match that lets Relaxed skip the localnet prompt: loosen it
 # and a remote host that merely names a local one would go unprompted.
 for required in test_firewall test_egress_guard test_fetch_exec_guard test_doc_gates test_git_guard test_gh_api_guard test_secrets_guard test_onchain_guard; do

@@ -180,10 +180,11 @@ SECURITY = os.path.join(TARGET, SECURITY_REL)
 #           `claude plugin validate .` run. kill -9/killall/pkill (DENY_PROCESS_KILL) and
 #           docker container/image/volume removal (DENY_DOCKER_DESTRUCTIVE) move to Medium
 #           and High. `~/.config/gh/hosts.yml` opens at Relaxed (DENY_GH_HOSTS_READ at
-#           Medium and High), so `gh` can start inside the sandbox.
-#           `Bash(bash .claude/bin/decisions.sh *)` and
-#           `Bash(bash .claude/bin/decision-sheet.sh *)` join the allow list. `sh -c` and
-#           `bash -c` keep their every-tier denies (see DENY_WRAPPERS).
+#           Medium and High), so `gh` can start inside the sandbox. `Bash(bash -c *)`
+#           leaves DENY_WRAPPERS for DENY_BASH_C, Medium and High only, so memsearch's
+#           recall set-up line runs at Off and Relaxed; `sh -c`, `bash -lc` and `zsh -c`
+#           keep their every-tier denies. `Bash(bash .claude/bin/decisions.sh *)` and
+#           `Bash(bash .claude/bin/report-page.sh *)` join the allow list.
 RULE_SET_VERSION = 9
 # enforced.ruleIdsScope: this record lists the generated block and nothing else. Records
 # without it predate #165, when a first apply recorded the user's own rules as well.
@@ -389,13 +390,12 @@ ALLOW = [
         # prompt or are denied). Listed so Off and the non-fast-path cases do not prompt,
         # beside skills.sh for the same reason; it writes nothing outside that directory.
         "Bash(bash .claude/bin/decisions.sh *)",
-        # Kit-owned helper /decide uses to render a decision sheet: it reads one
-        # decisions-shaped JSON file under 1 MiB and writes one self-contained HTML page
-        # (beside the record, under $TMPDIR, or an -o .html path it never lets replace a
-        # file it did not write), with no network request. Listed beside decisions.sh so
-        # the sheet renders without a prompt; its input checks are what keep it from
-        # copying an arbitrary file somewhere readable.
-        "Bash(bash .claude/bin/decision-sheet.sh *)",
+        # Kit-owned renderer for the local HTML pages /decide and /report produce: it
+        # reads one JSON file of the shape it expects and writes one self-contained HTML
+        # page, with no network request. Listed beside decisions.sh so a page renders
+        # without a prompt; its own input checks are what keep it from copying an
+        # arbitrary file somewhere readable.
+        "Bash(bash .claude/bin/report-page.sh *)",
     ],
     [
         "Read(*)",
@@ -425,11 +425,12 @@ ALLOW = [
 # DENY_MCP_PLAYWRIGHT_EXECUTION (Medium and High), DENY_MCP_CLOUDFLARE_EXECUTION and
 # DENY_MCP_PLAYWRIGHT_EVALUATE (High only), DENY_ENV_WRITE (Medium only), DENY_ENV_READ
 # and DENY_GH_HOSTS_READ (one High-only, one Medium and High, both Read denies), and the
-# three Bash deny groups at Medium and High: DENY_GH_API, DENY_PROCESS_KILL (kill -9,
-# killall, pkill) and DENY_DOCKER_DESTRUCTIVE (container/image/volume removal). Those
-# three are the only Bash denies in the corpus that vary by tier; every other Bash deny
-# is identical at all four. The residual is unchanged: a block hand-copied into user or
-# managed scope stops tracking the tier, and those denies then cannot be lifted.
+# four Bash deny groups at Medium and High: DENY_GH_API, DENY_PROCESS_KILL (kill -9,
+# killall, pkill), DENY_DOCKER_DESTRUCTIVE (container/image/volume removal) and
+# DENY_BASH_C. Those four are the only Bash denies in the corpus that vary by tier; every
+# other Bash deny is identical at all four. The residual is unchanged: a block
+# hand-copied into user or managed scope stops tracking the tier, and those denies then
+# cannot be lifted.
 #
 # Two matcher facts the patterns below are built around:
 #   * A `*` with a space on BOTH sides cannot be empty, because runs of spaces collapse
@@ -630,10 +631,12 @@ DENY_ENV_READ = [f"Read({p})" for p in ENV_FILES]
 # tools and, via that projection, the Bash sandbox and its children; at Medium and High
 # `~/.config/gh/hosts.yml` is also in SB_HOST_CREDENTIALS' denyRead, so this rule and the
 # sandbox list fence it from both the model and subprocesses there. At Relaxed the file
-# is readable by `gh` and by the model, but `cat ~/.config/gh/hosts.yml` stays denied
-# (DENY_SECRET_READS_VIA_BASH) so the token does not land in the transcript, and the
-# egress gates still refuse to send it. Only this one credential moves; the wallet and
-# every other host/registry token stay denied at every tier.
+# is readable inside the sandbox, by `gh` and by any process the agent runs. The token
+# stays out of the transcript another way: secrets-guard.sh refuses the Read and Grep
+# tools on the file at every tier, `cat ~/.config/gh/hosts.yml` stays denied
+# (DENY_SECRET_READS_VIA_BASH), and the egress gates still refuse to send it. Only this
+# one credential moves; the wallet and every other host/registry token stay denied at
+# every tier.
 DENY_GH_HOSTS_READ = ["Read(~/.config/gh/hosts.yml)"]
 
 DENY_CREDENTIALS = [
@@ -655,8 +658,9 @@ DENY_CREDENTIALS = [
     # die at Relaxed reading its own host file (it could not start inside the sandbox);
     # a Read() deny only at Medium and High keeps `gh` working at Relaxed while the two
     # stricter tiers still fence it. The gh token stays out of the transcript regardless:
-    # DENY_SECRET_READS_VIA_BASH still refuses `cat ~/.config/gh/hosts.yml`, and the
-    # secrets and egress guards still refuse to send it, at every tier. Every OTHER
+    # secrets-guard.sh refuses the Read and Grep tools on the file, DENY_SECRET_READS_VIA_BASH
+    # still refuses `cat ~/.config/gh/hosts.yml`, and the secrets and egress guards still
+    # refuse to send it, at every tier. Every OTHER
     # credential here -- the wallet and the registry/host tokens -- stays denied at every
     # tier; only the gh host file moves.
     "Read(~/.kube/config)",
@@ -893,18 +897,17 @@ DENY_WRAPPERS = [
     # Off, which has no sandbox; a command line led by an excludedCommands entry, which
     # lifts the sandbox for the whole line; and the file tools below High, where those
     # paths only prompt as protected paths and bypassPermissions writes them unasked.
-    # The shell `-c` rules stay at every tier: a `-c` string is a program the matcher
-    # cannot read. They also stop memsearch's recall skill, which runs its set-up line as
-    # `bash -c '<derive-collection>'`: Claude Code checks a skill's inline command against
-    # these rules and aborts the skill on a deny, and it evaluates deny rules whatever a
-    # hook returns, so no hook can exempt that one exact line while the rule stands.
-    # Recall needs a change on memsearch's side; lowering these rules is not the fix.
-    # secrets-guard.sh blocks every bash/sh/zsh/dash/ksh `-c` at every tier as well, with
-    # memsearch's exact line as its one exception. Behind these rules that is a second
-    # layer; in a plugin install, which carries no permission rules, it is the only one.
+    # The shell `-c` rules here stay at every tier: a `-c` string is a program the matcher
+    # cannot read. `Bash(bash -c *)` is the exception and lives in DENY_BASH_C below,
+    # Medium and High only, because memsearch's recall skill runs its set-up line as
+    # `bash -c '<derive-collection>'`. Claude Code checks a skill's set-up line against
+    # the permission rules only, so no hook sees it and none can exempt it: an every-tier
+    # rule stopped recall everywhere. secrets-guard.sh blocks every bash/sh/zsh/dash/ksh
+    # `-c` the agent runs, at every tier, with memsearch's exact line as its one
+    # exception. Behind the rules that is a second layer; for the agent's own `bash -c`
+    # at Off and Relaxed, and in a plugin install, it is the only one.
     "Bash(env *)",
     "Bash(sh -c *)",
-    "Bash(bash -c *)",
     "Bash(bash -lc *)",
     "Bash(zsh -c *)",
     "Bash(git -c *)",
@@ -1006,6 +1009,21 @@ DENY_DOCKER_DESTRUCTIVE = [
     "Bash(docker compose down -v*)",
     "Bash(docker compose down *--volumes*)",
     "Bash(docker compose down --volumes*)",
+]
+
+# Medium and High. `bash -c` is a wrapper the matcher cannot see past, like the rest of
+# DENY_WRAPPERS, and it left that every-tier group in rule set 9 for one reason: a skill's
+# set-up line. memsearch's memory-recall skill derives its collection with one
+# `bash -c` line, and Claude Code checks a skill's set-up line against the permission
+# rules only and aborts the skill on a deny, so an every-tier rule stopped recall at
+# every tier. At Off and Relaxed it now runs. The cost is the same for every skill: at
+# those two tiers any installed skill's set-up line may run `bash -c` with no rule and
+# no hook in front of it. The agent's own `bash -c` is still refused at every tier by
+# secrets-guard.sh, which lets only memsearch's exact line through; at Medium and High
+# this rule stands in front of it, and recall stops there again. `sh -c`, `bash -lc`
+# and `zsh -c` stay in DENY_WRAPPERS: memsearch needs `bash -c` alone.
+DENY_BASH_C = [
+    "Bash(bash -c *)",
 ]
 
 DENY_UNRECOVERABLE_GIT = [
@@ -1704,7 +1722,7 @@ def plan(tier):
     high = tier == "high"
 
     # Tier-varying permissions.deny groups, assembled in one place so the order the
-    # generator writes them in is fixed. One of these is a Bash rule, which every other
+    # generator writes them in is fixed. Four of these are Bash rules, which every other
     # Bash deny deliberately is not — see the note on permissions.deny below.
     deny_extra = []
     if high:
@@ -1716,6 +1734,7 @@ def plan(tier):
         deny_extra.append(DENY_GH_HOSTS_READ)
         deny_extra.append(DENY_PROCESS_KILL)
         deny_extra.append(DENY_DOCKER_DESTRUCTIVE)
+        deny_extra.append(DENY_BASH_C)
     if tier == "medium":
         deny_extra.append(DENY_ENV_WRITE)
 
@@ -1731,17 +1750,19 @@ def plan(tier):
         "permissions.ask": [],
         # Tier-varying deny groups, all of them: DENY_SELF_PROTECTION,
         # DENY_GIT_CONFIG_AND_HOOKS and DENY_ENV_READ at High, DENY_ENV_WRITE at Medium
-        # alone, DENY_GH_API, DENY_GH_HOSTS_READ, DENY_PROCESS_KILL and
-        # DENY_DOCKER_DESTRUCTIVE at Medium and High, and the four MCP groups appended
-        # after the Off early-return below.
+        # alone, DENY_GH_API, DENY_GH_HOSTS_READ, DENY_PROCESS_KILL,
+        # DENY_DOCKER_DESTRUCTIVE and DENY_BASH_C at Medium and High, and the four MCP
+        # groups appended after the Off early-return below.
         #
-        # DENY_GH_API, DENY_PROCESS_KILL and DENY_DOCKER_DESTRUCTIVE are the three Bash
-        # deny groups that vary by tier (process control and container/volume removal are
-        # day-to-day work at Relaxed and SIGTERM is never gated, so the diligent tiers
-        # carry them and Relaxed does not). They carry the residual every tier-varying
-        # group carries: /firewall subtracts exactly enforced.ruleIds from the one file it
-        # owns, so a descent really does lift them, but a generated block hand-copied into
-        # user or managed scope stops tracking the tier and then nothing can.
+        # DENY_GH_API, DENY_PROCESS_KILL, DENY_DOCKER_DESTRUCTIVE and DENY_BASH_C are the
+        # four Bash deny groups that vary by tier (process control and container/volume
+        # removal are day-to-day work at Relaxed and SIGTERM is never gated, and a skill's
+        # `bash -c` set-up line — memsearch's recall — has to run at the default tier, so
+        # the diligent tiers carry them and Relaxed does not). They carry the residual
+        # every tier-varying group carries: /firewall subtracts exactly enforced.ruleIds
+        # from the one file it owns, so a descent really does lift them, but a generated
+        # block hand-copied into user or managed scope stops tracking the tier and then
+        # nothing can.
         "permissions.deny": DENY + deny_extra,
         "sandbox.excludedCommands": [] if off else [EXCLUDED_COMMANDS],
         "sandbox.network.deniedDomains": [],

@@ -428,7 +428,7 @@
       "Bash(bash .claude/bin/skills.sh list)",
       "Bash(bash .claude/bin/skills.sh add *)",
       "Bash(bash .claude/bin/decisions.sh *)",
-      "Bash(bash .claude/bin/decision-sheet.sh *)",
+      "Bash(bash .claude/bin/report-page.sh *)",
 
       "Read(*)",
       "Edit(*)",
@@ -592,7 +592,6 @@
 
       "Bash(env *)",
       "Bash(sh -c *)",
-      "Bash(bash -c *)",
       "Bash(bash -lc *)",
       "Bash(zsh -c *)",
       "Bash(git -c *)",
@@ -778,6 +777,16 @@
           {
             "type": "command",
             "command": "H=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/fetch-exec-guard.sh\"; [ -r \"$H\" ] && exec sh \"$H\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "H=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/secrets-guard.sh\"; [ -r \"$H\" ] && exec sh \"$H\"; exit 0",
             "timeout": 10
           }
         ]

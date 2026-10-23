@@ -380,8 +380,8 @@ kit_unquoted() { printf '%s' "$1" | tr -d "\"'\\\\"; }
 # already defers to the permission rules.  An allow cannot lift a rule either:
 # Claude Code evaluates deny and ask rules whatever a hook returns, so it decides
 # only where no rule does.  The one caller is secrets-guard.sh's exact allowlist
-# for memsearch's collection-derivation line, a `bash -c` the DENY_WRAPPERS rules
-# still deny wherever they ship.  The match that reaches it must be whole-string
+# for memsearch's collection-derivation line, a `bash -c` that `Bash(bash -c *)`
+# still denies at Medium and High.  The match that reaches it must be whole-string
 # exact, never a prefix or a pattern.
 kit_allow() {
   _kit_emit allow "$1"

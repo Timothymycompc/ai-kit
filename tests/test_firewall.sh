@@ -662,10 +662,12 @@ done
 #   * The Edit denies, High only: self-protection, because below High the kit defers to
 #     a user customizing their own installation, and the .git/config and .git/hooks/
 #     fence, because below High it defers to the user on their own repository.
-#   * Three Bash deny GROUPS at Medium and High: Bash(gh api *) (rule set 5), the kill
+#   * Four Bash deny GROUPS at Medium and High: Bash(gh api *) (rule set 5), the kill
 #     group (kill -9/killall/pkill) and the docker destructive group (container, image
 #     and volume removal), both moved off every-tier in rule set 9 because process
-#     control and container cleanup are day-to-day work at Relaxed.
+#     control and container cleanup are day-to-day work at Relaxed, and Bash(bash -c *),
+#     moved in rule set 9 so a skill's bash -c set-up line (memsearch's recall) runs at
+#     the default tier.
 # A Bash deny is the one that most plausibly reaches user or managed scope by
 # hand-copying, where no descent can lift it, so the varying Bash set is pinned by exact
 # rule string and exact tier set rather than waved through by shape. Anything outside that
@@ -684,7 +686,7 @@ expect = {'Bash(gh api *)', 'Bash(kill -9 *)', 'Bash(killall *)', 'Bash(pkill *)
           'Bash(docker rm *)', 'Bash(docker rmi *)', 'Bash(docker system prune *)',
           'Bash(docker volume rm *)', 'Bash(docker compose down *-v*)',
           'Bash(docker compose down -v*)', 'Bash(docker compose down *--volumes*)',
-          'Bash(docker compose down --volumes*)'}
+          'Bash(docker compose down --volumes*)', 'Bash(bash -c *)'}
 tierbad = sorted(r for r in varying if [t for t in tiers if r in by[t]] != ['medium', 'high'])
 if varying != expect:
     print('SETDIFF +%s -%s' % (sorted(varying - expect), sorted(expect - varying)))
@@ -693,7 +695,7 @@ elif tierbad:
 else:
     print('ok')" 2>/dev/null)"
 assert_eq "ok" "$BASH_VARY" \
-  "the tier-varying Bash denies are exactly gh api + the kill group + the docker group, all at medium and high"
+  "the tier-varying Bash denies are exactly gh api + the kill group + the docker group + bash -c, all at medium and high"
 
 # And the tier-varying remainder is exactly the sanctioned set -- nothing else may start
 # varying here without this test being updated on purpose.
@@ -704,7 +706,7 @@ ALLOWED = {'Bash(gh api *)', 'Read(~/.config/gh/' 'hosts.yml)',
            'Bash(docker rm *)', 'Bash(docker rmi *)', 'Bash(docker system prune *)',
            'Bash(docker volume rm *)', 'Bash(docker compose down *-v*)',
            'Bash(docker compose down -v*)', 'Bash(docker compose down *--volumes*)',
-           'Bash(docker compose down --volumes*)'} | {'Read(%s)' % f for f in (
+           'Bash(docker compose down --volumes*)', 'Bash(bash -c *)'} | {'Read(%s)' % f for f in (
     '**/.env', '**/.env.local', '**/.env.*.local', '**/.env.development',
     '**/.env.production', '**/.env.staging', '**/.env.test')}
 sets = {}
@@ -1521,13 +1523,14 @@ for t in medium high; do
   done
 done
 
-# Every shell -c keeps its permission-layer deny at every tier, the two rules main has
-# always carried included. secrets-guard.sh's hard block is a second layer behind them,
-# not a replacement: a hook's allow cannot lift a deny rule, and a skill's inline command
-# is checked against the rules, so dropping these would open `bash -c` there outright.
-echo "[shell -c denied at the permission layer]"
+# `sh -c`, `bash -lc` and `zsh -c` keep their permission-layer denies at every tier.
+# `bash -c` keeps its rule at Medium and High only: memsearch's recall runs its set-up
+# line through it, and Claude Code checks a skill's set-up line against the rules alone,
+# so an every-tier rule stopped recall everywhere. At Off and Relaxed secrets-guard.sh
+# still refuses the agent's own `bash -c` (tests/test_secrets_guard.sh); no rule does.
+echo "[shell -c at the permission layer]"
 for t in $TIERS; do
-  for cmd in "bash -c 'echo hi'" "sh -c 'echo hi'" "bash -lc 'echo hi'" "zsh -c 'echo hi'"; do
+  for cmd in "sh -c 'echo hi'" "bash -lc 'echo hi'" "zsh -c 'echo hi'"; do
     assert_eq "yes" "$(dm "$t" "$cmd")" "$t denies \`$cmd\` at the permission layer"
   done
   # The rule strings travel in argv: bash 3.2 mis-scans a `)` inside a quoted python
@@ -1535,15 +1538,32 @@ for t in $TIERS; do
   assert_eq "yes" "$(python3 -c "
 import json, sys
 deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
-print('yes' if set(sys.argv[1:]) <= deny else 'no')" 'Bash(sh -c *)' 'Bash(bash -c *)' 2>/dev/null)" \
-    "$t carries Bash(sh -c *) and Bash(bash -c *) verbatim"
+print('yes' if set(sys.argv[1:]) <= deny else 'no')" 'Bash(sh -c *)' 'Bash(bash -lc *)' 'Bash(zsh -c *)' 2>/dev/null)" \
+    "$t carries Bash(sh -c *), Bash(bash -lc *) and Bash(zsh -c *) verbatim"
+done
+for t in off relaxed; do
+  assert_eq "no" "$(dm "$t" "bash -c 'echo hi'")" "$t has no rule for \`bash -c\` (a skill's set-up line can run)"
+  assert_eq "no" "$(python3 -c "
+import json, sys
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+print('yes' if sys.argv[1] in deny else 'no')" 'Bash(bash -c *)' 2>/dev/null)" \
+    "$t does not carry Bash(bash -c *)"
+done
+for t in medium high; do
+  assert_eq "yes" "$(dm "$t" "bash -c 'echo hi'")" "$t denies \`bash -c\` at the permission layer"
+  assert_eq "yes" "$(python3 -c "
+import json, sys
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+print('yes' if sys.argv[1] in deny else 'no')" 'Bash(bash -c *)' 2>/dev/null)" \
+    "$t carries Bash(bash -c *) verbatim"
 done
 
-# The two kit-owned decision helpers are on the allow list at every tier, beside
-# skills.sh: decisions.sh writes the record, decision-sheet.sh renders /decide's sheet.
-echo "[decision helpers allow]"
+# The two kit-owned helpers are on the allow list at every tier, beside skills.sh:
+# decisions.sh writes the decision record, report-page.sh renders /decide's and
+# /report's pages.
+echo "[decision and report helpers allow]"
 for t in $TIERS; do
-  for rule in 'Bash(bash .claude/bin/decisions.sh *)' 'Bash(bash .claude/bin/decision-sheet.sh *)'; do
+  for rule in 'Bash(bash .claude/bin/decisions.sh *)' 'Bash(bash .claude/bin/report-page.sh *)'; do
     assert_eq "yes" "$(python3 -c "
 import json, sys
 allow = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('allow') or [])

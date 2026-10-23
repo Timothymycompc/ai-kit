@@ -451,24 +451,57 @@ M_CHAIN="$(hook "$SETTINGS_MAIN" PreToolUse 'onchain-guard')"
 M_EGRESS="$(hook "$SETTINGS_MAIN" PreToolUse 'egress-guard')"
 
 # Registration. A guard that is not routed MCP calls is the dangerous state, because the
-# scripts on disk are MCP-aware and the config looks finished.
+# scripts on disk are MCP-aware and the config looks finished. The set is exact: each
+# guard once on Bash and context-mode's MCP tools, plus secrets-guard once more on the
+# Read and Grep tools, for gh's host file. A guard on any other matcher, or twice on one,
+# fails here.
 for FILE in "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/plugin/hooks/hooks.json"; do
   NAME="${FILE#"$REPO_ROOT"/}"
   UNROUTED="$(python3 - "$FILE" "$MCP_MATCHER" <<'PY'
 import json, sys
-path, want = sys.argv[1], sys.argv[2]
-bad = []
+path, mcp = sys.argv[1], sys.argv[2]
+GUARDS = ("secrets-guard", "onchain-guard", "egress-guard", "fetch-exec-guard")
+want = sorted([(g, mcp) for g in GUARDS] + [("secrets-guard", "Read|Grep")])
+got = []
 for entry in json.load(open(path))["hooks"].get("PreToolUse", []):
-    m = entry.get("matcher") or ""
+    m = entry.get("matcher") or "(no matcher)"
     cmds = " ".join(h.get("command", "") for h in entry.get("hooks", []))
-    if not any(g in cmds for g in ("secrets-guard", "onchain-guard", "egress-guard", "fetch-exec-guard")):
-        continue
-    if m != want:
-        bad.append(m or "(no matcher)")
-print(";".join(bad) or "ok")
+    got += [(g, m) for g in GUARDS if g + ".sh" in cmds]
+got.sort()
+print("ok" if got == want else "want %s, got %s" % (want, got))
 PY
 )"
-  assert_eq "ok" "$UNROUTED" "$NAME: every kit guard is registered for Bash and context-mode's MCP tools"
+  assert_eq "ok" "$UNROUTED" "$NAME: each kit guard is registered once for Bash and context-mode's MCP tools, and secrets-guard once more for Read and Grep"
+done
+
+# The Read|Grep entry, replayed the way Claude Code runs it: each copy's own command, a
+# Read payload on stdin, and a FAKE home holding a fake gh host file (the path is built at
+# run time). The plugin copy reaches the guard through CLAUDE_PLUGIN_ROOT's symlinks.
+GH_HOME="$WORK/ghhome"
+mkdir -p "$GH_HOME/.config/gh"
+GH_FILE="$GH_HOME/.config/gh/hosts.y""ml"
+printf 'github.com:\n    oauth_token: FAKE-NOT-A-TOKEN\n' > "$GH_FILE"
+for FILE in "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/plugin/hooks/hooks.json"; do
+  NAME="${FILE#"$REPO_ROOT"/}"
+  FT_CMD="$(python3 - "$FILE" <<'PY'
+import json, sys
+for e in json.load(open(sys.argv[1]))["hooks"].get("PreToolUse", []):
+    if e.get("matcher") == "Read|Grep":
+        print(e["hooks"][0]["command"])
+        break
+PY
+)"
+  for FT_CASE in "2|$GH_FILE|gh's host file" "0|$REPO_ROOT/README.md|an ordinary file"; do
+    FT_WANT="${FT_CASE%%|*}"; FT_REST="${FT_CASE#*|}"; FT_PATH="${FT_REST%%|*}"; FT_WHAT="${FT_REST#*|}"
+    FT_PAY="$(python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":sys.argv[1]}}))' "$FT_PATH")"
+    set +e
+    (cd "$WORK" && printf '%s' "$FT_PAY" | env -u GH_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$GH_HOME" \
+      CLAUDE_PROJECT_DIR="$REPO_ROOT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugin" KIT_FIREWALL_HEADLESS=0 \
+      sh -c "$FT_CMD" >/dev/null 2>&1)
+    FT_RC=$?
+    set -e
+    assert_eq "$FT_WANT" "$FT_RC" "$NAME: the Read|Grep entry exits $FT_WANT on a Read of $FT_WHAT"
+  done
 done
 
 # run_mcp <hook-cmd> <tier> <tool> <tool_input-json> [project-dir] [headless]

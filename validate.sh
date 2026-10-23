@@ -672,8 +672,9 @@ if [ -f .claude/bin/firewall.sh ] && [ -f .claude/security.json ]; then
         check "settings.json is what firewall.sh generates for the declared tier ($fw_tier) — run: bash .claude/bin/firewall.sh apply $fw_tier" 1
       fi
       # The gap probe above, over every tier the generator emits rather than the one
-      # committed: Medium and High carry a Bash deny Relaxed does not (gh api), and a rule
-      # added to any tier-varying group would otherwise never meet the probe.
+      # committed: Medium and High carry Bash denies Relaxed does not (gh api, kill -9,
+      # killall, pkill, docker removal, bash -c), and a rule added to any tier-varying
+      # group would otherwise never meet the probe.
       gen_ok=0
       for t in off relaxed medium high; do
         if fw_run "$t"; then

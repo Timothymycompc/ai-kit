@@ -183,7 +183,7 @@ Then **restart Claude Code** — the plugin does not activate until you do.
 ls .memsearch/memory/
 ```
 
-Those memories are plain markdown you can read, edit and commit; the Milvus index is a derived cache that can be rebuilt from them, not the source of truth. Recall is `/memory-recall <question>`, or just asking naturally — the skill self-invokes when a question needs history. In a project on the kit's firewall it does not run yet: the skill derives its collection with a `bash -c` line, which every tier denies, and Claude Code stops a skill whose inline command meets a deny rule. That needs a change on memsearch's side ([why the kit keeps the rule](firewall.md#permissions-and-safety-gates)).
+Those memories are plain markdown you can read, edit and commit; the Milvus index is a derived cache that can be rebuilt from them, not the source of truth. Recall is `/memory-recall <question>`, or just asking naturally — the skill self-invokes when a question needs history. It runs at the firewall's Off and Relaxed tiers, Relaxed being the default. At Medium and High it does not: the skill derives its collection with a `bash -c` line, those two tiers deny `bash -c`, and Claude Code stops a skill whose set-up line meets a deny rule ([what the rule's tiers trade](firewall.md#permissions-and-safety-gates)).
 
 Note that `.memsearch/` lands in the **project** directory, not only in `~`. `install.sh` adds `.memsearch/` to your project's `.gitignore`, and `/update` adds it to projects installed before that, so the memory index stays out of your commits.
 

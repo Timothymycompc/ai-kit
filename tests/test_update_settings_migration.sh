@@ -47,6 +47,35 @@ print(n)
 PY
 }
 
+# shipped_entries <script> — how many hook entries the kit's own settings.json runs that
+# script in. secrets-guard.sh ships twice: on Bash and context-mode, and on Read and Grep.
+shipped_entries() {
+  python3 - "$REPO_ROOT/.claude/settings.json" "$1" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+needle, n = sys.argv[2], 0
+for entries in (data.get("hooks") or {}).values():
+    for entry in entries if isinstance(entries, list) else []:
+        if any(needle in (h.get("command") or "") for h in entry.get("hooks") or []):
+            n += 1
+print(n)
+PY
+}
+
+# entries_on <script> <matcher> — how many entries run that script with exactly that matcher.
+entries_on() {
+  python3 - "$SETTINGS" "$1" "$2" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+needle, matcher, n = sys.argv[2], sys.argv[3], 0
+for entry in (data.get("hooks") or {}).get("PreToolUse") or []:
+    if entry.get("matcher") == matcher and any(
+            needle in (h.get("command") or "") for h in entry.get("hooks") or []):
+        n += 1
+print(n)
+PY
+}
+
 # json_slice <key> — one top-level key, canonicalized, for before/after comparison.
 json_slice() {
   python3 - "$SETTINGS" "$1" <<'PY'
@@ -146,8 +175,10 @@ RUN1="$(run_update)"
 assert_contains "$RUN1" "registered" "the run reports the hooks it registered"
 assert_json_valid "$SETTINGS" "settings.json is still valid JSON"
 for script in $GUARDS; do
-  assert_eq "1" "$(guard_entries "$script")" "$script is registered exactly once"
+  assert_eq "$(shipped_entries "$script")" "$(guard_entries "$script")" \
+    "$script is registered as often as the kit ships it"
 done
+assert_eq "1" "$(entries_on secrets-guard.sh 'Read|Grep')" "secrets-guard.sh is registered on Read and Grep"
 
 echo ""
 echo "[nothing of the user's was touched]"
@@ -212,15 +243,67 @@ json.dump(security, open(security_path, "w", encoding="utf-8"), indent=2, ensure
 PY
 assert_eq "0" "$(guard_entries "$ONE_GUARD")" "fixture: $ONE_GUARD removed again"
 run_update >/dev/null
-assert_eq "1" "$(guard_entries "$ONE_GUARD")" "$ONE_GUARD comes back"
+assert_eq "$(shipped_entries "$ONE_GUARD")" "$(guard_entries "$ONE_GUARD")" "$ONE_GUARD comes back"
 for script in $GUARDS; do
-  assert_eq "1" "$(guard_entries "$script")" "$script is still registered exactly once"
+  assert_eq "$(shipped_entries "$script")" "$(guard_entries "$script")" \
+    "$script is still registered as often as the kit ships it"
 done
+
+# --- An install from hook set 2: secrets-guard.sh on Bash, not yet on Read and Grep ---
+#
+# The state every install before hook set 3 is in. Identity by script alone would read
+# secrets-guard.sh as already running and never add its second entry, so the identity
+# also asks whether the live entry's matcher selects the shipped entry's tools.
+echo ""
+echo "[hook set 2 -> 3: a second entry for a script already running]"
+python3 - "$SETTINGS" "$SECURITY" <<'PY'
+import json, sys
+settings_path, security_path = sys.argv[1], sys.argv[2]
+data = json.load(open(settings_path, encoding="utf-8"))
+data["hooks"]["PreToolUse"] = [e for e in data["hooks"]["PreToolUse"] if e.get("matcher") != "Read|Grep"]
+json.dump(data, open(settings_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+security = json.load(open(security_path, encoding="utf-8"))
+security["hookSetVersion"] = 2
+security["hookSetFingerprint"] = "0000000000000000"
+json.dump(security, open(security_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PY
+assert_eq "0" "$(entries_on secrets-guard.sh 'Read|Grep')" "fixture: no Read and Grep entry yet"
+assert_eq "1" "$(entries_on secrets-guard.sh 'Bash|mcp__context-mode__.*')" "fixture: secrets-guard.sh runs on Bash"
+SET3="$(run_update)"
+assert_contains "$SET3" "secrets-guard.sh (Read|Grep)" "the run names the entry it registered"
+assert_eq "1" "$(entries_on secrets-guard.sh 'Read|Grep')" "the Read and Grep entry is added"
+for script in $GUARDS; do
+  assert_eq "$(shipped_entries "$script")" "$(guard_entries "$script")" \
+    "$script is registered as often as the kit ships it, no Bash entry doubled"
+done
+AFTER_SET3="$(shasum -a 256 "$SETTINGS" | awk '{print $1}')"
+run_update >/dev/null
+assert_eq "$AFTER_SET3" "$(shasum -a 256 "$SETTINGS" | awk '{print $1}')" "a second /update adds nothing more"
+
+# A user who already runs secrets-guard.sh on every tool gets no second copy.
+python3 - "$SETTINGS" "$SECURITY" <<'PY'
+import json, sys
+settings_path, security_path = sys.argv[1], sys.argv[2]
+data = json.load(open(settings_path, encoding="utf-8"))
+pre = data["hooks"]["PreToolUse"]
+data["hooks"]["PreToolUse"] = [e for e in pre if not any(
+    "secrets-guard.sh" in (h.get("command") or "") for h in e.get("hooks") or [])]
+data["hooks"]["PreToolUse"].append({"matcher": "*", "hooks": [
+    {"type": "command", "command": "sh ./tools/secrets-guard.sh on-every-tool"}]})
+json.dump(data, open(settings_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+security = json.load(open(security_path, encoding="utf-8"))
+security["hookSetVersion"] = 0
+json.dump(security, open(security_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PY
+run_update >/dev/null
+assert_eq "1" "$(guard_entries secrets-guard.sh)" "a secrets-guard.sh entry on every tool is not doubled"
+assert_file_contains "$SETTINGS" "on-every-tool" "the user's own entry is still the one that runs"
 
 # --- A guard the user rewrote is left alone ---------------------------------
 #
-# Identity is the script the command names, not the entry's shape, so a project running
-# a guard its own way must not get a second copy of it alongside.
+# Identity is the script the command names and the tools its matcher selects, not the
+# entry's shape, so a project running a guard its own way must not get a second copy of
+# it alongside.
 echo ""
 echo "[a guard the user rewrote]"
 python3 - "$SETTINGS" "$SECURITY" "$ONE_GUARD" <<'PY'
