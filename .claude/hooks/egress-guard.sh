@@ -142,7 +142,9 @@ finish() { [ -z "$ASK_LATER" ] || kit_ask "$ASK_LATER"; exit 0; }
 # the force push and the publish they run.  Read raw, both walked past these
 # gates at High.  kit_shell_text joins the one and drops the other, and leaves
 # quoted strings and heredoc bodies alone: `git commit -m "…; then npm publish"`
-# stays the prose it is.
+# stays the prose it is.  A string another program runs as shell code — `sh -c`,
+# `eval`, `watch`, `flock -c`, `env -S`, `git submodule foreach`, `git rebase
+# --exec` — follows on lines of its own, so a statement starts at its head.
 KIT_CMDJ=$KIT_CMD
 case $KIT_CMD in
   # Neither pattern can match a text naming none of these, and only a
@@ -156,10 +158,16 @@ case $KIT_CMD in
     ;;
 esac
 
+# lacks <segments> <ERE> — some matched segment, one per line, does not match ERE.
+# An exemption (--dry-run, --continue) holds for the segment carrying it and no
+# other.  Read as one, a code string's own line lent its exemption to the command
+# beside it, so `npm publish; sh -c 'npm publish --dry-run'` passed as a dry run.
+lacks() { printf '%s\n' "$1" | grep -qvE -- "$2"; }
+
 # ---- publish: irreversible, and the registry is always an allowed domain.
 PUB='(^|[;&|(]|\$\()[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?(npm|yarn|pnpm|bun|cargo)[[:space:]]+publish([[:space:]][^;&|]*)?([;&|)]|$)'
 PSEG=$(printf '%s\n' "$KIT_CMDJ" | grep -oE "$PUB") || PSEG=
-if [ -n "$PSEG" ] && ! printf '%s\n' "$PSEG" | grep -q -- '--dry-run'; then
+if [ -n "$PSEG" ] && lacks "$PSEG" '--dry-run'; then
   REASON='publishes this package to a public registry. A published version cannot be unpublished or replaced.'
   # Medium and High refuse it, and the refusal holds in a headless run: a pipeline must
   # not publish unprompted.
@@ -213,22 +221,29 @@ if [ -n "$PUSH" ]; then
   # purpose: the lease protects against overwriting a commit that arrived while you
   # were working, not against discarding history you already knew about.
   set -f
-  FORCED= DRYRUN=
-  for w in $PUSH; do
-    # A dry run contacts the remote and writes nothing, so it is exempt — the same
-    # carve-out the publish gate above makes for `npm publish --dry-run`.
-    case $w in
-      -n | --dry-run) DRYRUN=1 ;;
-    esac
-    case $w in
-      --force | --force=* | --force-with-lease* | --force-if-includes*) FORCED=1 ;;
-      +*) FORCED=1 ;;                       # a force refspec: git push origin +main
-      --*) ;;                               # must precede the -f test: --follow-tags
-      -f | -*f | -f*) FORCED=1 ;;           # -f, -uf, -fu
-    esac
-  done
+  FORCED=
+  # Segment by segment, for the reason lacks() gives.
+  while IFS= read -r seg; do
+    F= DRYRUN=
+    for w in $seg; do
+      # A dry run contacts the remote and writes nothing, so it is exempt — the same
+      # carve-out the publish gate above makes for `npm publish --dry-run`.
+      case $w in
+        -n | --dry-run) DRYRUN=1 ;;
+      esac
+      case $w in
+        --force | --force=* | --force-with-lease* | --force-if-includes*) F=1 ;;
+        +*) F=1 ;;                          # a force refspec: git push origin +main
+        --*) ;;                             # must precede the -f test: --follow-tags
+        -f | -*f | -f*) F=1 ;;              # -f, -uf, -fu
+      esac
+    done
+    [ -n "$F" ] && [ -z "$DRYRUN" ] && FORCED=1
+  done <<EOF
+$PUSH
+EOF
   set +f
-  [ -n "$FORCED" ] && [ -z "$DRYRUN" ] && gate_remote "This force-pushes, which discards commits on the remote branch and cannot be undone from here."
+  [ -n "$FORCED" ] && gate_remote "This force-pushes, which discards commits on the remote branch and cannot be undone from here."
 fi
 
 MERGE=$(git_seg 'gh[[:space:]]+pr[[:space:]]+merge')
@@ -246,7 +261,7 @@ if [ "$TIERN" -ge 3 ]; then
   # `git rebase --abort|--continue|--skip|--quit|--edit-todo` finishes or undoes a
   # rebase already in progress; gating those would prompt in the middle of resolving a
   # conflict the agent was told to resolve.
-  if [ -n "$REWRITE" ] && ! printf '%s\n' "$REWRITE" | grep -qE -- '--(abort|continue|skip|quit|edit-todo|show-current-patch)'; then
+  if [ -n "$REWRITE" ] && lacks "$REWRITE" '--(abort|continue|skip|quit|edit-todo|show-current-patch)'; then
     ask_later "$REWRITE_WHY"
   fi
   # Deleting a branch or a tag, scanned by word rather than by regex.  "-d as a whole
@@ -277,6 +292,13 @@ CLASS=${VERDICT%% *}
 WHY=${VERDICT#* }
 
 case $CLASS in
+  KITDEEP)
+    # Fail closed, like kit_size_cap: a command whose code strings nest deeper than
+    # the hooks can read in time is refused rather than read in part, which would
+    # miss a publish, force push or secret upload in the unread inner code.  It
+    # overrides an ask held by ask_later, since a deny stops the whole call.
+    kit_deny_deep
+    ;;
   GITEXEC)
     # Deny at every active tier, matching the two glob rules this backs up and the
     # blanket `git -c` deny next to them.  It does not ladder like the push and

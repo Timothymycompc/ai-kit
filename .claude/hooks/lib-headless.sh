@@ -200,9 +200,10 @@ $(printf '%s' "$_v" | tr '\042\047\140' '   ')
   #
   # Measured on the shipped corpus: a 75 KB non-shell payload cost ~7.3 s across the
   # guards that existed when this cap was added, and each hook is registered with
-  # timeout 10.  Re-measured at the cap with four guards: a 32 KB non-shell payload
-  # costs at most 0.36 s in any one of them (~1.1 s in total), so the margin held when
-  # the fourth arrived.  A hook that times out
+  # timeout 10.  Non-shell code is handed over twice (below), so at the cap a guard
+  # reads about 16 KB of it: re-measured 2026-10-23, that costs egress-guard at most
+  # 3.3 CPU-seconds (one 16 KB string token) and each other guard under 0.7, a margin
+  # of about 3x.  A hook that times out
   # does not block the call, so without this cap a payload could be walked past the
   # whole corpus simply by padding it — the cheapest evasion there is, and the one with
   # no sandbox behind it to catch the miss.  Truncating instead would be worse: it
@@ -376,6 +377,14 @@ kit_deny() {
   _kit_emit deny "$1"
   printf '%s\n' "🛑 Blocked: $(_kit_reason "$1")" >&2
   exit 2
+}
+
+# kit_deny_deep — the refusal every guard gives a command whose code strings it
+# stopped reading (lib-tokenize.awk's KIT_DEEP): nested past KIT_MAXDEPTH, past
+# KIT_MAXCODE of them or of their statements, or past the byte budget.  One copy,
+# so the numbers it quotes move with the limits.
+kit_deny_deep() {
+  kit_deny "this command carries more shell code than the firewall hooks can read within their timeout: code strings (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec) nested more than 3 levels deep, or more than 4096 of them or of the statements inside them. It is refused at every tier rather than run with part of it unchecked. Run the inner commands directly, or put a long script in a file and run that."
 }
 
 # kit_gate <mainnet|publish|irreversible> <reason> — the irreversible set.

@@ -69,6 +69,14 @@ VERDICT=$(printf '%s\n' "$KIT_CMD" |
   awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/fetch-exec-guard.awk" 2>/dev/null) || exit 0
 [ -n "$VERDICT" ] || exit 0
 
+# Fail closed, like kit_size_cap and at every tier as it is: a command whose code
+# strings nest deeper than the hooks can read in time is refused rather than read
+# in part, which would miss a fetch-and-run in the unread inner code.  Before the
+# tier read, so Off refuses it too, the way the size cap does.
+case $VERDICT in
+  DEEP*) kit_deny_deep ;;
+esac
+
 # The tier is read only once there is something to decide, which keeps a whole
 # process off every call that passed the detector — `npx tsc` in a project that
 # installed typescript is the common case, and it never needs to know the tier.

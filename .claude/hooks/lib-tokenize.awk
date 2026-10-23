@@ -43,6 +43,21 @@
 
 BEGIN {
   SQ = sprintf("%c", 39)
+  # The deepest a code string may nest inside another before the expanders stop
+  # reading and the guard refuses the command (kit_expand_code, kit_shell_text and
+  # onchain's payload loop set KIT_DEEP; the guard reads it).  A string another
+  # program runs as shell code is read as a statement of its own, and reading one
+  # nested K deep costs K re-reads of up to the whole command, so a depth cap is
+  # what bounds the work: at 32 KB, depth 3 takes a guard under 3 CPU-seconds on
+  # the measuring machine and depth 5 over 4.  Real commands almost never wrap
+  # shell code past two or three layers, so 3 is set from the budget, not usage.
+  KIT_MAXDEPTH = 3
+  # KIT_MAXCODE caps the statements kit_expand_code adds and the code strings
+  # kit_payloads collects.  A count that stops quietly is a door: 300 `x;` ahead of
+  # `curl -d @.env …` in one `sh -c`, or 4,100 `eval x;` ahead of `eval 'npm
+  # publish'`, left the command at the end unread.  Past the cap the command is
+  # refused, as past the depth; no command a person or agent writes comes near it.
+  KIT_MAXCODE = 4096
 }
 
 # ---------------------------------------------------------------- small predicates
@@ -194,11 +209,22 @@ function split_cmd(s,   i, c, c2, st, sp, out, j) {
 # tokenize — fill T[] with tokens and Q[] with 1 where the token carried a quote.
 # Q is optional: a caller passing only (s, T) gets an unused local array, which is
 # how egress-guard's copy behaved before it was lifted here.
-function tokenize(s, T, Q,   i, c, q, cur, n, hadq) {
-  n = 0; cur = ""; q = ""; hadq = 0
-  for (i = 1; i <= length(s); i++) {
+function tokenize(s, T, Q,   i, c, q, cur, n, hadq, L, j) {
+  n = 0; cur = ""; q = ""; hadq = 0; L = length(s)
+  for (i = 1; i <= L; i++) {
     c = substr(s, i, 1)
-    if (q != "") { if (c == q) q = ""; else cur = cur c; continue }
+    # Inside a quote, jump to the closing quote and take the run in one piece
+    # rather than a character at a time: `cur = cur c` over a 30 KB quoted code
+    # string is quadratic, and the nested-code passes re-tokenize such a string at
+    # every level, which is where the deep-nesting cost came from.  j is the offset
+    # of the next quote char in the tail at i; the for's i++ steps past it.
+    if (q != "") {
+      j = index(substr(s, i), q)
+      if (j == 1) q = ""                                       # c is the closing quote
+      else if (j == 0) { cur = cur substr(s, i); i = L }       # unterminated: take the rest
+      else { cur = cur substr(s, i, j - 1); q = ""; i += j - 1 }
+      continue
+    }
     if (c == SQ || c == "\"") { q = c; hadq = 1; continue }
     if (c == " " || c == "\t") { if (cur != "" || hadq) { T[++n] = cur; Q[n] = hadq; cur = ""; hadq = 0 } ; continue }
     cur = cur c
@@ -250,15 +276,127 @@ function cmdword_x(T, n, reskip, operands,   ci, w) {
   return ""
 }
 
-# kit_inline_code — index of the token a stage runs as shell code: the string a
-# shell takes with -c (`sh -c '…'`, `bash -lc "…"`) or eval's argument, past any
-# non-shell wrapper in front; 0 when it runs none.  `bash ./x.sh "a; b"` is 0:
-# that string is the script's argument.
-function kit_inline_code(T, n,   ci, w, i, c) {
+# kit_plain — t is one word the shell reads back as itself: no blank, quote,
+# operator, expansion or glob.  The set is git's own test for whether a command
+# needs a shell (run-command.c, prepare_shell_cmd).  \003, split_cmd's mark for an
+# escaped space, is a blank here: `watch npm\ publish` hands sh "npm publish".
+function kit_plain(t) { return (t != "" && t !~ /[|&;<>()$`\\"\047 \t\n\003*?#~=%[]/) }
+
+# kit_shq — t as one shell word: itself when plain, single-quoted otherwise.
+function kit_shq(t,   n, P, i, s) {
+  if (kit_plain(t)) return t
+  n = split(t, P, /\047/); s = P[1]
+  for (i = 2; i <= n; i++) s = s "\047\\\047\047" P[i]
+  return "\047" s "\047"
+}
+
+# kit_join — T[i..n] joined by spaces, each word quoted as one (kit_shq) when q is set.
+function kit_join(T, i, n, q,   s) {
+  s = ""
+  for (; i <= n; i++) s = s (s == "" ? "" : " ") (q ? kit_shq(T[i]) : T[i])
+  return s
+}
+
+# kit_git_optarg — a git-level option, ahead of the subcommand, that takes the next
+# word.  egress-guard.awk's git_global_operand reads this table too, and says how
+# each entry was verified.
+function kit_git_optarg(o) {
+  return (o == "-C" || o == "-c" || o == "--git-dir" || o == "--work-tree" \
+       || o == "--namespace" || o == "--attr-source" || o == "--super-prefix" \
+       || o == "--config-env" || o == "--shallow-file")
+}
+
+# kit_git_code — git at T[ci] running a code string.  `rebase` with --exec or -x
+# returns the index of the first, KIC_CODE holding each one a line apiece: the
+# sequencer runs every one with sh -c after a commit.  `submodule foreach` returns
+# the index of CMD, with KIC_CODE set as kit_inline_code describes, or minus that
+# index when CMD is a plain word, which git runs as a command.  0 otherwise.
+function kit_git_code(T, n, ci,   i, o, v, p) {
+  for (i = ci + 1; i <= n && T[i] ~ /^-/; i++) if (kit_git_optarg(T[i])) i++
+  if (i > n) return 0
+  if (T[i] == "submodule") {
+    i++; while (i <= n && T[i] ~ /^-/) i++
+    if (i > n || T[i] != "foreach") return 0
+    for (i++; i <= n && T[i] ~ /^-/; i++) if (T[i] == "--") { i++; break }
+    if (i > n) return 0
+    if (kit_plain(T[i])) return -i
+    KIC_CODE = T[i] (i < n ? " " kit_join(T, i + 1, n, 1) : "")
+    return i
+  }
+  if (T[i] != "rebase") return 0
+  p = 0
+  for (i++; i <= n && T[i] != "--"; i++) {
+    o = T[i]
+    if (o ~ /^-[iqvnfkmr]*x$/ || kit_long_arg(o, "exec")) { if (i == n) break; v = T[++i] }
+    else if (o ~ /^-[iqvnfkmr]*x./) { v = o; sub(/^-[iqvnfkmr]*x/, "", v) }
+    else if (o ~ /^--ex(ec?)?=/) { v = o; sub(/^[^=]*=/, "", v) }
+    else continue
+    KIC_CODE = KIC_CODE (p ? "\n" : "") v
+    if (!p) p = i
+  }
+  return p
+}
+
+# kit_env_split — env's option at T[ci] is -S or --split-string, whose STRING env
+# splits into words and reads, with the words after it, as arguments of its own.
+# Sets KIC_CODE to that env command line and returns 1.  A STRING of one plain word
+# needs no splitting: the walk reads it where it stands.
+function kit_env_split(T, n, ci,   o, s, j, W, nw, k) {
+  o = T[ci]; j = ci + 1
+  if (o ~ /^-[iv0]*S$/ || kit_long_arg(o, "split-string")) { if (ci == n) return 0; s = T[j++] }
+  else if (o ~ /^-[iv0]*S./) { s = o; sub(/^-[iv0]*S/, "", s) }
+  else if (o ~ /^--s[a-z-]*=/ && kit_long_arg(substr(o, 1, index(o, "=") - 1), "split-string")) s = substr(o, index(o, "=") + 1)
+  else return 0
+  if (kit_plain(s)) return 0
+  nw = tokenize(unmark(s), W); KIC_CODE = "env"
+  for (k = 1; k <= nw; k++) KIC_CODE = KIC_CODE " " kit_shq(W[k])
+  for (k = j; k <= n; k++) KIC_CODE = KIC_CODE " " kit_shq(T[k])
+  return 1
+}
+
+# kit_inline_code — index of the first word of the code a stage runs through a
+# shell, past any wrapper in front; 0 when it runs none.  The code is T[p], or
+# KIC_CODE when that is set, for the programs that build it from more than one word.
+# Its escaped spaces (\003) are restored where it is read as code, since the shell
+# reading it splits there: `sh -c npm\ publish` runs npm publish.
+#
+#   sh -c CODE, bash -lc CODE        CODE.  `bash ./x.sh "a; b"` is 0: that string
+#                                    is the script's argument.
+#   flock FILE -c CODE               CODE, which flock runs with $SHELL -c.
+#   eval WORD…, watch WORD…          the words joined by spaces, the string each hands
+#                                    to a shell: `watch echo 'a; npm publish'` runs the
+#                                    publish.  watch -x runs them as a command instead.
+#   git submodule foreach CMD ARG…   CMD, then each ARG quoted as the one word it was:
+#                                    git runs `sh -c 'CMD "$@"' CMD ARG…`.
+#   git rebase --exec CODE, -x CODE  every CODE, a line each.
+#   env -S STRING ARG…               env again, with STRING's words and each ARG.
+#
+# Given words that need no shell (kit_plain), eval, watch, foreach and env -S run
+# them as a command, so the walk goes on into it: a chain of `eval eval … npm
+# publish` is read in one pass, where a code string per eval would cost a pass
+# each, quadratic in the chain.  Where that walk ends on a command behind eval or
+# foreach, the code is the words from there, because kit_unwrap stops at both and
+# the anchored gates need a statement start.  np is the last word that is not
+# plain, found once: asked again at each eval, the chain was quadratic after all.
+function kit_inline_code(T, n,   ci, w, i, c, need, np) {
+  KIC_CODE = ""; need = 0
+  for (np = n; np > 0 && kit_plain(T[np]); np--) ;
   ci = first_word(T, n)
   while (ci <= n) {
     w = base(T[ci])
-    if (w == "eval") return (ci < n) ? ci + 1 : 0
+    if (w == "eval" || w == "watch") {
+      i = ci + 1; c = 1
+      if (w == "watch")
+        for (; i <= n && T[i] ~ /^-/; i++) {
+          if (T[i] == "--") { i++; break }
+          if (T[i] ~ /^-[A-Za-z]*x[A-Za-z]*$/ || kit_long_arg(T[i], "exec")) c = 0
+          else if (i < n && kit_wrapper_optarg(w, T[i])) i++
+        }
+      if (i > n) return 0
+      if (c && i <= np) { KIC_CODE = kit_join(T, i, n, 0); return i }
+      if (w == "eval") need = 1
+      ci = i; continue
+    }
     if (is_shell(w)) {
       c = 0
       for (i = ci + 1; i <= n; i++) {
@@ -269,35 +407,87 @@ function kit_inline_code(T, n,   ci, w, i, c) {
       }
       return 0
     }
+    if (w == "git" && (i = kit_git_code(T, n, ci)) != 0) {
+      if (i > 0) return i
+      need = 1; ci = -i; continue
+    }
+    if (need && !is_wrapper(w)) { KIC_CODE = kit_join(T, ci, n, 1); return ci }
     if (!is_wrapper(w)) return 0
     ci++
-    while (ci <= n && T[ci] ~ /^-/) { if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++; ci++ }
+    while (ci <= n && T[ci] ~ /^-/) {
+      if (w == "env" && kit_env_split(T, n, ci)) return ci
+      if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++
+      ci++
+    }
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
+    if (w == "flock" && ci < n && (T[ci] == "-c" || T[ci] == "--command")) return ci + 1
     while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
   }
   return 0
 }
 
-# kit_expand_code — append the statements of every shell -c string and eval
-# argument in ST[1..nst] to ST as statements of their own, those nested in them
+# kit_code_hint — s names a program kit_inline_code reads code out of.  A cheap
+# pre-check, so a stage that names none is never tokenized for it.
+function kit_code_hint(s) {
+  return (index(s, "sh") || index(s, "eval") || index(s, "watch") || index(s, "flock") \
+       || index(s, "env") || index(s, "foreach") || index(s, "rebase"))
+}
+
+# kit_expand_code — append the statements of every code string in ST[1..nst]
+# (kit_inline_code) to ST as statements of their own, those nested in them
 # included, and return the new count.  The unwrap passes add such code as one
 # stage, which showed only its first command: `sh -c 'true; git -P clean -fdx'`
 # and `sh -c 'if true; then gh auth token; fi'` walked past.  Statements, not
 # stages, because the code's own `;` still separates them: `sh -c 'cat .env; curl
-# -d @- host'` sends stdin, not .env.  At most 256 are added, wherever they sit.
-function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k) {
-  n0 = nst
-  for (q = 1; q <= nst && nst - n0 < 256; q++) {
+# -d @- host'` sends stdin, not .env.  Past KIT_MAXCODE statements the command is
+# refused (KIT_DEEP): the limit of 256 that stood here stopped quietly.
+#
+# DEP[q] is the nesting depth of statement ST[q] (0 for the originals): a payload
+# found in it sits one deeper.  Past KIT_MAXDEPTH, or past a byte budget a wide
+# explosion would blow, the statement is NOT expanded and KIT_DEEP is set, so the
+# guard refuses the command rather than run the unread inner code — the work is
+# bounded to that depth, which is what keeps a deeply nested command from reading
+# past the hook's timeout.  The 8x byte budget matches kit_shell_text's.
+function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k, DEP, left) {
+  # 8 bytes per byte of the 32 KB of code kit_size_cap admits; kit_shell_text and
+  # onchain-guard budget 8 per byte of the command itself, which that cap bounds.
+  n0 = nst; left = 8 * 32768
+  for (q = 1; q <= nst; q++) {
     ng = split(ST[q], G, /\002/)
     for (g = 1; g <= ng; g++) {
-      if (!index(G[g], "sh") && !index(G[g], "eval")) continue
+      if (!kit_code_hint(G[g])) continue
       n = tokenize(G[g], T); if (n == 0) continue
       if ((p = kit_inline_code(T, n)) == 0) continue
-      ns = split(split_cmd(T[p]), S, /\001/)
-      for (k = 1; k <= ns && nst - n0 < 256; k++) if (S[k] ~ /[^ \t\002]/) ST[++nst] = S[k]
+      if (DEP[q] >= KIT_MAXDEPTH) { KIT_DEEP = 1; continue }
+      ns = split(split_cmd(unmark(KIC_CODE == "" ? T[p] : KIC_CODE)), S, /\001/)
+      for (k = 1; k <= ns; k++) if (S[k] ~ /[^ \t\002]/) {
+        if ((left -= length(S[k])) < 0 || nst - n0 >= KIT_MAXCODE) { KIT_DEEP = 1; return nst }
+        ST[++nst] = S[k]; DEP[nst] = DEP[q] + 1
+      }
     }
   }
   return nst
+}
+
+# kit_payloads — append to P each code string kit_inline_code finds in text, and
+# return the new count.  Not recursive: a caller reading each P[k] the same way
+# reaches the code nested in it.  Past KIT_MAXCODE the command is refused
+# (KIT_DEEP): 32 KB holds 4,681 `eval x;`, so the quiet stop at 4096 that stood
+# here let a decoy run hide the code string that mattered.
+function kit_payloads(text, P, np,   ns, S, k, ng, G, g, n, T, p) {
+  if (!kit_code_hint(text)) return np
+  ns = split(split_cmd(text), S, /\001/)
+  for (k = 1; k <= ns; k++) {
+    ng = split(S[k], G, /\002/)
+    for (g = 1; g <= ng; g++) {
+      if (!kit_code_hint(G[g])) continue
+      n = tokenize(G[g], T); if (n == 0) continue
+      if (!(p = kit_inline_code(T, n))) continue
+      if (np >= KIT_MAXCODE) { KIT_DEEP = 1; return np }
+      P[++np] = unmark((KIC_CODE == "") ? T[p] : KIC_CODE)
+    }
+  }
+  return np
 }
 
 # ---------------------------------------------------------------- heredocs
@@ -777,6 +967,44 @@ function kit_stmt_sep(st, sep, q, codeat,   sp, sc, qq, top, code, esc) {
 # Nothing else changes: a text with neither comes back byte for byte, which is
 # what keeps every other verdict where it was.
 #
+# With kw set, every code string another program runs (kit_inline_code) follows
+# as lines of its own, read the same way, the strings nested in it included.  A
+# pattern anchored on a statement start then finds one at the head of the string
+# and after each separator in it, where in place the string is a quoted argument:
+# `sh -c "npm publish"`, `git rebase --exec 'npm publish' main` and `git submodule
+# foreach 'git push --force origin HEAD'` were silent at High, where the bare
+# commands are denied.  Read apart from the line that carries it, the string
+# keeps its own quoting: `bash -c 'git commit -m "x; then npm publish"'` is still
+# a message.  Reading stops, and KIT_DEEP is set so the guard refuses, once a
+# code string nests past KIT_MAXDEPTH or the bytes re-read pass 8 per byte of raw:
+# either way the command is too deeply nested to read within the hook's timeout,
+# and refusing beats reading a fraction and missing the inner command.  CD[k] is
+# the depth of payload C[k]; the first generation is depth 1.
+function kit_shell_text(raw, kw,   out, nc, C, CD, k, nc2, j, left) {
+  out = kit_read_text(raw, kw)
+  if (!kw) return out
+  left = 8 * length(raw) + 4096
+  nc = kit_payloads(KT_CODE, C, 0)
+  for (k = 1; k <= nc; k++) CD[k] = 1
+  for (k = 1; k <= nc; k++) {
+    if ((left -= length(C[k])) < 0) { KIT_DEEP = 1; break }
+    out = out (out ~ /\n$/ ? "" : "\n") kit_read_text(C[k], 1)
+    # Refuse only on a code string actually found one deeper, not on the cheap
+    # hint: `git push` at the limit names "sh" and runs no shell.  Past the limit
+    # what kit_payloads appended is left beyond nc, so it is never read.
+    nc2 = kit_payloads(KT_CODE, C, nc)
+    if (nc2 == nc) continue
+    if (CD[k] >= KIT_MAXDEPTH) { KIT_DEEP = 1; continue }
+    for (j = nc + 1; j <= nc2; j++) CD[j] = CD[k] + 1
+    nc = nc2
+  }
+  return out
+}
+
+# kit_read_text — kit_shell_text's reading of one text, without the code strings.
+# With kw set it leaves the text's code in KT_CODE, heredoc bodies left out: a
+# document naming `sh -c '…'` runs nothing.
+#
 # A heredoc body is copied untouched, since a document's `\` and `then` are not
 # the shell's.  Only an operator the shell reads opens one (kit_hd_ops), quoted
 # delimiter or not: a `<<` inside quotes or a comment is text, and reading it as
@@ -784,7 +1012,8 @@ function kit_stmt_sep(st, sep, q, codeat,   sp, sc, qq, top, code, esc) {
 # delimiter is read by the shared kit_hd_delim and the body end by kit_hd_end, so a
 # partly quoted delimiter and an indented `<<-` terminator are read as the shell
 # reads them.
-function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, DDASH, rest, st, sep, cmd, np, j, mark) {
+function kit_read_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, DDASH, rest, st, sep, cmd, np, j, mark) {
+  KT_CODE = ""
   if (!kw && index(raw, "\\\n") == 0) return raw
   nl = split(raw, L, "\n")
   out = ""; first = 1; q = ""; nd = 0; di = 0; KP = ""
@@ -809,6 +1038,7 @@ function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, DD
       }
       if (!kw) q = qj
       else {
+        KT_CODE = KT_CODE l "\n"
         KQ_PREV = ""; KQ_COMMENT = 0
         rest = l; l = ""
         while (length(rest)) {

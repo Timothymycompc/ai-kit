@@ -99,13 +99,12 @@ function field_pos(s, i,   p, f) {
 # os.system("solana program deploy …") then anchors on its `(`.
 function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }
 
-{ raw = raw $0 "\n" }
-END {
-  # Continuations are joined first, so a heredoc head split over two lines is
-  # still one head to hd_strip.  qs is the quote stack carried from statement to
-  # statement and line to line: a statement starting inside a plain quote is an
-  # argument, so its leading `then` stays and the regex never anchors on it.
-  nl = split(hd_strip(kit_shell_text(raw, 0), 0), LN, "\n")
+# norm — print text a line at a time, each statement through strip().  qs is the
+# quote stack carried from statement to statement and line to line: a statement
+# starting inside a plain quote is an argument, so its leading `then` stays and
+# the regex never anchors on it.
+function norm(text,   nl, LN, k, line, out, st, sep, cmd, qs) {
+  nl = split(text, LN, "\n")
   qs = ""; KP = ""
   for (k = 1; k <= nl; k++) {
     line = LN[k]; out = ""
@@ -122,6 +121,40 @@ END {
       out = out kit_stmt_sep(st, sep, qs, ST_PAYLOAD)
       qs = kit_qscan(st sep, qs, ST_PAYLOAD)
     }
-    print out
+    # Buffered, not printed, so a command found too deeply nested below can be
+    # refused as a whole instead of handing the gate a half-read normalisation.
+    NORMOUT = NORMOUT out "\n"
   }
+}
+
+{ raw = raw $0 "\n" }
+END {
+  # Continuations are joined first, so a heredoc head split over two lines is
+  # still one head to hd_strip.  Every code string another program runs follows
+  # as text of its own, read the same way and under the same bound as
+  # kit_shell_text's: in place a quoted argument, `git submodule foreach '…
+  # --final'`, `flock /tmp/l -c '… --final'` and `git rebase --exec '… --final'
+  # main` were silent at every tier, and `sh -c 'anchor deploy'` kept its closing
+  # quote against the verb, so the anchored pattern never matched it.  CD[k] is the
+  # depth of payload C[k]; past KIT_MAXDEPTH, or the byte budget, reading stops and
+  # the command is refused (a deploy could be hiding in the unread inner code).
+  text = hd_strip(kit_shell_text(raw, 0), 0)
+  norm(text)
+  nc = kit_payloads(text, C, 0); left = 8 * length(raw) + 4096
+  for (k = 1; k <= nc; k++) CD[k] = 1
+  for (k = 1; k <= nc; k++) {
+    if ((left -= length(C[k])) < 0) { KIT_DEEP = 1; break }
+    text = hd_strip(kit_shell_text(C[k], 0), 0)
+    norm(text)
+    # Refused only on a code string actually found one deeper (kit_shell_text says why).
+    nc2 = kit_payloads(text, C, nc)
+    if (nc2 == nc) continue
+    if (CD[k] >= KIT_MAXDEPTH) { KIT_DEEP = 1; continue }
+    for (j = nc + 1; j <= nc2; j++) CD[j] = CD[k] + 1
+    nc = nc2
+  }
+  # A control char the normalised text never carries, so onchain-guard.sh can tell
+  # the refusal from a command that merely prints this word.
+  if (KIT_DEEP) printf "%cKITDEEP\n", 1
+  else printf "%s", NORMOUT
 }
