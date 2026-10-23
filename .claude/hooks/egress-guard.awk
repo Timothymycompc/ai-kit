@@ -114,13 +114,41 @@ function code_has_net(a) {
 # .env.example and the docs name it.
 function is_template(a) { return (a ~ /\.(example|sample|template|dist|tpl|md|schema)$/) }
 
+# trusted_template — a secret-looking name the upload check lets through: a
+# template, and not a link.  A template is trusted by its name, so a planted
+# `.env.schema -> .env` went out as one; a real template is never a link to a
+# secret, so a link is not trusted whatever it points at.  Callers test the name
+# against SECRETRE first, so only a name that would otherwise be a secret costs a
+# look at the filesystem.
+function trusted_template(a) { return (is_template(a) && !is_link(a)) }
+
+# is_link — a is a symbolic link, asked of the filesystem once per path.  Each
+# answer costs a process, and a command can name as many paths as it likes:
+# 700 decoys kept the hook busy past its timeout, and a hook that times out does
+# not block the call.  Past 16 a path is taken for a link, so a padded command
+# is refused rather than read.  The path is single-quoted whole, so nothing in
+# it reaches the shell as syntax.
+function is_link(a,   p, cmd, r) {
+  if (a in LINKC) return LINKC[a]
+  if (++LINKN > 16) return (LINKC[a] = 1)
+  p = a; if (p !~ /^\//) p = KIT_CWD "/" p
+  cmd = "test -L " shq(p) " && echo y"
+  r = ""; cmd | getline r; close(cmd)
+  return (LINKC[a] = (r == "y"))
+}
+function shq(x,   out, i, c) {
+  out = ""
+  for (i = 1; i <= length(x); i++) { c = substr(x, i, 1); out = out (c == SQ ? SQ "\\" SQ SQ : c) }
+  return SQ out SQ
+}
+
 function arg_is_secret(a,   t) {
   if (SECRETRE == "") return 0
   if (looks_remote(a)) return 0
   a = unmark(a)
-  if (!is_template(a) && a ~ SECRETRE) return 1
+  if (a ~ SECRETRE && !trusted_template(a)) return 1
   t = a
-  if (t ~ /[@=]/) { sub(/^.*[@=]/, "", t); if (!looks_remote(t) && !is_template(t) && t ~ SECRETRE) return 1 }
+  if (t ~ /[@=]/) { sub(/^.*[@=]/, "", t); if (!looks_remote(t) && t ~ SECRETRE && !trusted_template(t)) return 1 }
   return 0
 }
 
@@ -131,7 +159,7 @@ function code_has_secret(a,   i, n, P, t) {
   n = split(a, P, /[ \t]+/)
   for (i = 1; i <= n; i++) {
     t = P[i]
-    if (t != "" && !looks_remote(t) && !is_template(t) && t ~ SECRETRE) return t
+    if (t != "" && !looks_remote(t) && t ~ SECRETRE && !trusted_template(t)) return t
   }
   return ""
 }
@@ -211,8 +239,9 @@ function unwrap(STG, nstg,   g, n, T, ci, i) {
 #     .git/hooks/ wherever it is on, and High denies the file tools the same paths
 #     (DENY_GIT_CONFIG_AND_HOOKS in firewall.sh).  Off, and a command line led by
 #     an excludedCommands entry, are left with neither;
-#   * GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0, GIT_CONFIG_PARAMETERS
-#     and GIT_CONFIG_GLOBAL in the environment, which are `git -c` by another name.
+#   * GIT_CONFIG_GLOBAL in the environment, which points git at another config file
+#     and stays open: agents use it to keep the user's config out.  The
+#     GIT_CONFIG_COUNT family and GIT_CONFIG_PARAMETERS are genv_scan's.
 
 # gc_silent_opt — the `git config` forms this pass does not gate: the readers,
 # which are ordinary work, and the removers, which can only take a key away.
@@ -247,21 +276,45 @@ function git_global_operand(o) {
        || o == "--config-env" || o == "--shallow-file")
 }
 
+# cc_strips — a wrapper Claude Code removes before it matches a Bash rule, so
+# `nice git clean -fdx` still meets `Bash(git clean *)`.  xargs only without
+# flags; git_walk checks that.  Every other wrapper hides the command from the
+# rules.
+function cc_strips(w) {
+  return (w == "timeout" || w == "time" || w == "nice" || w == "nohup" || w == "stdbuf" \
+       || w == "command" || w == "builtin" || w == "noglob" || w == "xargs")
+}
+
 # git_walk — the shared option walker.  Returns 1 on a real git invocation and
 # fills four globals: GW_SUB (the subcommand), GW_I (the index of the first
 # token after it), GW_PREFIXED (1 when at least one git-level option came
 # first) and GW_CFG (`-c` or `--config-env` when one of them came after another
 # git-level option, else "").  GW_CFG is set even when no subcommand follows.
 # All three git passes below run off this one walk.
-function git_walk(T, n,   i, o, k) {
-  GW_SUB = ""; GW_I = 0; GW_PREFIXED = 0; GW_CFG = ""
+function git_walk(T, n, Q,   i, o, k, j, w) {
+  GW_SUB = ""; GW_I = 0; GW_PREFIXED = 0; GW_CFG = ""; GW_EXECPATH = ""; GW_HOW = ""
   # cmdword_x's fourth argument skips a wrapper's positional operand, as cmdword
   # does for the egress passes: `timeout 5 git config alias.z '!x'` would leave
   # "5" in command position otherwise.
   if (cmdword_x(T, n, 1, 1) != "git") return 0
-  i = CWI + 1; k = 0
+  # The rules this mirrors match `git -c *`, `git clean *` and the rest on the
+  # command line as Claude Code reads it, after it strips the wrappers cc_strips
+  # names.  Behind any other wrapper, with git named by a path, with the first
+  # option quoted, or inside another command's code string, they see a different
+  # command, so this git is treated as one behind a git-level option.
+  if (GW_PAYLOAD) GW_HOW = "inside another command's code string"
+  for (j = first_word(T, n); j < CWI && GW_HOW == ""; j++) {
+    w = base(T[j])
+    if (!kit_wrapper(w)) continue
+    if (!cc_strips(w) || (w == "xargs" && T[j + 1] ~ /^-/)) GW_HOW = "behind " w
+  }
+  if (GW_HOW == "" && T[CWI] != "git") GW_HOW = "with git named by its path"
+  if (GW_HOW == "" && CWI < n && Q[CWI + 1]) GW_HOW = "with its first option quoted"
+  if (GW_HOW != "") GW_PREFIXED = 1
+  i = CWI + 1; k = (GW_HOW != "")
   while (i <= n && substr(T[i], 1, 1) == "-" && T[i] != "-" && T[i] != "--") {
     o = T[i]; sub(/=.*$/, "", o)
+    if (T[i] ~ /^--exec-path=/ && GW_EXECPATH == "") GW_EXECPATH = T[i]
     # git prints and exits on these — help, the version, a path or command-list
     # query — so no subcommand runs.  `git --help clean` is `git help clean`, which
     # no rule denies, and deciding it here was a false positive.  A -c or
@@ -277,6 +330,7 @@ function git_walk(T, n,   i, o, k) {
     if (git_global_operand(o) && T[i] !~ /=/) i++
     i++; k++
     GW_PREFIXED = 1
+    if (GW_HOW == "") GW_HOW = "behind a git-level option"
   }
   if (i > n) return 0
   GW_SUB = T[i]
@@ -306,9 +360,9 @@ function gc_exec_section(s,   P) {
 }
 
 # gc_scan — one pipeline stage.  Returns the reason to deny, or "".
-function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
-  n = tokenize(stage, T); if (n == 0) return ""
-  if (!git_walk(T, n)) return ""
+function gc_scan(stage,   n, T, Q, i, j, tok, o, mode, nop, OP, key) {
+  n = tokenize(stage, T, Q); if (n == 0) return ""
+  if (!git_walk(T, n, Q)) return ""
   # Subcommand position, and nothing else.  `git commit -m "git config alias.z"`
   # stops here: GW_SUB is "commit", so the message is data and never a command.
   if (GW_SUB != "config") return ""
@@ -459,54 +513,54 @@ function gc_scan(stage,   n, T, i, j, tok, o, mode, nop, OP, key) {
 # parser accepts if `--p` is unique among gc's options — is missed here exactly
 # as the glob misses it.
 
-function gd_scan(stage,   n, T, i) {
-  n = tokenize(stage, T); if (n == 0) return ""
-  if (!git_walk(T, n)) return ""
+function gd_scan(stage,   n, T, Q, i) {
+  n = tokenize(stage, T, Q); if (n == 0) return ""
+  if (!git_walk(T, n, Q)) return ""
   if (!GW_PREFIXED) return ""          # the glob rules own the unprefixed form
   i = GW_I
 
   # No argument count on any of these: each glob's trailing ` *` matches the
   # bare subcommand too, so the bare prefixed form is denied to match.
   if (GW_SUB == "clean")
-    return "runs git clean behind a git-level option, deleting untracked files"
+    return "runs git clean " GW_HOW ", deleting untracked files"
   if (GW_SUB == "restore")
-    return "runs git restore behind a git-level option, overwriting the working tree"
+    return "runs git restore " GW_HOW ", overwriting the working tree"
   if (GW_SUB == "checkout" && i <= n && T[i] == "--")
-    return "runs git checkout -- <path> behind a git-level option, discarding uncommitted changes"
+    return "runs git checkout -- <path> " GW_HOW ", discarding uncommitted changes"
   if (GW_SUB == "prune")
-    return "runs git prune behind a git-level option, deleting the unreachable objects a dropped stash or a deleted branch could still be recovered from"
+    return "runs git prune " GW_HOW ", deleting the unreachable objects a dropped stash or a deleted branch could still be recovered from"
   if (GW_SUB == "gc") {
     for (; i <= n; i++)
       if (T[i] ~ /^--prune/)          # --prune and --prune=<date>; never --no-prune
-        return "runs git gc --prune behind a git-level option, deleting the unreachable objects a dropped stash or a deleted branch could still be recovered from"
+        return "runs git gc --prune " GW_HOW ", deleting the unreachable objects a dropped stash or a deleted branch could still be recovered from"
     return ""
   }
   if (GW_SUB == "reset") {
     for (; i <= n; i++)
       if (T[i] ~ /^--ha/)             # --hard, and the --ha abbreviation git accepts
-        return "runs git reset --hard behind a git-level option, discarding uncommitted changes"
+        return "runs git reset --hard " GW_HOW ", discarding uncommitted changes"
     return ""
   }
   if (GW_SUB == "reflog" && i <= n) {
     if (T[i] == "expire")
-      return "runs git reflog expire behind a git-level option, which is what makes history unrecoverable"
+      return "runs git reflog expire " GW_HOW ", which is what makes history unrecoverable"
     if (T[i] == "delete" || T[i] == "drop")
-      return "runs git reflog " T[i] " behind a git-level option, removing the reflog entries a dropped commit is recovered from"
+      return "runs git reflog " T[i] " " GW_HOW ", removing the reflog entries a dropped commit is recovered from"
     return ""
   }
   if (GW_SUB == "push") {
     for (; i <= n; i++) {
       if (T[i] ~ /^--mirror/)
-        return "runs git push --mirror behind a git-level option, overwriting every ref on the remote"
+        return "runs git push --mirror " GW_HOW ", overwriting every ref on the remote"
       if (T[i] ~ /^--receive-pack/ || T[i] ~ /^--exec/)
-        return "names a program for git to run as the far end of a push, behind a git-level option"
+        return "names a program for git to run as the far end of a push, " GW_HOW
     }
     return ""
   }
   if (GW_SUB == "pull" || GW_SUB == "fetch" || GW_SUB == "clone" || GW_SUB == "ls-remote") {
     for (; i <= n; i++)
       if (T[i] ~ /^--upload-pack/)
-        return "names a program for git to run as the far end of a " GW_SUB ", behind a git-level option"
+        return "names a program for git to run as the far end of a " GW_SUB ", " GW_HOW
     return ""
   }
   return ""
@@ -531,12 +585,87 @@ function gd_scan(stage,   n, T, i) {
 # execute is GITEXEC's list, and a shorter one here would only reopen what the
 # rule closes.  The walk stops at the subcommand, so a commit message or a
 # --grep pattern that names either option is data and never reaches this test.
-function gcfg_scan(stage,   n, T) {
-  n = tokenize(stage, T); if (n == 0) return ""
-  git_walk(T, n)
+function gcfg_scan(stage,   n, T, Q) {
+  n = tokenize(stage, T, Q); if (n == 0) return ""
+  git_walk(T, n, Q)
   if (GW_CFG == "") return ""
-  return "sets git config for this one command with " GW_CFG " behind another git-level option, where a key such as core.fsmonitor, core.pager or alias.* names a program git runs"
+  return "sets git config for this one command with " GW_CFG " " (GW_HOW == "behind a git-level option" ? "behind another git-level option" : GW_HOW) ", where a key such as core.fsmonitor, core.pager or alias.* names a program git runs"
 }
+
+# gxp_scan — `git --exec-path=<dir>` puts dir first on the path git searches for
+# its helpers and its own subcommands, so the directory decides what runs: `git
+# --exec-path=$d ls-remote https://…` ran $d/git-remote-https.  Denied in every
+# position; a bare `--exec-path`, which only prints the path, ends git_walk first.
+function gxp_scan(stage,   n, T, Q) {
+  n = tokenize(stage, T, Q); if (n == 0) return ""
+  git_walk(T, n, Q)
+  if (GW_EXECPATH == "") return ""
+  return "runs git with " unmark(GW_EXECPATH) ", which makes git run the helpers and subcommands it finds in that directory"
+}
+
+# genv_scan — git configuration set through the environment.  GIT_CONFIG_COUNT
+# with GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, and GIT_CONFIG_PARAMETERS, which
+# git passes -c through itself, are `git -c` by another name; GIT_EXEC_PATH is
+# `git --exec-path=`.  Those print "GITENV", a deny at every tier.
+# GIT_SSH_COMMAND, GIT_SSH, GIT_PROXY_COMMAND, GIT_EXTERNAL_DIFF and GIT_ASKPASS
+# each name a program git runs too, but a deploy key's ssh command is ordinary
+# work, so they print "GITENVASK" at High only.  GIT_EDITOR and GIT_PAGER are
+# everyday idioms and stay open, and so does GIT_CONFIG_GLOBAL, which agents use
+# to keep the user's config out (`GIT_CONFIG_GLOBAL=/dev/null`).  An assignment
+# counts in front of a command, after export, declare, typeset, local or
+# readonly, or among the assignments env, sudo and doas take before theirs.
+# Known miss: an export the shell assembles while it runs, `eval "$(…)"` or
+# `source <(…)`, is text this pass cannot read, as for the other passes here.
+function genv_scan(stage,   n, T, i, c, v, soft) {
+  n = tokenize(stage, T); if (n == 0) return ""
+  soft = ""; i = 1
+  while (i <= n && (T[i] ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/ || kit_reserved(T[i]))) {
+    v = genv_name(T[i]); i++
+    if (genv_hard(v)) return "GITENV " genv_why(v)
+    if (genv_soft(v) && soft == "") soft = v
+  }
+  if (i <= n) {
+    c = base(T[i]); i++
+    if (c == "export" || c == "declare" || c == "typeset" || c == "local" || c == "readonly") {
+      for (; i <= n; i++) {
+        v = genv_name(T[i])
+        if (genv_hard(v)) return "GITENV " genv_why(v)
+        if (genv_soft(v) && soft == "") soft = v
+      }
+    } else if (c == "env" || c == "sudo" || c == "doas") {
+      for (; i <= n; i++) {
+        if (T[i] ~ /^-/) { if (i < n && kit_wrapper_optarg(c, T[i])) i++; continue }
+        v = genv_name(T[i]); if (v == "") break
+        if (genv_hard(v)) return "GITENV " genv_why(v)
+        if (genv_soft(v) && soft == "") soft = v
+      }
+    }
+  }
+  if (soft != "" && MAXCLASS >= 3) return "GITENVASK sets " soft ", which names a program git runs"
+  return ""
+}
+function genv_name(t,   v) {
+  if (t !~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) return ""
+  v = t; sub(/\+?=.*$/, "", v); return v
+}
+function genv_hard(v) {
+  return (v == "GIT_CONFIG_COUNT" || v ~ /^GIT_CONFIG_(KEY|VALUE)_[0-9]+$/ \
+       || v == "GIT_CONFIG_PARAMETERS" || v == "GIT_EXEC_PATH")
+}
+function genv_soft(v) {
+  return (v == "GIT_SSH_COMMAND" || v == "GIT_SSH" || v == "GIT_PROXY_COMMAND" \
+       || v == "GIT_EXTERNAL_DIFF" || v == "GIT_ASKPASS")
+}
+function genv_why(v) {
+  if (v == "GIT_EXEC_PATH") return "sets GIT_EXEC_PATH, which is git --exec-path= by another name: git runs the helpers and subcommands it finds in that directory"
+  return "sets " v " in git's environment, which is git -c by another name: a one-shot config value can make any git command run a program"
+}
+
+# pend — hold an ask until every statement has had its chance to deny.  An
+# approved prompt runs the whole Bash call, so an ask printed first used to
+# shadow a deny later in the same command: `curl -X POST -d @body.json …;
+# curl -d @.env …` asked about the first upload and never reached the second.
+function pend(v) { if (PEND == "") PEND = v }
 
 # ---- gh api writes to the endpoints the gh subcommand denies cover (#159) ----
 #
@@ -690,6 +819,7 @@ function gh_placeholders(s,   out, pre) {
 BEGIN {
   SQ = sprintf("%c", 39)
   SECRETRE = ENVIRON["KIT_SECRET_RE"]
+  KIT_CWD = ENVIRON["KIT_CWD"]; if (KIT_CWD == "") KIT_CWD = "."
   MAXCLASS = ENVIRON["KIT_MAXCLASS"] + 0
   if (MAXCLASS < 1) MAXCLASS = 1
   HD_DQ = "<<-?[ \t]*\"[A-Za-z_][A-Za-z0-9_]*\""
@@ -754,6 +884,7 @@ END {
   # else, and a body line reading `then git config core.hooksPath x` a command.
   # A shell's -c string adds its own statements after them (kit_expand_code).
   nst = split(text, ST, /\001/)
+  NST0 = nst
   nst = kit_expand_code(ST, nst)
 
   # ---- pass 0, over EVERY statement before any other pass reaches a verdict:
@@ -765,17 +896,25 @@ END {
   for (q = 1; q <= nst; q++) {
     stmt = ST[q]
     if (stmt !~ /[^ \t\002]/) continue
-    nstg = split(stmt, STG, /\002/)
-    nstg = unwrap(STG, nstg)
+    nstg0 = split(stmt, STG, /\002/)
+    nstg = unwrap(STG, nstg0)
     for (g = 1; g <= nstg; g++) {
+      # A shell's -c string or an unwrapped payload is a command no rule reads.
+      GW_PAYLOAD = (q > NST0 || g > nstg0)
       why = gc_scan(STG[g])
       if (why != "") { print "GITEXEC " why; exit }
       why = gcfg_scan(STG[g])
       if (why != "") { print "GITCFG " why; exit }
+      why = gxp_scan(STG[g])
+      if (why != "") { print "GITEXECPATH " why; exit }
       why = gd_scan(STG[g])
       if (why != "") { print "GITDESTRUCT " why; exit }
+      why = genv_scan(STG[g])
+      if (why ~ /^GITENV /) { print why; exit }
+      if (why != "") pend(why)
     }
   }
+  GW_PAYLOAD = 0
   # The gh api pass, in pass 0 for the same reason, over its own split of the text:
   # the one with gh's {owner}/{repo}/{branch} placeholders rewritten.
   ngst = split(gtext, GST, "\001")
@@ -786,7 +925,9 @@ END {
     ngstg = unwrap(STG, nstg)
     for (g = 1; g <= ngstg; g++) {
       why = ghapi_scan(STG[g])
-      if (why != "") { print why; exit }
+      # GHACTION denies from Medium up and asks at Relaxed, where it waits.
+      if (why ~ /^GHACTION / && MAXCLASS < 2) pend(why)
+      else if (why != "") { print why; exit }
     }
   }
 
@@ -883,14 +1024,24 @@ END {
       }
 
       if (secret != "") { print "DENY request body is sourced from a secret file: " unmark(secret); exit }
-      if (body && src == "stdin")       { print "ASK1 uploads piped stdin as a request body"; exit }
-      else if (body && src != "")       { print "ASK1 uploads file \"" unmark(src) "\" as a request body"; exit }
+      # ASK2 is a deny at High; every other verdict here is an ask, held by pend.
+      if (body && src == "stdin")       pend("ASK1 uploads piped stdin as a request body")
+      else if (body && src != "")       pend("ASK1 uploads file \"" unmark(src) "\" as a request body")
       else if (body && inline) {
-        if (expand)                     { print "ASK1 sends an expanded value as a request body"; exit }
-        if (MAXCLASS >= 2 && !safe_host(dest)) { print "ASK2 sends an inline request body to " (dest == "" ? "an unparsed destination" : dest); exit }
+        if (expand)                     pend("ASK1 sends an expanded value as a request body")
+        else if (MAXCLASS >= 2 && !safe_host(dest)) {
+          v = "ASK2 sends an inline request body to " (dest == "" ? "an unparsed destination" : dest)
+          if (MAXCLASS >= 3) { print v; exit }
+          pend(v)
+        }
       }
-      else if (body && MAXCLASS >= 2 && !safe_host(dest)) { print "ASK2 sends a request body"; exit }
-      else if (expand && MAXCLASS >= 3) { print "ASK3 an expansion rides in the request (possible GET-smuggled body)"; exit }
+      else if (body && MAXCLASS >= 2 && !safe_host(dest)) {
+        if (MAXCLASS >= 3) { print "ASK2 sends a request body"; exit }
+        pend("ASK2 sends a request body")
+      }
+      else if (expand && MAXCLASS >= 3) pend("ASK3 an expansion rides in the request (possible GET-smuggled body)")
     }
   }
+  # Nothing denied: the first ask held back, if any.
+  if (PEND != "") print PEND
 }

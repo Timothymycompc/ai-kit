@@ -72,7 +72,7 @@ function is_wrapper(c) {
   return (c == "env" || c == "command" || c == "builtin" || c == "exec" || c == "nohup" \
        || c == "nice" || c == "ionice" || c == "time" || c == "timeout" || c == "stdbuf" \
        || c == "xargs" || c == "sudo" || c == "doas" || c == "setsid" || c == "flock" \
-       || c == "watch" || c == "noglob" || c == "eval")
+       || c == "watch" || c == "noglob" || c == "eval" || c == "arch" || c == "taskset")
 }
 
 # kit_reserved — a shell reserved word that stands where a command word goes and
@@ -113,6 +113,7 @@ function kit_wrapper_optarg(b, f) {
   if (b == "ionice") return (f ~ /^-[cnpPu]$/ || kit_long_arg(f, "class classdata pid pgid uid"))
   if (b == "watch") return (f ~ /^-[nq]$/ || kit_long_arg(f, "interval equexit"))
   if (b == "flock") return (f ~ /^-[wE]$/ || kit_long_arg(f, "wait timeout conflict-exit-code"))
+  if (b == "arch") return (f == "-arch" || f == "-e" || f == "-d")
   return 0
 }
 
@@ -138,6 +139,7 @@ function kit_long_arg(f, opts,   n, O, i) {
 function kit_wrapper_operand(w, t) {
   if (w == "timeout" && t ~ /^[0-9]/) return 1
   if (w == "flock" && t !~ /^-/) return 1
+  if (w == "taskset" && t !~ /^-/) return 1      # the CPU mask or list
   return 0
 }
 
