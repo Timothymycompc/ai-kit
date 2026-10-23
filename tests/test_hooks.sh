@@ -1139,6 +1139,9 @@ cases = {
     "unqsubst": "cat <<EOF > f.txt\n$(\n" + CODE + "\n" + DA + "\n)\nEOF",
     "unterm": "cat <<'EOF' > f.txt\n" + CODE,
     "contbash": "bash \\\ncat <<'EOF'\n" + CODE + "\n" + DA + "\nEOF",
+    # egress-guard reads a body behind `bash cat` as fed to bash, and parsed this one
+    # past its timeout when the cap had looked through the shell to cat.
+    "shellcat": "bash cat <<EOF\n" + "\n".join(["a" * 25] * 1600) + "\n" + DA + "\nEOF",
 }
 for name, cmd in cases.items():
     with open(d + "/" + name + ".json", "w") as f:
@@ -1174,7 +1177,7 @@ for g in "$M_CHAIN" "$M_SECRETS" "$M_EGRESS"; do
   assert_eq silent "$DECISION" "an unquoted cat heredoc with no substitution in it is not code either"
   # onchain-guard reads nothing that names no on-chain verb (its prefilter exits
   # first), so it meets the cap only on the cases that carry the deploy.
-  cs="bash40k fakemark pipebash unqsubst contbash"
+  cs="bash40k fakemark pipebash unqsubst contbash shellcat"
   [ "$g" = "$M_CHAIN" ] || cs="$cs cat433k lines unterm"
   for c in $cs; do
     run_payload "$g" relaxed "$SZ/$c.json"
@@ -1191,9 +1194,10 @@ MUT_SIZESUBST="$(mutant sizesubst kit-code-size.awk 'if (!quoted && (index(l, "$
 MUT_SIZEUNTERM="$(mutant sizeunterm kit-code-size.awk 'if (delim != "" && exempt) SIZE += pend' 'if (0) SIZE += pend')" || MUT_SIZEUNTERM=
 MUT_SIZECONT="$(mutant sizecont kit-code-size.awk '!cont && !wascont && ' '')" || MUT_SIZECONT=
 MUT_SIZELINES="$(mutant sizelines kit-code-size.awk 'NR <= LINES' '1')" || MUT_SIZELINES=
+MUT_SIZEHEAD="$(mutant sizehead kit-code-size.awk 'fw = first_word(HT, hn); hw = (fw <= hn) ? base(HT[fw]) : ""' 'hw = cmdword_x(HT, hn, 0, 0)')" || MUT_SIZEHEAD=
 for pair in "$MUT_SIZE|line40k|deny" "$MUT_SIZECAT|cat200k|silent" "$MUT_SIZEQ|fakemark|deny" \
             "$MUT_SIZEPIPE|pipebash|deny" "$MUT_SIZESUBST|unqsubst|deny" "$MUT_SIZEUNTERM|unterm|deny" \
-            "$MUT_SIZECONT|contbash|deny" "$MUT_SIZELINES|lines|deny"; do
+            "$MUT_SIZECONT|contbash|deny" "$MUT_SIZELINES|lines|deny" "$MUT_SIZEHEAD|shellcat|deny"; do
   mdir="${pair%%|*}"; rest="${pair#*|}"; payload="${rest%%|*}"; was="${rest#*|}"
   run_payload "$M_EGRESS" relaxed "$SZ/$payload.json" "$mdir"
   TOTAL=$((TOTAL + 1))

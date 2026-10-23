@@ -239,7 +239,7 @@ kit_size_cap() {
       awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/kit-code-size.awk" 2>/dev/null) || _fit=
     [ "$_fit" != ok ] || return 0
   fi
-  kit_deny "This command is too large for the firewall hooks to read within their timeout: past 32 KB of shell code, 10,000 lines, or 256 KB in all (${#KIT_CMD} bytes). A hook that times out does not block the call, so it is refused rather than waved through. Write a large file with the Write tool, or with cat or tee and a quoted heredoc (cat > f <<'EOF'), whose body does not count; put a long script in a file and run that; or split the command."
+  kit_deny "This command is too large for the firewall hooks to read within their timeout: past 32 KB of shell code, 10,000 lines, or 256 KB in all (${#KIT_CMD} bytes). A hook that times out does not block the call, so it is refused rather than waved through. Write a large file with the Write tool, or with cat or tee and a quoted heredoc (cat > f <<'EOF'), whose body does not count; pass a long PR body or commit message as a file (gh pr create --body-file, git commit -F); put a long script in a file and run that; or split the command."
 }
 
 # kit_parse — fills KIT_CMD, KIT_PERMISSION_MODE, KIT_CWD from $KIT_INPUT.

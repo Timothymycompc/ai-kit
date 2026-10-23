@@ -13,9 +13,12 @@
 #   - the shell reads the `<<` as an operator (kit_hd_ops), outside every quote,
 #     $( ), ( ) and `…`.  Inside a substitution the body's output may run as code:
 #     `bash -c "$(cat <<'EOF' …)"`;
-#   - the command it feeds is cat or tee, and the line has no `|`, `(` or
-#     backquote, so nothing hands the body to a program that runs it:
-#     `cat <<'EOF' | bash`;
+#   - the command it feeds is cat or tee, named as the command word itself,
+#     and the line has no `|`, `(` or backquote, so nothing hands the body to a
+#     program that runs it (`cat <<'EOF' | bash`).  Not behind a wrapper or a
+#     shell: the guards disagree on which words to look past, and egress-guard
+#     reads `bash cat <<EOF` as a body fed to bash, so it parsed one this file
+#     had left out and ran past its timeout;
 #   - it is the only heredoc on its line, and that line neither continues onto
 #     the next nor is continued from the last: the guards read a continued line
 #     joined, so `bash \<newline>cat <<'EOF'` is a heredoc fed to bash;
@@ -24,7 +27,7 @@
 #   - the delimiter line arrives.  An unterminated body counts.
 function kit_wrapper(c) { return (is_wrapper(c) || is_shell(c)) }
 function kit_heredoc_is_code(c) { return 1 }
-function code_line(l,   t, np, s, d, hs, HS, hn, HT, HQ, hw, x, wascont) {
+function code_line(l,   t, np, s, d, hs, HS, hn, HT, HQ, hw, x, wascont, fw) {
   if (delim != "") {
     t = l; gsub(/^[ \t]+|[ \t]+$/, "", t)
     if (t == delim) { delim = ""; SIZE += length(l) + 1; return }
@@ -44,7 +47,8 @@ function code_line(l,   t, np, s, d, hs, HS, hn, HT, HQ, hw, x, wascont) {
   else if (!match(s, "^" HD_BARE)) return
   d = substr(s, 1, RLENGTH); sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
   hs = split(split_cmd(substr(l, 1, KH_P[1] - 1)), HS, /\001/)
-  hs = split(HS[hs], HS, /\002/); hn = tokenize(HS[hs], HT, HQ); hw = cmdword_x(HT, hn, 0, 0)
+  hs = split(HS[hs], HS, /\002/); hn = tokenize(HS[hs], HT, HQ)
+  fw = first_word(HT, hn); hw = (fw <= hn) ? base(HT[fw]) : ""
   x = l; gsub(/\|\|/, "", x)
   exempt = (np == 1 && !cont && !wascont && KH_S[1] == "" && (hw == "cat" || hw == "tee") && x !~ /[|(`]/)
   delim = d; pend = 0
