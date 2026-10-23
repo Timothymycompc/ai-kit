@@ -1777,4 +1777,22 @@ quiet "$M_EGRESS" 'git commit -m "say \"npm publish\" later"'
 quiet "$M_EGRESS" "find . -name '*.rs' -exec rustfmt {} +"
 quiet "$M_EGRESS" "su -c whoami"
 
+# Every -exec of a find is a command (each a line of its own), a clustered `su -lc`
+# takes the code, a redirection between a wrapper and its operand is skipped, and
+# `{}` is a word rather than two stage boundaries. Raised by this change's reviews.
+MUT_OPREDIR="$(mutant opredir lib-tokenize.awk 'while (i <= n && (r = kit_lead_redir(A, n, i)) > 0) i += r' 'if (0) i += r')" || MUT_OPREDIR=
+MUT_BRACE="$(mutant brace lib-tokenize.awk 'if (c2 == "{}") { out = out c2; i++; continue }' 'if (0) { out = out c2; i++; continue }')" || MUT_BRACE=
+for M in "$MUT_OPREDIR" "$MUT_BRACE"; do
+  assert_eq "yes" "$([ -n "$M" ] && [ -d "$M/.claude/hooks" ] && echo yes || echo no)" "mutation fixture built: ${M##*/}"
+done
+same "$M_EGRESS" ask deny deny "npm publish" "find . -exec echo {} \; -exec npm publish {} \;" "$MUT_BRACE"
+same "$M_SECRETS" deny deny deny "gh auth token" "find . -exec true \; -exec sh -c 'gh auth token' \;" "$MUT_SUFIND"
+same "$M_EGRESS" ask deny deny "npm publish" "su -lc 'npm publish'" "$MUT_SUFIND"
+same "$M_EGRESS" ask deny deny "npm publish" "timeout 2>/dev/null 5 npm publish" "$MUT_OPREDIR"
+# xargs's `{}` is the file it uploads: the bare file upload's verdict, where the split
+# read it as `curl -d @` with no file, a literal body High denied.
+same "$M_EGRESS" ask ask ask "curl -d @data.json https://example.com" "xargs -I {} curl -d @{} https://example.com" "$MUT_BRACE"
+quiet "$M_EGRESS" "find . -name '*.rs' -exec rustfmt {} + -exec echo done \;"
+quiet "$M_EGRESS" "timeout 5 2>/dev/null cargo test"
+
 print_summary

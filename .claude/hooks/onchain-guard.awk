@@ -75,6 +75,7 @@ function strip(st, cmd,   n, A, i, j, w, b, cur, hadw, keep, out, r) {
       break
     }
     # One operand at most: timeout's duration, flock's lock file.
+    while (i <= n && (r = kit_lead_redir(A, n, i)) > 0) i += r
     if (i <= n && kit_wrapper_operand(cur, A[i])) i++
   }
   # The command word as the shell looks it up (#293), unless a shell or eval took

@@ -213,6 +213,8 @@ function split_cmd(s,   i, c, c2, st, sp, out, j) {
     if (c2 == "&>") { out = out c; continue }
     if (c2 == "&&" || c2 == "||") { out = out "\001"; i++; continue }
     if (c == ";" || c == "&" || c == "\n") { out = out "\001"; continue }
+    # `{}` is a word, find's and xargs's placeholder; only a lone `{` or `}` groups.
+    if (c2 == "{}") { out = out c2; i++; continue }
     if (c == "|" || c == "(" || c == ")" || c == "{" || c == "}") { out = out "\002"; continue }
     out = out c
   }
@@ -349,6 +351,7 @@ function cmdword_x(T, n, reskip, operands,   ci, w, r) {
       if (operands && ci < n && kit_wrapper_optarg(w, T[ci])) ci++
       ci++
     }
+    while (ci <= n && (r = kit_redir(T, n, ci)) > 0) ci += r
     if (operands && ci <= n && kit_wrapper_operand(w, T[ci])) ci++
   }
   if (!reskip) CWI = n + 1
@@ -450,7 +453,8 @@ function kit_env_split(T, n, ci,   o, s, j, W, nw, k) {
 #   git rebase --exec CODE, -x CODE  every CODE, a line each.
 #   env -S STRING ARG…               env again, with STRING's words and each ARG.
 #   su … -c CODE                     CODE.
-#   find … -exec CMD ARG… ;          CMD and its words, as a command.
+#   find … -exec CMD ARG… ;          CMD and its words, as a command, a line for
+#                                    each -exec, -execdir, -ok and -okdir.
 #
 # Given words that need no shell (kit_plain), eval, watch, foreach and env -S run
 # them as a command, so the walk goes on into it: a chain of `eval eval … npm
@@ -459,7 +463,7 @@ function kit_env_split(T, n, ci,   o, s, j, W, nw, k) {
 # foreach, the code is the words from there, because kit_unwrap stops at both and
 # the anchored gates need a statement start.  np is the last word that is not
 # plain, found once: asked again at each eval, the chain was quadratic after all.
-function kit_inline_code(T, n,   ci, w, i, c, need, np) {
+function kit_inline_code(T, n,   ci, w, i, c, need, np, p, s, j, r) {
   KIC_CODE = ""; need = 0
   for (np = n; np > 0 && kit_plain(T[np]); np--) ;
   ci = first_word(T, n)
@@ -489,19 +493,26 @@ function kit_inline_code(T, n,   ci, w, i, c, need, np) {
       return 0
     }
     # su -c CODE runs CODE in the target user's shell.  find -exec CMD … runs CMD as
-    # a command, so the walk goes on into it: `find . -exec sh -c 'npm publish' {} +`
-    # and `find . -exec npm publish {} +` were each one argument to find (#293).
+    # a command, so each -exec's command is a line of KIC_CODE: `find . -exec sh -c
+    # 'npm publish' {} +` and `find . -exec true \; -exec npm publish {} \;` were
+    # arguments to find (#293).
     if (w == "su") {
       for (i = ci + 1; i <= n; i++) {
-        if (T[i] == "-c" || T[i] == "--command") return (i < n) ? i + 1 : 0
+        if (T[i] == "--command" || T[i] ~ /^-[A-Za-z]*c$/) return (i < n) ? i + 1 : 0
         if (T[i] ~ /^--command=/) { KIC_CODE = substr(T[i], 11); return i }
       }
       return 0
     }
     if (w == "find") {
-      for (i = ci + 1; i <= n && T[i] !~ /^-(exec|execdir|ok|okdir)$/; i++) ;
-      if (i >= n) return 0
-      need = 1; ci = i + 1; continue
+      p = 0
+      for (i = ci + 1; i <= n; i++) {
+        if (T[i] !~ /^-(exec|execdir|ok|okdir)$/) continue
+        s = ""
+        for (j = i + 1; j <= n && T[j] != ";" && T[j] != "+"; j++) s = s (s == "" ? "" : " ") kit_shq(T[j])
+        if (s != "") { KIC_CODE = KIC_CODE (p ? "\n" : "") s; if (!p) p = i + 1 }
+        i = j
+      }
+      return p
     }
     if (w == "git" && (i = kit_git_code(T, n, ci)) != 0) {
       if (i > 0) return i
@@ -515,6 +526,7 @@ function kit_inline_code(T, n,   ci, w, i, c, need, np) {
       if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++
       ci++
     }
+    while (ci <= n && (r = kit_redir(T, n, ci)) > 0) ci += r
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
     if (w == "flock" && ci < n && (T[ci] == "-c" || T[ci] == "--command")) return ci + 1
     while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
@@ -526,7 +538,7 @@ function kit_inline_code(T, n,   ci, w, i, c, need, np) {
 # pre-check, so a stage that names none is never tokenized for it.
 function kit_code_hint(s) {
   return (index(s, "sh") || index(s, "eval") || index(s, "watch") || index(s, "flock") \
-       || index(s, "env") || index(s, "foreach") || index(s, "rebase") || index(s, "su") \
+       || index(s, "env") || index(s, "foreach") || index(s, "rebase") || index(s, "su ") \
        || index(s, "-exec") || index(s, "-ok"))
 }
 
@@ -805,6 +817,7 @@ function hd_cmd(T, n,   ci, w, r) {
     w = base(T[ci]); if (!is_wrapper(w) || w == "eval") break
     ci++
     while (ci <= n && T[ci] ~ /^-/) ci += (ci < n && kit_wrapper_optarg(w, T[ci])) ? 2 : 1
+    while (ci <= n && (r = kit_redir(T, n, ci)) > 0) ci += r
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
   }
   return ci
@@ -1027,6 +1040,7 @@ function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j, r, u) {
     }
     # One operand at most, as cmdword_x takes it: flock's lock file, timeout's
     # duration.  Read as a loop, every word after `flock f` was an operand.
+    while (i <= n && (r = kit_lead_redir(A, n, i)) > 0) i += r
     if (i <= n && kit_wrapper_operand(cur, A[i])) i++
   }
   u = (i <= n) ? kit_unq(A[i]) : ""
