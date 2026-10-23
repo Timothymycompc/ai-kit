@@ -139,14 +139,35 @@ if [ -n "$LOCAL_SRC" ] && [ -d "$LOCAL_SRC/.claude" ]; then
   [ -f "$LOCAL_SRC/.safe-ai-skill/policy.yaml" ] && cp -R "$LOCAL_SRC/.safe-ai-skill" "$TEMP_DIR/repo/.safe-ai-skill"
   # CHANGELOG.md stays in the repo — not shipped to user projects
 else
-  # Resolve latest tagged release; fall back to main (only needed for a network clone)
-  step "Cloning repository..."
+  # The ref: SOLANA_AI_KIT_BRANCH when set, else the latest release tag, else main — the
+  # rule .claude/bin/kit-ref.sh applies for /update, so both entry points land on the
+  # same ref (#125; tests/test_kit_ref.sh). It is inline because a curl | bash install
+  # has no kit on disk to call yet. Only vX.Y.Z tags above v2.4.0 count: releases up to
+  # there ship an /update that fetches main, so landing on one would leave the install
+  # flipping between that tag and main on every /update. Keep the two copies in step.
   # A failed lookup must reach the fallback below: under set -e with pipefail a failing
   # git ls-remote made this assignment fatal, so an unreachable upstream exited 128 with
   # nothing on either stream, before the fallback to main could run.
-  LATEST_TAG=$(git ls-remote --tags --sort=-v:refname "$REPO_URL" 'refs/tags/v*' 2>/dev/null \
-    | head -1 | sed 's|.*refs/tags/||; s|\^{}||') || LATEST_TAG=""
-  BRANCH="${LATEST_TAG:-main}"
+  # The env overrides are update.sh's, legacy SOLANA_CLAUDE_* names included, so the two
+  # scripts can be pointed at the same upstream and ref.
+  REPO_URL="${SOLANA_AI_KIT_UPSTREAM:-${SOLANA_CLAUDE_UPSTREAM:-$REPO_URL}}"
+  BRANCH="${SOLANA_AI_KIT_BRANCH:-${SOLANA_CLAUDE_BRANCH:-}}"
+  if [ -z "$BRANCH" ]; then
+    BRANCH=$(git ls-remote --tags --refs "$REPO_URL" 'refs/tags/v*' 2>/dev/null \
+      | awk -v floor="2.4.0" '
+          function newer(a, b,   x, y, i) {
+            split(a, x, "."); split(b, y, ".")
+            for (i = 1; i <= 3; i++) if (x[i] + 0 != y[i] + 0) return x[i] + 0 > y[i] + 0
+            return 0
+          }
+          { t = $2; sub(/^refs\/tags\//, "", t) }
+          t ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ && newer(substr(t, 2), floor) {
+            if (best == "" || newer(substr(t, 2), substr(best, 2))) best = t
+          }
+          END { if (best != "") print best }') || BRANCH=""
+    BRANCH="${BRANCH:-main}"
+  fi
+  step "Cloning $(redact_url "$REPO_URL") ($BRANCH)..."
   # No submodules yet: only the skill packs this install keeps are fetched, below.
   # A failed clone stops here with git's whole error, instead of keeping its last line
   # and carrying on into an install with nothing to copy.
@@ -160,8 +181,9 @@ fi
 # Read version from source
 [ -f "$TEMP_DIR/repo/.claude/VERSION" ] && SCRIPT_VERSION="$(awk '{print $NF}' "$TEMP_DIR/repo/.claude/VERSION")"
 
-# Skill packs: keep the core ext/ packs, plus extensions named with --with or already
-# installed here (skills/skill-registry.json tiers). select removes the other ext/
+# Skill packs: keep the core ext/ packs, plus extensions named with --with or recorded
+# in this project's skills/extensions.txt (skills/skill-registry.json tiers; no list
+# means core-only, as in update.sh's prune). select removes the other ext/
 # directories, so a clone then fetches only what is left. Runs before the --agents
 # rewrite below, which would point .gitmodules away from the clone's paths.
 # Releases without skills.sh have no tiers and vendor every pack.
