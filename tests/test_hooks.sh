@@ -1724,4 +1724,57 @@ quiet "$M_EGRESS" 'watch -n 5 git\ status'
 quiet "$M_EGRESS" 'git commit -m fix\ npm\ publish'
 quiet "$M_SECRETS" 'cat my\ notes.md'
 
+# --- The command the guards read is the one bash runs, however it is spelled
+# --- (#287, #288, #293): a redirection before the command word, a quoted or escaped
+# --- command word, a quote escaped inside nested code, `su -c` and `find -exec`; an
+# --- arithmetic `<<` opens no heredoc, and a continuation inside a body's `$( … )`
+# --- joins. Each spelling gets its bare form's verdict; each control plants its
+# --- mechanism back out.
+echo "[the command bash runs, however it is spelled]"
+MUT_KSEP="$(mutant ksep lib-tokenize.awk 'if (((c == "&" && (q ~ /[<>]/ || substr(s, p + 1, 1) == ">")) || (c == "|" && q == ">")) \' \
+  'if (0 && ((c == "&" && (q ~ /[<>]/ || substr(s, p + 1, 1) == ">")) || (c == "|" && q == ">")) \')" || MUT_KSEP=
+MUT_ARITH="$(mutant arith lib-tokenize.awk 'else if (substr(l, i, 2) == "((") { q = q "a"; i++ }' 'else if (0) { q = q "a"; i++ }' \
+  lib-tokenize.awk 'else if (substr(l, i, 3) == "$((") { q = q "a"; i += 2 }' 'else if (0) { q = q "a"; i += 2 }')" || MUT_ARITH=
+MUT_SUBCONT="$(mutant subcont lib-tokenize.awk 'if (match(l, /\\+$/) && RLENGTH % 2 == 1) KHS_BUF' 'if (0) KHS_BUF')" || MUT_SUBCONT=
+MUT_UNQ="$(mutant unq lib-tokenize.awk 'if (w !~ /["\047\\]/) return w' 'return w')" || MUT_UNQ=
+MUT_ESCQ="$(mutant escq lib-tokenize.awk 'if (c == "\"") out = out "\005"; else if (c != "\n") out = out c' 'if (c != "\n") out = out c' \
+  lib-tokenize.awk 'else if (c == "\"") out = out "\005"; else out = out c' 'else out = out c' \
+  lib-tokenize.awk 'else if (c == SQ) out = out "\004"' 'else if (0) out = out "\004"')" || MUT_ESCQ=
+MUT_SUFIND="$(mutant sufind lib-tokenize.awk 'if (w == "su") {' 'if (0) {' lib-tokenize.awk 'if (w == "find") {' 'if (0) {')" || MUT_SUFIND=
+for M in "$MUT_KSEP" "$MUT_ARITH" "$MUT_SUBCONT" "$MUT_UNQ" "$MUT_ESCQ" "$MUT_SUFIND"; do
+  assert_eq "yes" "$([ -n "$M" ] && [ -d "$M/.claude/hooks" ] && echo yes || echo no)" "mutation fixture built: ${M##*/}"
+done
+# A redirection before the command word (#287). MUT_HDREDIR stops kit_redir naming one.
+same "$M_CHAIN" ask ask deny "$DA" "2>/dev/null $DA" "$MUT_HDREDIR"
+same "$M_CHAIN" ask ask deny "$DA" "nice 2>/dev/null $DA" "$MUT_HDREDIR"
+same "$M_CHAIN" ask ask deny "$DA" "2>&1 $DA" "$MUT_KSEP"
+same "$M_EGRESS" deny deny deny "$UP" "2>/dev/null $UP" "$MUT_HDREDIR"
+same "$M_EGRESS" ask deny deny "npm publish" "2>&1 npm publish" "$MUT_KSEP"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "2>/dev/null git push --force origin main" "$MUT_HDREDIR"
+same "$M_SECRETS" deny deny deny "gh auth token" "2>/dev/null gh auth token" "$MUT_HDREDIR"
+same "$M_FETCH" silent silent deny "npx -y x" "< /dev/null npx -y x" "$MUT_HDREDIR"
+quiet "$M_EGRESS" "cargo build 2>&1 | tail -5"
+quiet "$M_EGRESS" "make >build.log 2>&1 && echo ok"
+quiet "$M_CHAIN" "anchor build 2>&1"
+# An arithmetic shift opens no heredoc, and a continuation in a body's $( … ) joins (#288).
+same "$M_CHAIN" ask ask deny "$DA" "echo \$((a << b))${NL}$DA" "$MUT_ARITH"
+same "$M_CHAIN" ask ask deny "$DA" "echo \"\$((1 << n))\"${NL}$DA" "$MUT_ARITH"
+same "$M_EGRESS" ask deny deny "npm publish" "cat > f <<EOF${NL}\$(npm $BS${NL}publish)${NL}EOF" "$MUT_SUBCONT"
+quiet "$M_CHAIN" "for ((i=0; i<3; i++)); do echo \$i; done"
+# A quoted or escaped command word, escaped quotes in nested code, su -c, find -exec (#293).
+same "$M_EGRESS" ask deny deny "npm publish" '"npm" publish' "$MUT_UNQ"
+same "$M_EGRESS" ask deny deny "npm publish" 'n\pm publish' "$MUT_UNQ"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "'git' push --force origin main" "$MUT_UNQ"
+same "$M_CHAIN" ask ask deny "$DA" "'anchor' deploy --provider.cluster mainnet" "$MUT_UNQ"
+same "$M_EGRESS" ask deny deny "npm publish" 'sh -c "sh -c \"npm publish\""' "$MUT_ESCQ"
+same "$M_EGRESS" ask deny deny "npm publish" "sh -c 'sh -c \"sh -c '\\''npm publish'\\''\"'" "$MUT_ESCQ"
+same "$M_EGRESS" ask deny deny "npm publish" "su -c 'npm publish'" "$MUT_SUFIND"
+same "$M_EGRESS" ask deny deny "npm publish" "find . -exec sh -c 'npm publish' {} +" "$MUT_SUFIND"
+same "$M_SECRETS" deny deny deny "gh auth token" "find . -name x -execdir sh -c 'gh auth token' \;" "$MUT_SUFIND"
+quiet "$M_EGRESS" '"npm publish"'
+quiet "$M_EGRESS" 'echo \"npm publish\"'
+quiet "$M_EGRESS" 'git commit -m "say \"npm publish\" later"'
+quiet "$M_EGRESS" "find . -name '*.rs' -exec rustfmt {} +"
+quiet "$M_EGRESS" "su -c whoami"
+
 print_summary

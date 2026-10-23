@@ -49,17 +49,19 @@ function wrapper(b) { return (is_wrapper(b) || is_shell(b) || b == "ash") }
 # grammar to drop rather than text to keep.  ST_PAYLOAD comes back as the position
 # in st of the quote that opens a wrapper's payload (`bash -c "…`), or 0, so the
 # caller can read that quote as code and the rest of the payload with it.
-function strip(st, cmd,   n, A, i, j, w, b, cur, hadw, keep, out) {
+function strip(st, cmd,   n, A, i, j, w, b, cur, hadw, keep, out, r) {
   n = split(st, A, /[ \t\r]+/)
   i = 1
   while (i <= n && A[i] == "") i++
   keep = ""; hadw = 0; ST_PAYLOAD = 0
   while (i <= n) {
-    w = A[i]; b = base(w)
+    w = A[i]; b = base(kit_unq(w))
     # VAR=value is kept, not dropped: the cluster resolver in onchain-guard.sh
     # reads ANCHOR_PROVIDER_URL= out of this string, and the regex already allows
     # a run of assignments in front of the verb.
     if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { keep = keep w " "; i++; continue }
+    # A redirection is not the command (#287): `2>/dev/null anchor deploy …`.
+    if (cmd && (r = kit_lead_redir(A, n, i)) > 0) { i += r; continue }
     # `coproc NAME { … }` and `function NAME` are headers; the command follows.
     if (cmd && w == "coproc" && i + 2 <= n && A[i + 2] == "{") { i += 2; continue }
     if (cmd && kit_reserved(w)) { i++; continue }
@@ -75,6 +77,9 @@ function strip(st, cmd,   n, A, i, j, w, b, cur, hadw, keep, out) {
     # One operand at most: timeout's duration, flock's lock file.
     if (i <= n && kit_wrapper_operand(cur, A[i])) i++
   }
+  # The command word as the shell looks it up (#293), unless a shell or eval took
+  # it as the payload whose opening quote is read below.
+  if (cmd && i <= n && !(hadw && (is_shell(cur) || cur == "ash" || cur == "eval") && A[i] ~ /^["\047]/)) A[i] = kit_unq(A[i])
   out = ""
   for (j = i; j <= n; j++) out = out (out == "" ? "" : " ") A[j]
   # A wrapper was consumed, so a quote here opens its payload (sh -c "solana
@@ -111,7 +116,7 @@ function norm(text,   nl, LN, k, line, out, st, sep, cmd, qs) {
     if (k == nl && line == "") break
     KQ_PREV = ""; KQ_COMMENT = 0
     while (length(line)) {
-      if (match(line, /(\|\||&&|\$\(|[;&|()])/)) {
+      if (kit_sep(line)) {
         st = substr(line, 1, RSTART - 1)
         sep = substr(line, RSTART, RLENGTH)
         line = substr(line, RSTART + RLENGTH)
