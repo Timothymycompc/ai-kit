@@ -1007,6 +1007,22 @@ dw = ((s.get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
 print(' '.join([r for r in deny if sys.argv[2] in r] + [p for p in dw if p.startswith(sys.argv[2])]) or 'none')" "$WORK/mono.$t.json" "$MCOMMON" 2>/dev/null)" \
       "monorepo at $t: no fence on the parent's .git (submodule init keeps working)"
   done
+  # The maintainer tier is built from Relaxed's plan, so at rule set 9 it inherits both
+  # halves: no fence on an out-of-project common dir (a kit maintainer's linked worktree
+  # is that case, and the tier exists so `git submodule update --init` works there), and
+  # the --exec-path= deny, which is not one of its four omissions.
+  touch "$MONO/app/CLAUDE-solana.md" "$MONO/app/install.sh"
+  (cd "$MONO/app" && CLAUDE_PROJECT_DIR="$MONO/app" bash .claude/bin/firewall.sh apply maintainer) > "$WORK/mono-apply.log" 2>&1 || true
+  assert_eq "maintainer none yes" "$(python3 -c "
+import json, sys
+s = json.load(open(sys.argv[1]))
+deny = (s.get('permissions') or {}).get('deny') or []
+dw = ((s.get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
+fence = [r for r in deny if sys.argv[2] in r] + [p for p in dw if p.startswith(sys.argv[2])]
+tier = (json.load(open(sys.argv[3])).get('enforced') or {}).get('tier')
+print(tier, ' '.join(fence) or 'none', 'yes' if 'Bash(git --exec-path=*)' in deny else 'no')" "$MONO/app/.claude/settings.json" "$MCOMMON" "$MONO/app/.claude/security.json" 2>/dev/null)" \
+    "monorepo at maintainer: no fence on the parent's .git, and git --exec-path= is denied"
+  rm -f "$MONO/app/CLAUDE-solana.md" "$MONO/app/install.sh"
   for t in off relaxed medium high; do
     assert_eq "none" "$(python3 -c "
 import json, sys
