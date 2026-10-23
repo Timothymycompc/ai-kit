@@ -925,7 +925,13 @@ PY
   # the top of this file regardless of this number — the bump forces one more
   # registration pass, which matters for a project whose settings.json is missing a kit
   # guard entry, since the fingerprint beside this gate would otherwise match and skip.
-  HOOK_SET_VERSION=2
+  # 2 -> 3: the decision-record hooks. decisions-inject.sh on SessionStart and
+  # SubagentStart, decisions-push.sh on PreToolUse for every tool,
+  # decisions-report-check.sh on SubagentStop, and decisions-guard.sh on PreToolUse for
+  # Bash, the file tools and context-mode. Two of those events are new to the block,
+  # and the loop below creates an event list a project lacks, so each arrives as an
+  # appended entry like any guard.
+  HOOK_SET_VERSION=3
   cat > "$TEMP_DIR/kit_hooks.py" <<'PY'
 import hashlib, json, os, sys, tempfile
 

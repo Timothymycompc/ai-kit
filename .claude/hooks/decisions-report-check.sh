@@ -1,0 +1,172 @@
+#!/bin/sh
+# decisions-report-check.sh — SubagentStop: send one of the kit's agents back, once,
+# when its report leaves out part of the return contract.
+#
+# The contract is five labelled lines, "none" being a fine answer:
+#
+#   Verified:          what the agent checked, as a command and its result
+#   Decisions made:    the calls it took itself
+#   Decisions needed:  the calls that are the user's, each as a brief
+#   Assumptions:       what it took as given without checking
+#   Next owner:        who should take the work next
+#
+# A decision an agent takes and does not report is one nobody can check, and one it
+# needs but leaves inside a status line never reaches the user. The check is on the
+# labels, deterministically: no model call, so it costs nothing, answers the same way
+# twice and cannot misread a report. That is also its limit: "Decisions made: none"
+# passes, because presence can be checked and honesty cannot.
+#
+# Scope:
+#   - The kit's own agents only, by name, bare or plugin-scoped (solana-ai-kit:<name>).
+#     SubagentStop also fires for Claude Code's internal agents (prompt suggestions,
+#     /btw side questions) and for general-purpose, Explore and every user-written
+#     agent; none of them was given this contract, so none is held to it. The
+#     registration's matcher names the same agents, and this list holds where a harness
+#     ignores the matcher. One gap: an internal agent carries the session's own agent
+#     name, so in a session started as `claude --agent <kit agent>` it can be sent back
+#     once, for one extra turn.
+#   - Once per stop: stop_hook_active means a stop hook already sent this agent back.
+#   - The report as delivered. In auto mode a subagent reports through the
+#     SubagentHandback tool and last_assistant_message holds only its closing text, so
+#     the last handback's message is read from the agent's own transcript when there is
+#     one, and last_assistant_message otherwise.
+#   - Prose only. A report that is JSON, such as a workflow agent returning its schema,
+#     is a value for a program, not a report to a person.
+#
+# It never decides a tool call: the most it does is keep a subagent running for one
+# more turn, and the registration's wrapper exits 0 whatever this script does.
+#
+# stdin: SubagentStop JSON. stdout: {"decision":"block","reason":...}, or nothing.
+
+INPUT=$(cat)
+
+# Next to a full install, which registers its own copy, the plugin's copy steps aside.
+case ${CLAUDE_PLUGIN_ROOT-} in
+  ?*) [ "$0" = "$CLAUDE_PLUGIN_ROOT/hooks/decisions-report-check.sh" ] \
+        && [ -f "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/decisions-report-check.sh" ] && exit 0 ;;
+esac
+
+case $INPUT in
+  *'"stop_hook_active":true'* | *'"stop_hook_active": true'* | \
+  *'"stopHookActive":true'* | *'"stopHookActive": true'*) exit 0 ;;
+esac
+
+# json_str <key> — the string value of a top-level "<key>" in the payload, in V. The
+# same reader as the other two decision hooks: ids, names and paths run to their
+# closing quote, and a key named twice is left to jq.
+json_str() {
+  case $INPUT in
+    *"\"$1\""*"\"$1\""*)
+      command -v jq >/dev/null 2>&1 || return 1
+      V=$(printf '%s' "$INPUT" | jq -r --arg k "$1" '.[$k] // empty | strings' 2>/dev/null)
+      [ -n "$V" ]
+      return ;;
+    *"\"$1\""*) V=${INPUT#*\"$1\"} ;;
+    *) return 1 ;;
+  esac
+  V=${V#"${V%%[! ]*}"}
+  case $V in :*) V=${V#:} ;; *) return 1 ;; esac
+  V=${V#"${V%%[! ]*}"}
+  case $V in \"*) V=${V#\"}; V=${V%%\"*} ;; *) return 1 ;; esac
+  [ -n "$V" ]
+}
+
+# A subagent the hook can name. Kept in step with .claude/agents/ and with the matcher
+# in both hook registrations; tests/test_hooks.sh fails when they drift.
+json_str agent_id || json_str agentId || exit 0
+json_str agent_type || json_str agentType || exit 0
+case ${V#solana-ai-kit:} in
+  anchor-engineer | defi-engineer | devops-engineer | game-architect | mobile-engineer | \
+  pinocchio-engineer | rust-backend-engineer | solana-architect | solana-frontend-engineer | \
+  solana-guide | solana-qa-engineer | solana-researcher | tech-docs-writer | token-engineer | \
+  unity-engineer) ;;
+  *) exit 0 ;;
+esac
+
+# Absolute paths only: awk reads an operand shaped like name=value as an assignment.
+T=/dev/null
+if json_str agent_transcript_path || json_str agentTranscriptPath; then
+  case $V in /*) [ -f "$V" ] && [ -r "$V" ] && T=$V ;; esac
+fi
+
+# One awk pass: the payload on stdin first, then the transcript. It prints the parts
+# the report is missing, OK when none are, or SKIP when there is no prose to judge.
+# LC_ALL=C keeps tolower() and the byte-wise matching the same in every awk.
+MISSING=$(printf '%s\n' "$INPUT" | LC_ALL=C awk '
+  # value <text> <key> — the decoded string value of the first "<key>" in <text>.
+  function value(s, key,   p) {
+    p = index(s, "\"" key "\"")
+    if (!p) return ""
+    s = substr(s, p + length(key) + 2)
+    if (!match(s, /^[ \t\r\n]*:[ \t\r\n]*"/)) return ""
+    return jstr(substr(s, RLENGTH + 1))
+  }
+  # jstr <text> — a JSON string body, decoded up to its closing quote. Every label
+  # looked for is ASCII, so a \u escape becomes "?", except an en or em dash, which
+  # becomes the hyphen a label may end with.
+  function jstr(s,   out, p, q, c) {
+    out = ""
+    for (;;) {
+      p = index(s, "\\"); q = index(s, "\"")
+      if (q && (!p || q < p)) return out substr(s, 1, q - 1)
+      if (!p) return out s
+      out = out substr(s, 1, p - 1); c = substr(s, p + 1, 1)
+      if (c == "n") out = out "\n"
+      else if (c == "t") out = out "\t"
+      else if (c == "r") out = out "\r"
+      else if (c == "u") {
+        out = out (substr(s, p + 2, 4) ~ /^201[34]$/ ? "-" : "?")
+        s = substr(s, p + 6); continue
+      }
+      else out = out c
+      s = substr(s, p + 2)
+    }
+  }
+  # lab <line> <label> — the line opens with the label and then a colon, a dash, a
+  # table bar or nothing, optionally after a parenthesis: "verified (cmd): ran it",
+  # "next owner", "decisions made - none". Prose that merely starts with the word does
+  # not count: "next, I ran the tests" is not a Next owner line.
+  function lab(l, re,   t) {
+    if (!match(l, re)) return 0
+    t = substr(l, RLENGTH + 1)
+    sub(/^[ \t]*(\([^)]*\))?[ \t]*/, "", t)
+    return t == "" || t ~ /^[:|]/ || t == "-" || t ~ /^-[ \t]/ || index(t, "—") == 1 || index(t, "–") == 1
+  }
+  FNR == 1 { f++ }
+  f == 1 { payload = payload $0 "\n"; next }
+  /"name": ?"SubagentHandback"/ { hb = $0 }
+  END {
+    r = ""
+    if (hb != "") { p = index(hb, "\"SubagentHandback\""); if (p) r = value(substr(hb, p), "message") }
+    if (r !~ /[A-Za-z]/) r = value(payload, "last_assistant_message")
+    if (r !~ /[A-Za-z]/) r = value(payload, "lastAssistantMessage")
+    if (r !~ /[A-Za-z]/) { print "SKIP"; exit }
+    t = r; sub(/^[ \t\r\n]+/, "", t)
+    if (substr(t, 1, 1) == "{" || substr(t, 1, 1) == "[") { print "SKIP"; exit }
+    n = split(r, L, "\n")
+    for (i = 1; i <= n; i++) {
+      # Markdown around a label is decoration: emphasis, headings, bullets, numbering.
+      l = tolower(L[i]); gsub(/[*_`]/, "", l)
+      sub(/^[^a-z0-9]+/, "", l)
+      if (sub(/^[0-9]+[.)]/, "", l)) sub(/^[^a-z0-9]+/, "", l)
+      if (lab(l, "^(what (i|we) |what was )?verified") || lab(l, "^verification")) v = 1
+      if (lab(l, "^decisions? (i |we )?made") || lab(l, "^decided")) dm = 1
+      if (lab(l, "^decisions? (i |we |you )?need(ed)?") || lab(l, "^needs? your (call|decision)s?") \
+          || lab(l, "^open (decisions?|questions?)") || lab(l, "^(decisions?|questions?) for (you|the user|the lead)")) dn = 1
+      if (lab(l, "^assum(ptions?|ed)") || lab(l, "^premises?")) a = 1
+      if (lab(l, "^next( owner| steps?| up)?") || lab(l, "^who should (take|pick up|own)") \
+          || lab(l, "^hand-?(off|over)")) nx = 1
+    }
+    m = ""
+    if (!v) m = m ", Verified"
+    if (!dm) m = m ", Decisions made"
+    if (!dn) m = m ", Decisions needed"
+    if (!a) m = m ", Assumptions"
+    if (!nx) m = m ", Next owner"
+    print (m == "" ? "OK" : substr(m, 3))
+  }' - "$T" 2>/dev/null) || exit 0
+
+case $MISSING in '' | OK | SKIP) exit 0 ;; esac
+
+printf '{"decision":"block","reason":"%s"}\n' "Your report is missing: $MISSING. Deliver the complete report again, ending with one labelled line for each of these five, and write none where there is nothing to say. Verified: what you checked, as a command and its result. Decisions made: the calls you took yourself. Decisions needed: the calls that are the user's, each as a brief with the question, your recommendation and the case against it. Assumptions: what you took as given without checking. Next owner: who should take the work next."
+exit 0

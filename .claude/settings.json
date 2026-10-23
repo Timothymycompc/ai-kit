@@ -697,6 +697,15 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "H=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/decisions-inject.sh\"; [ -r \"$H\" ] && sh \"$H\"; exit 0",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -736,6 +745,48 @@
           {
             "type": "command",
             "command": "H=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/fetch-exec-guard.sh\"; [ -r \"$H\" ] && exec sh \"$H\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__context-mode__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "H=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/decisions-guard.sh\"; [ -r \"$H\" ] && exec sh \"$H\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "H=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/decisions-push.sh\"; [ -r \"$H\" ] && sh \"$H\"; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "H=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/decisions-inject.sh\"; [ -r \"$H\" ] && sh \"$H\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "^(solana-ai-kit:)?(anchor-engineer|defi-engineer|devops-engineer|game-architect|mobile-engineer|pinocchio-engineer|rust-backend-engineer|solana-architect|solana-frontend-engineer|solana-guide|solana-qa-engineer|solana-researcher|tech-docs-writer|token-engineer|unity-engineer)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "H=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/decisions-report-check.sh\"; [ -r \"$H\" ] && sh \"$H\"; exit 0",
             "timeout": 10
           }
         ]

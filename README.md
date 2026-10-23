@@ -191,6 +191,7 @@ Which gate stops what, how a tier is generated, and — at length — **what the
 | [skill-packs.md](docs/skill-packs.md) | The pinned `ext/` packs, core vs extension, the opt-in add-on registry |
 | [other-agents.md](docs/other-agents.md) | Codex, Grok Build, Cursor, Gemini CLI, opencode: what each one actually enforces |
 | [configuration.md](docs/configuration.md) | MCP servers including the opt-in ones, secrets with varlock, the standard plugins and the optional ones with what each costs per session, and the settings the kit leaves to you |
+| [decisions.md](docs/decisions.md) | The decision record, the hooks that hand the decisions in force to every agent, the check on what the kit's agents report back, and the guard that keeps the record your main session's |
 | [plugin.md](docs/plugin.md) | The plugin route and why it is not recommended |
 | [design.md](docs/design.md) | Why the always-on context is small, and the 2026 stack |
 | [repo-structure.md](docs/repo-structure.md) | Repository layout, DX scripts, the GitHub Action, branch and review workflow |

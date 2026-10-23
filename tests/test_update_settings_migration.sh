@@ -32,9 +32,10 @@ run_update() {
   (cd "$PROJ" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh "$@") 2>&1
 }
 
-# guard_entries <script> — how many hook entries in settings.json run that kit script.
+# guard_entries <script> [settings] — how many hook entries in settings.json (the
+# project's, unless another file is named) run that kit script.
 guard_entries() {
-  python3 - "$SETTINGS" "$1" <<'PY'
+  python3 - "${2:-$SETTINGS}" "$1" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 needle, n = sys.argv[2], 0
@@ -46,6 +47,10 @@ for entries in (data.get("hooks") or {}).values():
 print(n)
 PY
 }
+
+# shipped_entries <script> — how many entries the kit's own settings.json runs that
+# script in: one for a guard, one per event for a script registered on several.
+shipped_entries() { guard_entries "$1" "$REPO_ROOT/.claude/settings.json"; }
 
 # json_slice <key> — one top-level key, canonicalized, for before/after comparison.
 json_slice() {
@@ -146,7 +151,7 @@ RUN1="$(run_update)"
 assert_contains "$RUN1" "registered" "the run reports the hooks it registered"
 assert_json_valid "$SETTINGS" "settings.json is still valid JSON"
 for script in $GUARDS; do
-  assert_eq "1" "$(guard_entries "$script")" "$script is registered exactly once"
+  assert_eq "$(shipped_entries "$script")" "$(guard_entries "$script")" "$script is registered exactly as the kit ships it"
 done
 
 echo ""
@@ -191,7 +196,7 @@ assert_eq "$AFTER_ONE" "$(shasum -a 256 "$SETTINGS" | awk '{print $1}')" "a thir
 # --- One guard missing: only that one comes back ----------------------------
 echo ""
 echo "[one guard missing]"
-ONE_GUARD="$(printf '%s\n' $GUARDS | head -1)"
+ONE_GUARD="$(printf '%s\n' $GUARDS | grep -e '-guard\.sh$' | head -1)"
 python3 - "$SETTINGS" "$SECURITY" "$ONE_GUARD" <<'PY'
 import json, sys
 
@@ -214,7 +219,7 @@ assert_eq "0" "$(guard_entries "$ONE_GUARD")" "fixture: $ONE_GUARD removed again
 run_update >/dev/null
 assert_eq "1" "$(guard_entries "$ONE_GUARD")" "$ONE_GUARD comes back"
 for script in $GUARDS; do
-  assert_eq "1" "$(guard_entries "$script")" "$script is still registered exactly once"
+  assert_eq "$(shipped_entries "$script")" "$(guard_entries "$script")" "$script is still registered exactly as the kit ships it"
 done
 
 # --- A guard the user rewrote is left alone ---------------------------------

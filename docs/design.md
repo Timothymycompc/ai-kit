@@ -6,7 +6,7 @@ Why the always-on context is small, how the rest arrives on demand, and the stac
 
 The idea here is to provide a generic CLAUDE.md that relies on subagents to plan and execute actions, dynamically loading markdown files, saving tokens and context in the end of the day. This config fully leverages the official Claude Code config recommendations:
 
-- Nothing loads up front except a small CLAUDE.md and one-line agent/command descriptions; agent, command and skill bodies load only when used;
+- Nothing loads up front except a small CLAUDE.md, one-line agent/command descriptions and, in a repository that keeps a [decision record](decisions.md), the short list of decisions in force; agent, command and skill bodies load only when used;
 - SKILL.md is a mega hub to dynamically-disclosed skill files that are directly fetched from the best skill repos distributed across the ecosystem (Solana Foundation, Colosseum, Solana Mobile, SendAI, etc);
 - Plus, its CLAUDE-solana.md is less than half the size of the usual CLAUDE.md, leaving space for its self improvements programmed into the agents, noting and learning from anti-patterns, errors, recurrency and more. For less important notes, CLAUDE.local.md is constantly maintained by agents as well and, on monorepos, per-folder CLAUDE.md is also maintained.
 
@@ -22,6 +22,7 @@ Current multi-agent workflow favors monorepos, so we use a single CLAUDE.md/conf
 - `CLAUDE.local.md` for private scratch notes (gitignored, never shared)
 - Subdirectory CLAUDE.md files lazy-load in monorepos
 - Decision frameworks live in agents, not global context
+- The user's decisions reach agents by hook, not through CLAUDE.md: only a repository that keeps a record pays for the list, which stays near 1.5K tokens, and an agent is handed it again only when it changes
 
 ## Modern Stack (2026)
 
