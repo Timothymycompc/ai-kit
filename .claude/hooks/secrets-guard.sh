@@ -39,6 +39,11 @@ VERDICT=$(printf '%s\n' "$KIT_CMD" | KIT_VAULT_RE="$(kit_vault_re)" KIT_LANG="${
   awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/secrets-guard.awk" 2>/dev/null) || exit 0
 
 case $VERDICT in
+  DEEP*)
+    # Fail closed, like the size cap: a command whose code strings nest deeper than
+    # the hooks can read in time is refused, not read in part and let through.
+    kit_deny "this command wraps shell code more than 3 levels deep (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec inside one another), which is too deeply nested for the firewall hooks to read within their timeout. It is refused at every tier rather than run with the inner command unchecked. Run that inner command directly instead of wrapping it in layers of shells."
+    ;;
   WIPE*)
     # Destroying key material, not reading it, so the "use solana address instead"
     # trailer would be nonsense here. The route around is the flag, not the command.

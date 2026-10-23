@@ -861,6 +861,9 @@ END {
   nst = split(text, ST, /\001/)
   NST0 = nst
   nst = kit_expand_code(ST, nst)
+  # Too deeply nested to read in time: refuse rather than let a publish, force push
+  # or secret upload hide in the unread inner code.  egress-guard.sh denies KITDEEP.
+  if (KIT_DEEP) { print "KITDEEP the command nests shell code too deeply to read"; exit }
 
   # ---- pass 0, over EVERY statement before any other pass reaches a verdict:
   # the three git denies — a config write that arms an execution for later, a

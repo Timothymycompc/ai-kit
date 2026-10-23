@@ -60,6 +60,15 @@ else
 fi
 [ -n "$KIT_NORM" ] || KIT_NORM=$KIT_CMD
 
+# Fail closed, like kit_size_cap and at every tier as it is: onchain-guard.awk
+# prints only this marker (a control character, so no command's own text matches
+# it) when the command's code strings nest deeper than the hooks can read in time.
+# Refused before the verb match, so an irreversible action or a mainnet deploy in
+# the unread inner code cannot pass.
+if [ "$KIT_NORM" = "$(printf '\001KITDEEP')" ]; then
+  kit_deny "this command wraps shell code more than 3 levels deep (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec inside one another), which is too deeply nested for the firewall hooks to read within their timeout. It is refused at every tier rather than run with the inner command unchecked. Run that inner command directly instead of wrapping it in layers of shells."
+fi
+
 # Position-anchored: the verb has to start a statement, optionally behind env
 # assignments and a path prefix.  Matching the verb anywhere in the string is
 # what makes a hook fire on prose about deploying.

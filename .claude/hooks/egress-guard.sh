@@ -292,6 +292,13 @@ CLASS=${VERDICT%% *}
 WHY=${VERDICT#* }
 
 case $CLASS in
+  KITDEEP)
+    # Fail closed, like kit_size_cap: a command whose code strings nest deeper than
+    # the hooks can read in time is refused rather than read in part, which would
+    # miss a publish, force push or secret upload in the unread inner code.  It
+    # overrides an ask held by ask_later, since a deny stops the whole call.
+    kit_deny "this command wraps shell code more than 3 levels deep (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec inside one another), which is too deeply nested for the firewall hooks to read within their timeout. It is refused at every tier rather than run with the inner command unchecked. Run that inner command directly instead of wrapping it in layers of shells."
+    ;;
   GITEXEC)
     # Deny at every active tier, matching the two glob rules this backs up and the
     # blanket `git -c` deny next to them.  It does not ladder like the push and

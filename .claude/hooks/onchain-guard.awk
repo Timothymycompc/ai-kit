@@ -121,7 +121,9 @@ function norm(text,   nl, LN, k, line, out, st, sep, cmd, qs) {
       out = out kit_stmt_sep(st, sep, qs, ST_PAYLOAD)
       qs = kit_qscan(st sep, qs, ST_PAYLOAD)
     }
-    print out
+    # Buffered, not printed, so a command found too deeply nested below can be
+    # refused as a whole instead of handing the gate a half-read normalisation.
+    NORMOUT = NORMOUT out "\n"
   }
 }
 
@@ -133,13 +135,26 @@ END {
   # kit_shell_text's: in place a quoted argument, `git submodule foreach '…
   # --final'`, `flock /tmp/l -c '… --final'` and `git rebase --exec '… --final'
   # main` were silent at every tier, and `sh -c 'anchor deploy'` kept its closing
-  # quote against the verb, so the anchored pattern never matched it.
+  # quote against the verb, so the anchored pattern never matched it.  CD[k] is the
+  # depth of payload C[k]; past KIT_MAXDEPTH, or the byte budget, reading stops and
+  # the command is refused (a deploy could be hiding in the unread inner code).
   text = hd_strip(kit_shell_text(raw, 0), 0)
   norm(text)
   nc = kit_payloads(text, C, 0); left = 8 * length(raw) + 4096
-  for (k = 1; k <= nc && (left -= length(C[k])) >= 0; k++) {
+  for (k = 1; k <= nc; k++) CD[k] = 1
+  for (k = 1; k <= nc; k++) {
+    if ((left -= length(C[k])) < 0) { KIT_DEEP = 1; break }
     text = hd_strip(kit_shell_text(C[k], 0), 0)
     norm(text)
-    nc = kit_payloads(text, C, nc)
+    # Refused only on a code string actually found one deeper (kit_shell_text says why).
+    nc2 = kit_payloads(text, C, nc)
+    if (nc2 == nc) continue
+    if (CD[k] >= KIT_MAXDEPTH) { KIT_DEEP = 1; continue }
+    for (j = nc + 1; j <= nc2; j++) CD[j] = CD[k] + 1
+    nc = nc2
   }
+  # A control char the normalised text never carries, so onchain-guard.sh can tell
+  # the refusal from a command that merely prints this word.
+  if (KIT_DEEP) printf "%cKITDEEP\n", 1
+  else printf "%s", NORMOUT
 }

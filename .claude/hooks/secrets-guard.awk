@@ -92,6 +92,9 @@ END {
   # A shell's -c string adds its own statements after them (kit_expand_code).
   nst = split(text, ST, /\001/)
   nst = kit_expand_code(ST, nst)
+  # Too deeply nested to read in time: refuse rather than scan a fraction and miss
+  # the credential read in the unread inner code.  "DEEP" so secrets-guard.sh denies.
+  if (KIT_DEEP) { print "DEEP"; exit }
   for (q = 1; q <= nst; q++) {
     nstg = split(ST[q], STG, /\002/)
 

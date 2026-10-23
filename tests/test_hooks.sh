@@ -1504,7 +1504,7 @@ done
 # --- --exec / -x. In the heredoc classifier a payload is still a document, so a code
 # --- string written to a file stays silent.
 echo "[code strings another program runs as shell code]"
-MUT_PAY="$(mutant pay lib-tokenize.awk 'nc = kit_payloads(KT_CODE, C, 0); left = 8 * length(raw) + 4096' 'nc = 0; left = 8 * length(raw) + 4096')" || MUT_PAY=
+MUT_PAY="$(mutant pay lib-tokenize.awk 'nc = kit_payloads(KT_CODE, C, 0)' 'nc = 0')" || MUT_PAY=
 MUT_FOREACH="$(mutant foreach lib-tokenize.awk 'if (T[i] == "submodule") {' 'if (0) {')" || MUT_FOREACH=
 MUT_REBASEX="$(mutant rebasex lib-tokenize.awk 'if (T[i] != "rebase") return 0' 'if (1) return 0')" || MUT_REBASEX=
 MUT_WATCHP="$(mutant watchp lib-tokenize.awk 'if (w == "eval" || w == "watch") {' 'if (w == "eval") {')" || MUT_WATCHP=
@@ -1612,6 +1612,68 @@ quiet "$M_EGRESS" "git log --grep='rebase --exec'"
 quiet "$M_EGRESS" "cat > notes.md <<'EOF'${NL}sh -c 'npm publish'${NL}EOF"
 quiet "$M_EGRESS" "cat > notes.md <<'EOF'${NL}git submodule foreach 'git push --force origin HEAD'${NL}EOF"
 quiet "$M_CHAIN" "cat > notes.md <<'EOF'${NL}flock /tmp/l -c '$DF'${NL}EOF"
+
+# --- A command whose code strings nest deeper than KIT_MAXDEPTH is refused at every
+# --- tier before the guard reads past its timeout (fail closed, like the size cap).
+# --- Reading a code string nested K deep costs K re-reads of up to the whole command;
+# --- on the measuring machine depth 3 at 32 KB stays under 3 CPU-seconds in every
+# --- guard and depth 5 runs over 4, so expansion stops at depth 3 and the guard denies.
+# --- Within the limit a payload keeps its normal verdict (e.g. two levels still gets
+# --- publish's ladder). The control lifts KIT_MAXDEPTH so the same over-limit command,
+# --- with an innocuous inner, passes unrefused — proving the bound is what denied it.
+echo "[too deeply nested: refused at every tier]"
+# nest <depth> <inner>: <inner> wrapped in <depth> layers of sh -c '...', the inner
+# single quotes re-quoted as the shell needs ('"'"'), the real nesting the hooks read.
+nest() { python3 -c 'import sys
+d=int(sys.argv[1]); s=sys.argv[2]
+for _ in range(d): s="sh -c %s%s%s" % (chr(39), s.replace(chr(39), chr(39)+chr(34)+chr(39)+chr(34)+chr(39)), chr(39))
+sys.stdout.write(s)' "$1" "$2"; }
+MUT_DEPTH="$(mutant depth lib-tokenize.awk 'KIT_MAXDEPTH = 3' 'KIT_MAXDEPTH = 9999')" || MUT_DEPTH=
+assert_eq "yes" "$([ -n "$MUT_DEPTH" ] && [ -d "$MUT_DEPTH/.claude/hooks" ] && echo yes || echo no)" "mutation fixture built: depth"
+
+# Within the limit the inner command keeps its own verdict: two levels still get
+# publish's ladder (the coordinator's example), and depth 3 — the limit itself — is
+# read, not refused.  egress and onchain carry a flipping control; secrets and
+# fetch-exec also catch a nested shell through their own unwrap loop, so a single
+# mutant would not isolate the bound there — their refusal above is the control,
+# and here they are asserted to still gate rather than over-refuse.
+same "$M_EGRESS" ask deny deny "npm publish" "$(nest 2 'npm publish')" "$MUT_PAY"
+same "$M_CHAIN" deny deny deny "$DF" "$(nest 3 "$DF")" "$MUT_CHAINPAY"
+D2G="$(nest 2 'gh auth token')"; D3X="$(nest 3 'npx -y x')"
+for t in off relaxed medium high; do
+  run_bash "$M_SECRETS" "$t" "$D2G"; assert_eq deny "$DECISION" "[$t] depth-2 keeps secrets' verdict (not refused)"
+done
+run_bash "$M_FETCH" high "$D3X"; assert_eq deny "$DECISION" "[high] depth-3 keeps fetch-exec's verdict (not refused)"
+for t in relaxed medium; do
+  run_bash "$M_FETCH" "$t" "$D3X"; assert_eq silent "$DECISION" "[$t] depth-3 npx is reported-only below High, as the bare command is"
+done
+
+# Over the limit: refused at every tier, including Off, with an innocuous inner so the
+# control's verdict is plain silence (the bound denied it, nothing else did). The inner
+# has to pass each guard's cheap prefilter yet not be gated: `echo hi` for secrets and
+# egress, `npx --version` for fetch-exec (its prefilter needs a runner word; `--version`
+# names no package), `solana address` for onchain (its prefilter needs a solana word; a
+# pubkey read is not gated).
+D4E="$(nest 4 'echo hi')"
+D4N="$(nest 4 'npx --version')"
+D4S="$(nest 4 'solana address')"
+for t in off relaxed medium high; do
+  run_bash "$M_SECRETS" "$t" "$D4E"; assert_eq deny "$DECISION" "[$t] secrets refuses depth-4 code"
+  run_bash "$M_FETCH" "$t" "$D4N"; assert_eq deny "$DECISION" "[$t] fetch-exec refuses depth-4 code"
+done
+control "$M_SECRETS" "$MUT_DEPTH" "$D4E" deny
+control "$M_FETCH" "$MUT_DEPTH" "$D4N" deny
+for t in relaxed medium high; do
+  run_bash "$M_EGRESS" "$t" "$D4E"; assert_eq deny "$DECISION" "[$t] egress refuses depth-4 code"
+done
+control "$M_EGRESS" "$MUT_DEPTH" "$D4E" deny
+for t in off relaxed medium high; do
+  run_bash "$M_CHAIN" "$t" "$D4S"; assert_eq deny "$DECISION" "[$t] onchain refuses depth-4 code"
+done
+control "$M_CHAIN" "$MUT_DEPTH" "$D4S" deny
+# The refusal names why and what to do.
+run_bash "$M_SECRETS" high "$D4E"; assert_contains "$OUT" "too deeply nested" "the refusal says it is too deeply nested"
+run_bash "$M_SECRETS" high "$D4E"; assert_contains "$OUT" "Run that inner command directly" "...and what to do instead"
 
 
 print_summary

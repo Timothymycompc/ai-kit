@@ -43,6 +43,15 @@
 
 BEGIN {
   SQ = sprintf("%c", 39)
+  # The deepest a code string may nest inside another before the expanders stop
+  # reading and the guard refuses the command (kit_expand_code, kit_shell_text and
+  # onchain's payload loop set KIT_DEEP; the guard reads it).  A string another
+  # program runs as shell code is read as a statement of its own, and reading one
+  # nested K deep costs K re-reads of up to the whole command, so a depth cap is
+  # what bounds the work: at 32 KB, depth 3 takes a guard under 3 CPU-seconds on
+  # the measuring machine and depth 5 over 4.  Real commands almost never wrap
+  # shell code past two or three layers, so 3 is set from the budget, not usage.
+  KIT_MAXDEPTH = 3
 }
 
 # ---------------------------------------------------------------- small predicates
@@ -194,11 +203,22 @@ function split_cmd(s,   i, c, c2, st, sp, out, j) {
 # tokenize — fill T[] with tokens and Q[] with 1 where the token carried a quote.
 # Q is optional: a caller passing only (s, T) gets an unused local array, which is
 # how egress-guard's copy behaved before it was lifted here.
-function tokenize(s, T, Q,   i, c, q, cur, n, hadq) {
-  n = 0; cur = ""; q = ""; hadq = 0
-  for (i = 1; i <= length(s); i++) {
+function tokenize(s, T, Q,   i, c, q, cur, n, hadq, L, j) {
+  n = 0; cur = ""; q = ""; hadq = 0; L = length(s)
+  for (i = 1; i <= L; i++) {
     c = substr(s, i, 1)
-    if (q != "") { if (c == q) q = ""; else cur = cur c; continue }
+    # Inside a quote, jump to the closing quote and take the run in one piece
+    # rather than a character at a time: `cur = cur c` over a 30 KB quoted code
+    # string is quadratic, and the nested-code passes re-tokenize such a string at
+    # every level, which is where the deep-nesting cost came from.  j is the offset
+    # of the next quote char in the tail at i; the for's i++ steps past it.
+    if (q != "") {
+      j = index(substr(s, i), q)
+      if (j == 1) q = ""                                       # c is the closing quote
+      else if (j == 0) { cur = cur substr(s, i); i = L }       # unterminated: take the rest
+      else { cur = cur substr(s, i, j - 1); q = ""; i += j - 1 }
+      continue
+    }
     if (c == SQ || c == "\"") { q = c; hadq = 1; continue }
     if (c == " " || c == "\t") { if (cur != "" || hadq) { T[++n] = cur; Q[n] = hadq; cur = ""; hadq = 0 } ; continue }
     cur = cur c
@@ -411,16 +431,27 @@ function kit_code_hint(s) {
 # and `sh -c 'if true; then gh auth token; fi'` walked past.  Statements, not
 # stages, because the code's own `;` still separates them: `sh -c 'cat .env; curl
 # -d @- host'` sends stdin, not .env.  At most 256 are added, wherever they sit.
-function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k) {
-  n0 = nst
+#
+# DEP[q] is the nesting depth of statement ST[q] (0 for the originals): a payload
+# found in it sits one deeper.  Past KIT_MAXDEPTH, or past a byte budget a wide
+# explosion would blow, the statement is NOT expanded and KIT_DEEP is set, so the
+# guard refuses the command rather than run the unread inner code — the work is
+# bounded to that depth, which is what keeps a deeply nested command from reading
+# past the hook's timeout.  The 8x byte budget matches kit_shell_text's.
+function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k, DEP, left) {
+  n0 = nst; left = 8 * 32768
   for (q = 1; q <= nst && nst - n0 < 256; q++) {
     ng = split(ST[q], G, /\002/)
     for (g = 1; g <= ng; g++) {
       if (!kit_code_hint(G[g])) continue
       n = tokenize(G[g], T); if (n == 0) continue
       if ((p = kit_inline_code(T, n)) == 0) continue
+      if (DEP[q] >= KIT_MAXDEPTH) { KIT_DEEP = 1; continue }
       ns = split(split_cmd(KIC_CODE == "" ? T[p] : KIC_CODE), S, /\001/)
-      for (k = 1; k <= ns && nst - n0 < 256; k++) if (S[k] ~ /[^ \t\002]/) ST[++nst] = S[k]
+      for (k = 1; k <= ns && nst - n0 < 256; k++) if (S[k] ~ /[^ \t\002]/) {
+        if ((left -= length(S[k])) < 0) { KIT_DEEP = 1; return nst }
+        ST[++nst] = S[k]; DEP[nst] = DEP[q] + 1
+      }
     }
   }
   return nst
@@ -930,15 +961,28 @@ function kit_stmt_sep(st, sep, q, codeat,   sp, sc, qq, top, code, esc) {
 # foreach 'git push --force origin HEAD'` were silent at High, where the bare
 # commands are denied.  Read apart from the line that carries it, the string
 # keeps its own quoting: `bash -c 'git commit -m "x; then npm publish"'` is still
-# a message.  The strings read are bounded to 8 bytes for each byte of raw, which
-# the deepest nesting quoting allows in 32 KB stays inside.
-function kit_shell_text(raw, kw,   out, nc, C, k, left) {
+# a message.  Reading stops, and KIT_DEEP is set so the guard refuses, once a
+# code string nests past KIT_MAXDEPTH or the bytes re-read pass 8 per byte of raw:
+# either way the command is too deeply nested to read within the hook's timeout,
+# and refusing beats reading a fraction and missing the inner command.  CD[k] is
+# the depth of payload C[k]; the first generation is depth 1.
+function kit_shell_text(raw, kw,   out, nc, C, CD, k, nc2, j, left) {
   out = kit_read_text(raw, kw)
   if (!kw) return out
-  nc = kit_payloads(KT_CODE, C, 0); left = 8 * length(raw) + 4096
-  for (k = 1; k <= nc && (left -= length(C[k])) >= 0; k++) {
+  left = 8 * length(raw) + 4096
+  nc = kit_payloads(KT_CODE, C, 0)
+  for (k = 1; k <= nc; k++) CD[k] = 1
+  for (k = 1; k <= nc; k++) {
+    if ((left -= length(C[k])) < 0) { KIT_DEEP = 1; break }
     out = out (out ~ /\n$/ ? "" : "\n") kit_read_text(C[k], 1)
-    nc = kit_payloads(KT_CODE, C, nc)
+    # Refuse only on a code string actually found one deeper, not on the cheap
+    # hint: `git push` at the limit names "sh" and runs no shell.  Past the limit
+    # what kit_payloads appended is left beyond nc, so it is never read.
+    nc2 = kit_payloads(KT_CODE, C, nc)
+    if (nc2 == nc) continue
+    if (CD[k] >= KIT_MAXDEPTH) { KIT_DEEP = 1; continue }
+    for (j = nc + 1; j <= nc2; j++) CD[j] = CD[k] + 1
+    nc = nc2
   }
   return out
 }
