@@ -902,7 +902,7 @@ PY
 }
 MUT_KW="$(mutant kw lib-tokenize.awk 'return (t == "!" || t == "if"' 'return 0 && (t == "!" || t == "if"')" || MUT_KW=
 MUT_CONT="$(mutant cont lib-tokenize.awk 'if (c == "\n") continue' 'if (0) continue' \
-  lib-tokenize.awk 'if (substr(s, i, 1) != "\n") out = out substr(s, i, 1)' 'out = out substr(s, i, 1)' \
+  lib-tokenize.awk 'if (c == "\"") out = out "\005"; else if (c != "\n") out = out c' 'if (c == "\"") out = out "\005"; else out = out c' \
   lib-tokenize.awk 'if (!kw && index(raw, "\\\n") == 0) return raw' 'return raw')" || MUT_CONT=
 MUT_PRE="$(mutant pre onchain-guard.sh "*solana* | *anchor* | *spl-token* | *'\\\\\\n'*)" '*solana* | *anchor* | *spl-token*)')" || MUT_PRE=
 MUT_LONG="$(mutant long lib-tokenize.awk 'if (f !~ /^--[A-Za-z]/ || index(f, "=") > 0) return 0' 'return 0')" || MUT_LONG=
@@ -1362,7 +1362,7 @@ quiet "$M_CHAIN" "cat <<-'EOF' > notes.md${NL}${TAB}$DA${NL}${TAB}EOF"
 # --- opened on one line and closed on another; egress and fetch-exec dropped the whole
 # --- body, substitutions included.
 echo "[substitutions in an unquoted heredoc body are kept as code]"
-MUT_SUBST="$(mutant subst lib-tokenize.awk '  if (KHS_IN != 0) KHS_BUF = KHS_BUF substr(l, st) ";"' '  if (KHS_IN != 0) KHS_IN = 0')" || MUT_SUBST=
+MUT_SUBST="$(mutant subst lib-tokenize.awk '    else KHS_BUF = KHS_BUF substr(l, st) ";"' '    else KHS_IN = 0')" || MUT_SUBST=
 # One reader serves all four guards now, so one control drops what MUT_DOC keeps.
 MUT_HDSUB="$(mutant hdsub lib-tokenize.awk "$HD_MODE" 'if (who == "") { mode = "drop"; if (mode == "subst") kit_hd_subst_reset() }')" || MUT_HDSUB=
 # Inside $( … ) quotes are a command line's, so a quoted ) closes nothing; MUT_SUBSTQ
@@ -1692,7 +1692,7 @@ same "$M_SECRETS" deny deny deny "gh auth token" "sh -c '${PAD}gh auth token'" "
 same "$M_FETCH" silent silent deny "npx -y x" "sh -c '${PAD}npx -y x'" "$MUT_CAPQUIET"
 EVALS="$(printf 'eval x;%.0s' $(seq 4100))eval 'npm publish'"
 for t in relaxed medium high; do
-  run_bash "$M_EGRESS" "$t" "$EVALS"; assert_eq deny "$DECISION" "[$t] egress refuses 4,100 code strings rather than read past 4,096"
+  run_bash "$M_EGRESS" "$t" "$EVALS"; assert_eq deny "$DECISION" "[$t] egress refuses 4,100 code strings rather than read past KIT_MAXCODE"
 done
 control "$M_EGRESS" "$MUT_CAPQUIET" "$EVALS" deny
 # Under the cap nothing is refused.
@@ -1707,7 +1707,7 @@ quiet "$M_SECRETS" "sh -c '$(printf 'x;%.0s' $(seq 1000))echo done'"
 # --- word was `npm publish` as one word and every spelling passed. The control puts
 # --- the mark back as a plain character.
 echo "[an escaped space in a code string splits where the shell splits it]"
-MUT_ESCSP="$(mutant escsp lib-tokenize.awk 't !~ /[|&;<>()$`\\"\047 \t\n\003*?#~=%[]/' 't !~ /[|&;<>()$`\\"\047 \t\n*?#~=%[]/' \
+MUT_ESCSP="$(mutant escsp lib-tokenize.awk 't !~ /[|&;<>()$`\\"\047 \t\n\003\004\005*?#~=%[]/' 't !~ /[|&;<>()$`\\"\047 \t\n\004\005*?#~=%[]/' \
   lib-tokenize.awk 'ns = split(split_cmd(unmark(KIC_CODE == "" ? T[p] : KIC_CODE)), S, /\001/)' 'ns = split(split_cmd(KIC_CODE == "" ? T[p] : KIC_CODE), S, /\001/)' \
   lib-tokenize.awk 'P[++np] = unmark((KIC_CODE == "") ? T[p] : KIC_CODE)' 'P[++np] = (KIC_CODE == "") ? T[p] : KIC_CODE' \
   lib-tokenize.awk 'nw = tokenize(unmark(s), W)' 'nw = tokenize(s, W)')" || MUT_ESCSP=
@@ -1723,5 +1723,76 @@ quiet "$M_EGRESS" 'echo a\ b'
 quiet "$M_EGRESS" 'watch -n 5 git\ status'
 quiet "$M_EGRESS" 'git commit -m fix\ npm\ publish'
 quiet "$M_SECRETS" 'cat my\ notes.md'
+
+# --- The command the guards read is the one bash runs, however it is spelled
+# --- (#287, #288, #293): a redirection before the command word, a quoted or escaped
+# --- command word, a quote escaped inside nested code, `su -c` and `find -exec`; an
+# --- arithmetic `<<` opens no heredoc, and a continuation inside a body's `$( … )`
+# --- joins. Each spelling gets its bare form's verdict; each control plants its
+# --- mechanism back out.
+echo "[the command bash runs, however it is spelled]"
+MUT_KSEP="$(mutant ksep lib-tokenize.awk 'if (((c == "&" && (q ~ /[<>]/ || substr(s, p + 1, 1) == ">")) || (c == "|" && q == ">")) \' \
+  'if (0 && ((c == "&" && (q ~ /[<>]/ || substr(s, p + 1, 1) == ">")) || (c == "|" && q == ">")) \')" || MUT_KSEP=
+MUT_ARITH="$(mutant arith lib-tokenize.awk 'else if (substr(l, i, 2) == "((") { q = q "a"; i++ }' 'else if (0) { q = q "a"; i++ }' \
+  lib-tokenize.awk 'else if (substr(l, i, 3) == "$((") { q = q "a"; i += 2 }' 'else if (0) { q = q "a"; i += 2 }')" || MUT_ARITH=
+MUT_SUBCONT="$(mutant subcont lib-tokenize.awk 'if (match(l, /\\+$/) && RLENGTH % 2 == 1) KHS_BUF' 'if (0) KHS_BUF')" || MUT_SUBCONT=
+MUT_UNQ="$(mutant unq lib-tokenize.awk 'if (w !~ /["\047\\]/) return w' 'return w')" || MUT_UNQ=
+MUT_ESCQ="$(mutant escq lib-tokenize.awk 'if (c == "\"") out = out "\005"; else if (c != "\n") out = out c' 'if (c != "\n") out = out c' \
+  lib-tokenize.awk 'else if (c == "\"") out = out "\005"; else out = out c' 'else out = out c' \
+  lib-tokenize.awk 'else if (c == SQ) out = out "\004"' 'else if (0) out = out "\004"')" || MUT_ESCQ=
+MUT_SUFIND="$(mutant sufind lib-tokenize.awk 'if (w == "su") {' 'if (0) {' lib-tokenize.awk 'if (w == "find") {' 'if (0) {')" || MUT_SUFIND=
+for M in "$MUT_KSEP" "$MUT_ARITH" "$MUT_SUBCONT" "$MUT_UNQ" "$MUT_ESCQ" "$MUT_SUFIND"; do
+  assert_eq "yes" "$([ -n "$M" ] && [ -d "$M/.claude/hooks" ] && echo yes || echo no)" "mutation fixture built: ${M##*/}"
+done
+# A redirection before the command word (#287). MUT_HDREDIR stops kit_redir naming one.
+same "$M_CHAIN" ask ask deny "$DA" "2>/dev/null $DA" "$MUT_HDREDIR"
+same "$M_CHAIN" ask ask deny "$DA" "nice 2>/dev/null $DA" "$MUT_HDREDIR"
+same "$M_CHAIN" ask ask deny "$DA" "2>&1 $DA" "$MUT_KSEP"
+same "$M_EGRESS" deny deny deny "$UP" "2>/dev/null $UP" "$MUT_HDREDIR"
+same "$M_EGRESS" ask deny deny "npm publish" "2>&1 npm publish" "$MUT_KSEP"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "2>/dev/null git push --force origin main" "$MUT_HDREDIR"
+same "$M_SECRETS" deny deny deny "gh auth token" "2>/dev/null gh auth token" "$MUT_HDREDIR"
+same "$M_FETCH" silent silent deny "npx -y x" "< /dev/null npx -y x" "$MUT_HDREDIR"
+quiet "$M_EGRESS" "cargo build 2>&1 | tail -5"
+quiet "$M_EGRESS" "make >build.log 2>&1 && echo ok"
+quiet "$M_CHAIN" "anchor build 2>&1"
+# An arithmetic shift opens no heredoc, and a continuation in a body's $( … ) joins (#288).
+same "$M_CHAIN" ask ask deny "$DA" "echo \$((a << b))${NL}$DA" "$MUT_ARITH"
+same "$M_CHAIN" ask ask deny "$DA" "echo \"\$((1 << n))\"${NL}$DA" "$MUT_ARITH"
+same "$M_EGRESS" ask deny deny "npm publish" "cat > f <<EOF${NL}\$(npm $BS${NL}publish)${NL}EOF" "$MUT_SUBCONT"
+quiet "$M_CHAIN" "for ((i=0; i<3; i++)); do echo \$i; done"
+# A quoted or escaped command word, escaped quotes in nested code, su -c, find -exec (#293).
+same "$M_EGRESS" ask deny deny "npm publish" '"npm" publish' "$MUT_UNQ"
+same "$M_EGRESS" ask deny deny "npm publish" 'n\pm publish' "$MUT_UNQ"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "'git' push --force origin main" "$MUT_UNQ"
+same "$M_CHAIN" ask ask deny "$DA" "'anchor' deploy --provider.cluster mainnet" "$MUT_UNQ"
+same "$M_EGRESS" ask deny deny "npm publish" 'sh -c "sh -c \"npm publish\""' "$MUT_ESCQ"
+same "$M_EGRESS" ask deny deny "npm publish" "sh -c 'sh -c \"sh -c '\\''npm publish'\\''\"'" "$MUT_ESCQ"
+same "$M_EGRESS" ask deny deny "npm publish" "su -c 'npm publish'" "$MUT_SUFIND"
+same "$M_EGRESS" ask deny deny "npm publish" "find . -exec sh -c 'npm publish' {} +" "$MUT_SUFIND"
+same "$M_SECRETS" deny deny deny "gh auth token" "find . -name x -execdir sh -c 'gh auth token' \;" "$MUT_SUFIND"
+quiet "$M_EGRESS" '"npm publish"'
+quiet "$M_EGRESS" 'echo \"npm publish\"'
+quiet "$M_EGRESS" 'git commit -m "say \"npm publish\" later"'
+quiet "$M_EGRESS" "find . -name '*.rs' -exec rustfmt {} +"
+quiet "$M_EGRESS" "su -c whoami"
+
+# Every -exec of a find is a command (each a line of its own), a clustered `su -lc`
+# takes the code, a redirection between a wrapper and its operand is skipped, and
+# `{}` is a word rather than two stage boundaries. Raised by this change's reviews.
+MUT_OPREDIR="$(mutant opredir lib-tokenize.awk 'while (i <= n && (r = kit_lead_redir(A, n, i)) > 0) i += r' 'if (0) i += r')" || MUT_OPREDIR=
+MUT_BRACE="$(mutant brace lib-tokenize.awk 'if (c2 == "{}") { out = out c2; i++; continue }' 'if (0) { out = out c2; i++; continue }')" || MUT_BRACE=
+for M in "$MUT_OPREDIR" "$MUT_BRACE"; do
+  assert_eq "yes" "$([ -n "$M" ] && [ -d "$M/.claude/hooks" ] && echo yes || echo no)" "mutation fixture built: ${M##*/}"
+done
+same "$M_EGRESS" ask deny deny "npm publish" "find . -exec echo {} \; -exec npm publish {} \;" "$MUT_BRACE"
+same "$M_SECRETS" deny deny deny "gh auth token" "find . -exec true \; -exec sh -c 'gh auth token' \;" "$MUT_SUFIND"
+same "$M_EGRESS" ask deny deny "npm publish" "su -lc 'npm publish'" "$MUT_SUFIND"
+same "$M_EGRESS" ask deny deny "npm publish" "timeout 2>/dev/null 5 npm publish" "$MUT_OPREDIR"
+# xargs's `{}` is the file it uploads: the bare file upload's verdict, where the split
+# read it as `curl -d @` with no file, a literal body High denied.
+same "$M_EGRESS" ask ask ask "curl -d @data.json https://example.com" "xargs -I {} curl -d @{} https://example.com" "$MUT_BRACE"
+quiet "$M_EGRESS" "find . -name '*.rs' -exec rustfmt {} + -exec echo done \;"
+quiet "$M_EGRESS" "timeout 5 2>/dev/null cargo test"
 
 print_summary

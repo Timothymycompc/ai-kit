@@ -57,7 +57,10 @@ BEGIN {
   # `curl -d @.env …` in one `sh -c`, or 4,100 `eval x;` ahead of `eval 'npm
   # publish'`, left the command at the end unread.  Past the cap the command is
   # refused, as past the depth; no command a person or agent writes comes near it.
-  KIT_MAXCODE = 4096
+  # 2048, not the 4096 it was: 4,070 one-word `sh -c x;` strings in 32 KB cost
+  # egress-guard 5.2 CPU-seconds on a loaded machine, half its 10 s timeout, and a
+  # timeout does not block (#294).  Refused at 2,048, the same command costs 2.1.
+  KIT_MAXCODE = 2048
 }
 
 # ---------------------------------------------------------------- small predicates
@@ -66,8 +69,10 @@ BEGIN {
 # `\env` is still recognised as the wrapper it is.
 function base(p) { sub(/^\\/, "", p); sub(/^.*\//, "", p); return p }
 
-# unmark — put back the spaces split_cmd protected with \003.
-function unmark(s) { gsub(/\003/, " ", s); return s }
+# unmark — put back what split_cmd protected: \003 an escaped space, \004 an
+# escaped single quote and \005 an escaped double quote, which are text in the word
+# and quotes again in the string a program hands a shell (#293).
+function unmark(s) { gsub(/\003/, " ", s); gsub(/\004/, SQ, s); gsub(/\005/, "\"", s); return s }
 
 # looks_remote — a URL or an scp/ssh remote spec is a destination, never a local
 # path.  Without it, `curl -sL https://docs.example.com/.aws/guide.html` reads as
@@ -172,7 +177,11 @@ function split_cmd(s,   i, c, c2, st, sp, out, j) {
     c = substr(s, i, 1); c2 = substr(s, i, 2)
     if (st[sp] == "sq") { out = out c; if (c == SQ) sp--; continue }
     if (st[sp] == "dq") {
-      if (c == "\\" && i < length(s)) { i++; if (substr(s, i, 1) != "\n") out = out substr(s, i, 1); continue }
+      if (c == "\\" && i < length(s)) {
+        i++; c = substr(s, i, 1)
+        if (c == "\"") out = out "\005"; else if (c != "\n") out = out c
+        continue
+      }
       if (c2 == "$(") { out = out " $__X__\002 "; st[++sp] = "code"; i++; continue }
       if (c == "`")   { out = out " $__X__\002 "; st[++sp] = "bt"; continue }
       if (c == "\"")  { sp--; out = out c; continue }
@@ -181,7 +190,11 @@ function split_cmd(s,   i, c, c2, st, sp, out, j) {
     if (c == "\\" && i < length(s)) {
       i++; c = substr(s, i, 1)
       if (c == "\n") continue
-      if (c == " ") out = out "\003"; else out = out c
+      # An escaped blank or quote is text in this word: marked, so tokenize keeps
+      # it out of the quoting, and unmark puts it back.  As a bare quote it opened
+      # a quoted run of its own: `sh -c "sh -c \"npm publish\""` read wrong.
+      if (c == " ") out = out "\003"; else if (c == SQ) out = out "\004"
+      else if (c == "\"") out = out "\005"; else out = out c
       continue
     }
     if (c == SQ)    { st[++sp] = "sq"; out = out c; continue }
@@ -200,6 +213,8 @@ function split_cmd(s,   i, c, c2, st, sp, out, j) {
     if (c2 == "&>") { out = out c; continue }
     if (c2 == "&&" || c2 == "||") { out = out "\001"; i++; continue }
     if (c == ";" || c == "&" || c == "\n") { out = out "\001"; continue }
+    # `{}` is a word, find's and xargs's placeholder; only a lone `{` or `}` groups.
+    if (c2 == "{}") { out = out c2; i++; continue }
     if (c == "|" || c == "(" || c == ")" || c == "{" || c == "}") { out = out "\002"; continue }
     out = out c
   }
@@ -235,11 +250,73 @@ function tokenize(s, T, Q,   i, c, q, cur, n, hadq, L, j) {
 
 # first_word — index of the first token that is neither a VAR=value assignment
 # nor a reserved word (`if FOO=1 cmd`, `! cmd`, `then cmd`).
-function first_word(T, n,   i) {
+function first_word(T, n,   i, r) {
   i = 1
-  while (i <= n && (T[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[i]))) i++
+  while (i <= n) {
+    if (T[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[i])) i++
+    else if ((r = kit_redir(T, n, i)) > 0) i += r
+    else break
+  }
   return i
 }
+
+# kit_redir — how many words the redirection at T[i] spans: 1 with its target
+# attached (`2>&1`, `>log`, `<<EOF`), 2 when the target is the next word (`> log`),
+# 0 when T[i] is no redirection.  bash takes a redirection anywhere among a
+# command's words, ahead of the command word too: `2>/dev/null anchor deploy …` is
+# the deploy.  Read as the command word, one hid it from every guard (#287), and
+# read as an operand, one made `bash 2>&1 <<'EOF'` a shell running a script file
+# with the body as its data.
+function kit_redir(T, n, i) {
+  if (T[i] !~ /^([0-9]+|&)?(<<<|<<-?|<>|>>|>\||[<>]&?)/) return 0
+  return (T[i] ~ /^([0-9]+|&)?(<<<|<<-?|<>|>>|>\||[<>]&?)$/ && i < n) ? 2 : 1
+}
+
+# kit_sep — the next statement separator in s, as match(s, /(\|\||&&|\$\(|[;&|()])/)
+# finds it (RSTART, RLENGTH; 0 when there is none), except that the `&` of `2>&1`,
+# `<&3` and `&>log` and the `|` of `>|f` separate nothing and `|&` is one pipe, as
+# split_cmd reads them.  Split there, `2>&1 anchor deploy …` left `1` in command
+# position for the anchored patterns.
+function kit_sep(s,   off, p, c, q) {
+  off = 0
+  while (match(substr(s, off + 1), /(\|\||&&|\$\(|[;&|()])/)) {
+    p = off + RSTART; c = substr(s, p, RLENGTH)
+    q = (p > 1) ? substr(s, p - 1, 1) : ""
+    if (((c == "&" && (q ~ /[<>]/ || substr(s, p + 1, 1) == ">")) || (c == "|" && q == ">")) \
+        && (p < 3 || substr(s, p - 2, 1) != "\\")) { off = p; continue }
+    if (c == "|" && substr(s, p + 1, 1) == "&") RLENGTH = 2
+    RSTART = p; return p
+  }
+  RSTART = 0; RLENGTH = -1; return 0
+}
+
+# kit_unq — command word w with its quotes and backslashes removed, as the shell
+# removes them before it looks the command up: `"npm" publish`, `n\pm publish` and
+# `'anchor' deploy` run npm and anchor, and the anchored patterns, which read the
+# word as written, met nothing (#293).  w comes back unchanged when its quotes do
+# not close inside it (a quoted run that spans words) or the result is no plain
+# command name, so a quoted `;` or blank never becomes a separator.
+function kit_unq(w,   o, i, c, q, L) {
+  if (w !~ /["\047\\]/) return w
+  o = ""; q = ""; L = length(w)
+  for (i = 1; i <= L; i++) {
+    c = substr(w, i, 1)
+    if (q == SQ) { if (c == SQ) q = ""; else o = o c; continue }
+    if (q == "\"") {
+      if (c == "\\" && i < L && index("\"\\$`", substr(w, i + 1, 1))) { o = o substr(w, ++i, 1); continue }
+      if (c == "\"") q = ""; else o = o c
+      continue
+    }
+    if (c == "\\" && i < L) { o = o substr(w, ++i, 1); continue }
+    if (c == SQ || c == "\"") { q = c; continue }
+    o = o c
+  }
+  return (q == "" && o ~ /^[A-Za-z0-9_.\/+${}~:@%-]+$/) ? o : w
+}
+
+# kit_lead_redir — kit_redir for the normalisers that rewrite a statement's text,
+# except a heredoc operator: hd_strip reads the opener off that text, so it stays.
+function kit_lead_redir(A, n, i) { return (A[i] ~ /^[0-9]*<<([^<]|$)/) ? 0 : kit_redir(A, n, i) }
 
 # cmdword_x — the real command word, past leading assignments and wrappers.
 # Sets CWI to its index.  Returns "" when there is none.
@@ -258,10 +335,14 @@ function first_word(T, n,   i) {
 # that takes `!` after it (`time ! cmd`), and on any other wrapper the word would
 # name a command that does not exist.  Never read past n: tokenize leaves the
 # previous stage's tokens above it.
-function cmdword_x(T, n, reskip, operands,   ci, w) {
+function cmdword_x(T, n, reskip, operands,   ci, w, r) {
   ci = first_word(T, n)
   while (ci <= n) {
-    while (ci <= n && (kit_reserved(T[ci]) || (reskip && T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/))) ci++
+    while (ci <= n) {
+      if (kit_reserved(T[ci]) || (reskip && T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) ci++
+      else if ((r = kit_redir(T, n, ci)) > 0) ci += r
+      else break
+    }
     if (ci > n) { if (reskip) return ""; break }
     w = base(T[ci])
     if (!kit_wrapper(w)) { CWI = ci; return w }
@@ -270,6 +351,7 @@ function cmdword_x(T, n, reskip, operands,   ci, w) {
       if (operands && ci < n && kit_wrapper_optarg(w, T[ci])) ci++
       ci++
     }
+    while (ci <= n && (r = kit_redir(T, n, ci)) > 0) ci += r
     if (operands && ci <= n && kit_wrapper_operand(w, T[ci])) ci++
   }
   if (!reskip) CWI = n + 1
@@ -280,7 +362,7 @@ function cmdword_x(T, n, reskip, operands,   ci, w) {
 # operator, expansion or glob.  The set is git's own test for whether a command
 # needs a shell (run-command.c, prepare_shell_cmd).  \003, split_cmd's mark for an
 # escaped space, is a blank here: `watch npm\ publish` hands sh "npm publish".
-function kit_plain(t) { return (t != "" && t !~ /[|&;<>()$`\\"\047 \t\n\003*?#~=%[]/) }
+function kit_plain(t) { return (t != "" && t !~ /[|&;<>()$`\\"\047 \t\n\003\004\005*?#~=%[]/) }
 
 # kit_shq — t as one shell word: itself when plain, single-quoted otherwise.
 function kit_shq(t,   n, P, i, s) {
@@ -370,6 +452,9 @@ function kit_env_split(T, n, ci,   o, s, j, W, nw, k) {
 #                                    git runs `sh -c 'CMD "$@"' CMD ARG…`.
 #   git rebase --exec CODE, -x CODE  every CODE, a line each.
 #   env -S STRING ARG…               env again, with STRING's words and each ARG.
+#   su … -c CODE                     CODE.
+#   find … -exec CMD ARG… ;          CMD and its words, as a command, a line for
+#                                    each -exec, -execdir, -ok and -okdir.
 #
 # Given words that need no shell (kit_plain), eval, watch, foreach and env -S run
 # them as a command, so the walk goes on into it: a chain of `eval eval … npm
@@ -378,7 +463,7 @@ function kit_env_split(T, n, ci,   o, s, j, W, nw, k) {
 # foreach, the code is the words from there, because kit_unwrap stops at both and
 # the anchored gates need a statement start.  np is the last word that is not
 # plain, found once: asked again at each eval, the chain was quadratic after all.
-function kit_inline_code(T, n,   ci, w, i, c, need, np) {
+function kit_inline_code(T, n,   ci, w, i, c, need, np, p, s, j, r) {
   KIC_CODE = ""; need = 0
   for (np = n; np > 0 && kit_plain(T[np]); np--) ;
   ci = first_word(T, n)
@@ -407,6 +492,28 @@ function kit_inline_code(T, n,   ci, w, i, c, need, np) {
       }
       return 0
     }
+    # su -c CODE runs CODE in the target user's shell.  find -exec CMD … runs CMD as
+    # a command, so each -exec's command is a line of KIC_CODE: `find . -exec sh -c
+    # 'npm publish' {} +` and `find . -exec true \; -exec npm publish {} \;` were
+    # arguments to find (#293).
+    if (w == "su") {
+      for (i = ci + 1; i <= n; i++) {
+        if (T[i] == "--command" || T[i] ~ /^-[A-Za-z]*c$/) return (i < n) ? i + 1 : 0
+        if (T[i] ~ /^--command=/) { KIC_CODE = substr(T[i], 11); return i }
+      }
+      return 0
+    }
+    if (w == "find") {
+      p = 0
+      for (i = ci + 1; i <= n; i++) {
+        if (T[i] !~ /^-(exec|execdir|ok|okdir)$/) continue
+        s = ""
+        for (j = i + 1; j <= n && T[j] != ";" && T[j] != "+"; j++) s = s (s == "" ? "" : " ") kit_shq(T[j])
+        if (s != "") { KIC_CODE = KIC_CODE (p ? "\n" : "") s; if (!p) p = i + 1 }
+        i = j
+      }
+      return p
+    }
     if (w == "git" && (i = kit_git_code(T, n, ci)) != 0) {
       if (i > 0) return i
       need = 1; ci = -i; continue
@@ -419,6 +526,7 @@ function kit_inline_code(T, n,   ci, w, i, c, need, np) {
       if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++
       ci++
     }
+    while (ci <= n && (r = kit_redir(T, n, ci)) > 0) ci += r
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
     if (w == "flock" && ci < n && (T[ci] == "-c" || T[ci] == "--command")) return ci + 1
     while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
@@ -430,7 +538,8 @@ function kit_inline_code(T, n,   ci, w, i, c, need, np) {
 # pre-check, so a stage that names none is never tokenized for it.
 function kit_code_hint(s) {
   return (index(s, "sh") || index(s, "eval") || index(s, "watch") || index(s, "flock") \
-       || index(s, "env") || index(s, "foreach") || index(s, "rebase"))
+       || index(s, "env") || index(s, "foreach") || index(s, "rebase") || index(s, "su ") \
+       || index(s, "-exec") || index(s, "-ok"))
 }
 
 # kit_expand_code — append the statements of every code string in ST[1..nst]
@@ -615,7 +724,13 @@ function kit_hd_subst(l,   out, i, L, c, st) {
     if (c == "\\") { i++; continue }                  # inside ` … `
     if (c == "`") { out = out "; $(" KHS_BUF substr(l, st, i - st) ")"; KHS_IN = 0 }
   }
-  if (KHS_IN != 0) KHS_BUF = KHS_BUF substr(l, st) ";"
+  # A body line that ends inside a substitution continues it: a newline separates
+  # its commands, so it becomes `;`, but a backslash-newline joins the next line
+  # onto this one, as bash joins it (#288).
+  if (KHS_IN != 0) {
+    if (match(l, /\\+$/) && RLENGTH % 2 == 1) KHS_BUF = KHS_BUF substr(l, st, length(l) - st)
+    else KHS_BUF = KHS_BUF substr(l, st) ";"
+  }
   return out
 }
 function kit_hd_subst_flush(   out) {
@@ -627,7 +742,10 @@ function kit_hd_subst_flush(   out) {
 # stack q: KH_P[i] is where the i-th starts and KH_S[i] the stack there; returns
 # the count, and leaves the stack at the end of l in KH_QEND.  A `<<` inside '…'
 # or "…", or after a # that starts a comment, is text, and `<<<` is a
-# here-string: neither opens a body.  hd_strip, kit_shell_text and
+# here-string: neither opens a body, and nor does one inside `$(( … ))` or `(( … ))`,
+# where `<<` is a left shift: read as an opener, `$((a << b))` took `b` for a
+# delimiter no line matched and hid every command after it (#288).  `a` on the
+# stack is that arithmetic.  hd_strip, kit_shell_text and
 # kit-code-size.awk all find openers here, so every reader agrees on what opens a
 # body.  Reading any `<<` as an opener let `echo '<<X'` turn every line after it
 # into a body nothing normalised or inspected: `git push \<newline>--force`
@@ -640,6 +758,7 @@ function kit_hd_ops(l, q,   i, L, c, top, k) {
     if (c == "\\") { i++; continue }
     if (top == "d") {
       if (c == "\"") q = substr(q, 1, length(q) - 1)
+      else if (substr(l, i, 3) == "$((") { q = q "a"; i += 2 }
       else if (substr(l, i, 2) == "$(") { q = q "p"; i++ }
       else if (c == "`") q = q "b"
       continue
@@ -647,9 +766,12 @@ function kit_hd_ops(l, q,   i, L, c, top, k) {
     if (c == SQ) q = q "s"
     else if (c == "\"") q = q "d"
     else if (c == "`") q = (top == "b") ? substr(q, 1, length(q) - 1) : q "b"
+    else if (substr(l, i, 2) == "((") { q = q "a"; i++ }
     else if (c == "(") q = q "p"
+    else if (top == "a" && substr(l, i, 2) == "))") { q = substr(q, 1, length(q) - 1); i++ }
     else if (c == ")") { if (top == "p") q = substr(q, 1, length(q) - 1) }
     else if (c == "#" && (i == 1 || substr(l, i - 1, 1) ~ /[ \t;&|(]/)) break
+    else if (top == "a") continue
     else if (substr(l, i, 3) == "<<<") i += 2
     else if (substr(l, i, 2) == "<<") { KH_P[++k] = i; KH_S[k] = q; i++ }
   }
@@ -680,16 +802,6 @@ function hd_interp(w) {
        || w == "deno" || w == "bun" || w == "osascript" || w == "Rscript" || w == "tclsh")
 }
 function hd_shell(w) { return (is_shell(w) || w == "ash") }
-# hd_redir — how many words the redirection at T[i] spans: 1 with its target
-# attached (`2>&1`, `>log`, `<<EOF`), 2 when the target is the next word (`> log`),
-# 0 when T[i] is no redirection.  bash takes a redirection anywhere among a
-# command's words.  Read as an operand, one made `bash 2>&1 <<'EOF'` a shell
-# running a script file with the body as its data, and a mainnet deploy in that
-# body was silent at High.
-function hd_redir(T, n, i) {
-  if (T[i] !~ /^([0-9]+|&)?(<<<|<<-?|<>|>>|>\||[<>]&?)/) return 0
-  return (T[i] ~ /^([0-9]+|&)?(<<<|<<-?|<>|>>|>\||[<>]&?)$/ && i < n) ? 2 : 1
-}
 # hd_cmd — index of the command word, past assignments, reserved words
 # (`then bash <<'EOF'`), redirections and non-shell wrappers with the words their
 # options take.
@@ -698,13 +810,14 @@ function hd_cmd(T, n,   ci, w, r) {
   while (ci <= n) {
     while (ci <= n) {
       if (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci])) ci++
-      else if ((r = hd_redir(T, n, ci)) > 0) ci += r
+      else if ((r = kit_redir(T, n, ci)) > 0) ci += r
       else break
     }
     if (ci > n) break
     w = base(T[ci]); if (!is_wrapper(w) || w == "eval") break
     ci++
     while (ci <= n && T[ci] ~ /^-/) ci += (ci < n && kit_wrapper_optarg(w, T[ci])) ? 2 : 1
+    while (ci <= n && (r = kit_redir(T, n, ci)) > 0) ci += r
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
   }
   return ci
@@ -731,14 +844,14 @@ function hd_stdin_path(t) { return (t == "-" || t == "/dev/stdin" || t == "/dev/
 function hd_stdin_code(T, n, ci,   w, sh, i, t, r) {
   w = base(T[ci])
   if (w == "source" || w == ".") {
-    for (i = ci + 1; i <= n && (r = hd_redir(T, n, i)) > 0; i += r) ;
+    for (i = ci + 1; i <= n && (r = kit_redir(T, n, i)) > 0; i += r) ;
     return (i <= n && hd_stdin_path(T[i]))
   }
   sh = hd_shell(w)
   if (!sh && !hd_interp(w)) return 0
   for (i = ci + 1; i <= n; i++) {
     t = T[i]
-    if ((r = hd_redir(T, n, i)) > 0) { i += r - 1; continue }
+    if ((r = kit_redir(T, n, i)) > 0) { i += r - 1; continue }
     if (hd_stdin_path(t)) return 1
     if (sh ? t ~ /^[-+]/ : t ~ /^-/) {
       if (hd_inline_flag(w, t)) return 0             # stdin is that program's data
@@ -903,7 +1016,7 @@ function kit_unreserve(st,   lead) {
 # publish` met `Bash(npm *)` in permissions.allow and nothing else; read here as
 # it was, the publish pattern never saw npm in command position.  A text with
 # nothing to drop comes back unchanged.
-function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j) {
+function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j, r, u) {
   lead = st; sub(/[^ \t].*$/, "", lead)
   n = split(substr(st, length(lead) + 1), A, /[ \t]+/)
   i = 1; keep = ""
@@ -911,11 +1024,12 @@ function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j) {
     w = A[i]
     if (w == "") { i++; continue }
     if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { keep = keep w " "; i++; continue }
+    if ((r = kit_lead_redir(A, n, i)) > 0) { i += r; continue }
     # `coproc NAME { cmd; }` names the coprocess; the command is in the braces.
     if (w == "coproc" && i + 2 <= n && A[i + 2] == "{") { i += 2; continue }
     if (kit_reserved(w)) { i++; continue }
     if (w == "function" && i < n) { i += 2; continue }
-    cur = base(w)
+    cur = base(kit_unq(w))
     if (!is_wrapper(cur) || cur == "eval") break
     i++
     while (i <= n) {
@@ -926,9 +1040,12 @@ function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j) {
     }
     # One operand at most, as cmdword_x takes it: flock's lock file, timeout's
     # duration.  Read as a loop, every word after `flock f` was an operand.
+    while (i <= n && (r = kit_lead_redir(A, n, i)) > 0) i += r
     if (i <= n && kit_wrapper_operand(cur, A[i])) i++
   }
-  if (i == 1) return st
+  u = (i <= n) ? kit_unq(A[i]) : ""
+  if (i == 1 && u == A[i]) return st
+  if (i <= n) A[i] = u
   out = ""
   for (j = i; j <= n; j++) if (A[j] != "") out = out (out == "" ? "" : " ") A[j]
   return lead keep out
@@ -1042,7 +1159,7 @@ function kit_read_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, DDA
         KQ_PREV = ""; KQ_COMMENT = 0
         rest = l; l = ""
         while (length(rest)) {
-          if (match(rest, /(\|\||&&|\$\(|[;&|()])/)) {
+          if (kit_sep(rest)) {
             st = substr(rest, 1, RSTART - 1); sep = substr(rest, RSTART, RLENGTH)
             rest = substr(rest, RSTART + RLENGTH)
           } else { st = rest; sep = ""; rest = "" }
