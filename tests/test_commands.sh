@@ -34,10 +34,16 @@ for f in "$CMDS_DIR"/*.md; do
 done
 
 echo ""
-assert_eq "34" "$COUNT" "Total command count is 34"
+assert_eq "47" "$COUNT" "Total command count is 47"
 assert_file_exists "$CMDS_DIR/firewall.md" "/firewall exists (shows and switches the security tier)"
 # /firewall drives the generator; it must not hand-edit the block it regenerates.
 assert_file_contains "$CMDS_DIR/firewall.md" "firewall.sh" "firewall.md calls bin/firewall.sh rather than editing settings.json by hand"
+# /ship merges PRs, and the firewall lets `gh pr merge` through at Relaxed, so whether it runs
+# is the user's typing alone: Claude must not be able to invoke it from its description. Read
+# from the frontmatter, since the same words in the body would leave it model-invocable.
+SHIP_FRONT="$(awk 'NR==1 && $0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$CMDS_DIR/ship.md")"
+assert_eq "disable-model-invocation: true" "$(printf '%s\n' "$SHIP_FRONT" | grep -x 'disable-model-invocation:[[:space:]]*true' || true)" \
+  "/ship is user-only (disable-model-invocation: true in its frontmatter)"
 
 echo ""
 echo "[test_commands] Checking setup-mcp.md covers every .env.example key..."

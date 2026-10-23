@@ -37,8 +37,9 @@ What is in the kit repository, which parts reach an installed project, and the w
     │   ├── kit-ref.sh               # The release tag /update fetches
     │   ├── resync.sh                # Submodule resync script
     │   ├── firewall.sh              # Generates a tier's permission + sandbox rules
+    │   ├── decision-sheet.sh        # /decide's local HTML decision sheet (no network)
     │   └── skills.sh                # List skill packs, install extensions on demand
-    ├── commands/                # 34 workflow commands
+    ├── commands/                # 47 workflow commands
     ├── hooks/                   # PreToolUse/SessionStart gate scripts
     ├── skills/                  # Progressive-loading knowledge
     │   ├── SKILL.md                 # Unified hub routing to all skills
