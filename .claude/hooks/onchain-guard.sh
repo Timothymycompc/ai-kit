@@ -66,7 +66,7 @@ fi
 # Refused before the verb match, so an irreversible action or a mainnet deploy in
 # the unread inner code cannot pass.
 if [ "$KIT_NORM" = "$(printf '\001KITDEEP')" ]; then
-  kit_deny "this command wraps shell code more than 3 levels deep (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec inside one another), which is too deeply nested for the firewall hooks to read within their timeout. It is refused at every tier rather than run with the inner command unchecked. Run that inner command directly instead of wrapping it in layers of shells."
+  kit_deny "this command carries more shell code than the firewall hooks can read within their timeout: code strings (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec) nested more than 3 levels deep, or more than 4096 of them or of the statements inside them. It is refused at every tier rather than run with part of it unchecked. Run the inner commands directly, or put a long script in a file and run that."
 fi
 
 # Position-anchored: the verb has to start a statement, optionally behind env
