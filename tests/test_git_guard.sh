@@ -929,7 +929,7 @@ flips "...while the bare form still fires, so only the reserved-word skip broke"
 #     and kit_shell_text no longer joining the lines. Either one alone still catches
 #     every case below, which is the point of having both, so the control needs both.
 M="$(mutate_lib 'if (c == "\n") continue' 'if (0) continue')"
-mutate_file "$M/.claude/hooks/lib-tokenize.awk" 'if (substr(s, i, 1) != "\n") out = out substr(s, i, 1)' 'out = out substr(s, i, 1)'
+mutate_file "$M/.claude/hooks/lib-tokenize.awk" 'if (c == "\"") out = out "\005"; else if (c != "\n") out = out c' 'if (c == "\"") out = out "\005"; else out = out c'
 mutate_file "$M/.claude/hooks/lib-tokenize.awk" 'if (!kw && index(raw, "\\\n") == 0) return raw' 'return raw'
 for c in "git -P $BS${NL}-c core.fsmonitor=/tmp/x.sh status" "git --no-pager $BS${NL}clean -fdx" \
          "git config $BS${NL}core.hooksPath .evil" "git config core.hooks$BS${NL}Path .evil" \

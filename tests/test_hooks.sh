@@ -902,7 +902,7 @@ PY
 }
 MUT_KW="$(mutant kw lib-tokenize.awk 'return (t == "!" || t == "if"' 'return 0 && (t == "!" || t == "if"')" || MUT_KW=
 MUT_CONT="$(mutant cont lib-tokenize.awk 'if (c == "\n") continue' 'if (0) continue' \
-  lib-tokenize.awk 'if (substr(s, i, 1) != "\n") out = out substr(s, i, 1)' 'out = out substr(s, i, 1)' \
+  lib-tokenize.awk 'if (c == "\"") out = out "\005"; else if (c != "\n") out = out c' 'if (c == "\"") out = out "\005"; else out = out c' \
   lib-tokenize.awk 'if (!kw && index(raw, "\\\n") == 0) return raw' 'return raw')" || MUT_CONT=
 MUT_PRE="$(mutant pre onchain-guard.sh "*solana* | *anchor* | *spl-token* | *'\\\\\\n'*)" '*solana* | *anchor* | *spl-token*)')" || MUT_PRE=
 MUT_LONG="$(mutant long lib-tokenize.awk 'if (f !~ /^--[A-Za-z]/ || index(f, "=") > 0) return 0' 'return 0')" || MUT_LONG=
@@ -1362,7 +1362,7 @@ quiet "$M_CHAIN" "cat <<-'EOF' > notes.md${NL}${TAB}$DA${NL}${TAB}EOF"
 # --- opened on one line and closed on another; egress and fetch-exec dropped the whole
 # --- body, substitutions included.
 echo "[substitutions in an unquoted heredoc body are kept as code]"
-MUT_SUBST="$(mutant subst lib-tokenize.awk '  if (KHS_IN != 0) KHS_BUF = KHS_BUF substr(l, st) ";"' '  if (KHS_IN != 0) KHS_IN = 0')" || MUT_SUBST=
+MUT_SUBST="$(mutant subst lib-tokenize.awk '    else KHS_BUF = KHS_BUF substr(l, st) ";"' '    else KHS_IN = 0')" || MUT_SUBST=
 # One reader serves all four guards now, so one control drops what MUT_DOC keeps.
 MUT_HDSUB="$(mutant hdsub lib-tokenize.awk "$HD_MODE" 'if (who == "") { mode = "drop"; if (mode == "subst") kit_hd_subst_reset() }')" || MUT_HDSUB=
 # Inside $( … ) quotes are a command line's, so a quoted ) closes nothing; MUT_SUBSTQ
@@ -1707,7 +1707,7 @@ quiet "$M_SECRETS" "sh -c '$(printf 'x;%.0s' $(seq 1000))echo done'"
 # --- word was `npm publish` as one word and every spelling passed. The control puts
 # --- the mark back as a plain character.
 echo "[an escaped space in a code string splits where the shell splits it]"
-MUT_ESCSP="$(mutant escsp lib-tokenize.awk 't !~ /[|&;<>()$`\\"\047 \t\n\003*?#~=%[]/' 't !~ /[|&;<>()$`\\"\047 \t\n*?#~=%[]/' \
+MUT_ESCSP="$(mutant escsp lib-tokenize.awk 't !~ /[|&;<>()$`\\"\047 \t\n\003\004\005*?#~=%[]/' 't !~ /[|&;<>()$`\\"\047 \t\n\004\005*?#~=%[]/' \
   lib-tokenize.awk 'ns = split(split_cmd(unmark(KIC_CODE == "" ? T[p] : KIC_CODE)), S, /\001/)' 'ns = split(split_cmd(KIC_CODE == "" ? T[p] : KIC_CODE), S, /\001/)' \
   lib-tokenize.awk 'P[++np] = unmark((KIC_CODE == "") ? T[p] : KIC_CODE)' 'P[++np] = (KIC_CODE == "") ? T[p] : KIC_CODE' \
   lib-tokenize.awk 'nw = tokenize(unmark(s), W)' 'nw = tokenize(s, W)')" || MUT_ESCSP=

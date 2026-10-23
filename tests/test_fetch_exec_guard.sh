@@ -544,7 +544,7 @@ planted "reserved words unskipped" "${KW_CASES[@]}"
 # text and kit_shell_text stops joining. Either alone still catches these.
 cp "$REPO_ROOT"/.claude/hooks/* "$MUT/"
 plant lib-tokenize.awk 'if (c == "\n") continue' 'if (0) continue'
-plant lib-tokenize.awk 'if (substr(s, i, 1) != "\n") out = out substr(s, i, 1)' 'out = out substr(s, i, 1)'
+plant lib-tokenize.awk 'if (c == "\"") out = out "\005"; else if (c != "\n") out = out c' 'if (c == "\"") out = out "\005"; else out = out c'
 plant lib-tokenize.awk 'if (!kw && index(raw, "\\\n") == 0) return raw' 'return raw'
 planted "continuations kept as text" "${CONT_CASES[@]}"
 # M7 — the pre-filter's continuation arm removed: `np\<newline>x` names no runner it
