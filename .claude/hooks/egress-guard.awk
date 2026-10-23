@@ -269,12 +269,9 @@ function gc_opt_operand(o) {
 # does NOT: `git --exec-path /tmp rev-parse` printed the exec path and ignored
 # the rest — git_walk stops there.  Getting one wrong costs a MISS, never a false
 # positive: the walk lands on the wrong token, finds no subcommand it knows, and
-# stays silent.
-function git_global_operand(o) {
-  return (o == "-C" || o == "-c" || o == "--git-dir" || o == "--work-tree" \
-       || o == "--namespace" || o == "--attr-source" || o == "--super-prefix" \
-       || o == "--config-env" || o == "--shallow-file")
-}
+# stays silent.  The table is lib-tokenize.awk's kit_git_optarg, which the walk
+# into `git submodule foreach` and `git rebase --exec` reads too.
+function git_global_operand(o) { return kit_git_optarg(o) }
 
 # cc_strips — a wrapper Claude Code removes before it matches a Bash rule, so
 # `nice git clean -fdx` still meets `Bash(git clean *)`.  xargs only without
@@ -894,8 +891,11 @@ END {
   }
   GW_PAYLOAD = 0
   # The gh api pass, in pass 0 for the same reason, over its own split of the text:
-  # the one with gh's {owner}/{repo}/{branch} placeholders rewritten.
+  # the one with gh's {owner}/{repo}/{branch} placeholders rewritten.  A code
+  # string's statements join it, as they join ST: `sh -c 'true; gh api …'` read
+  # only its first command.
   ngst = split(gtext, GST, "\001")
+  ngst = kit_expand_code(GST, ngst)
   for (q = 1; q <= ngst; q++) {
     stmt = GST[q]
     if (stmt !~ /[^ \t\002]/) continue

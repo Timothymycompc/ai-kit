@@ -843,7 +843,8 @@ flips "prune matched as a substring, so prune-packed is gated" \
 
 # 9. The global-option walk itself: drop an operand-taking option and the walk lands on
 #    the operand instead of the subcommand, which is a MISS rather than a false positive.
-M="$(mutate 'o == "--git-dir"' 'o == "--git-dir-NOT"')"
+#    The table is lib-tokenize.awk's kit_git_optarg, shared with the code-string walk.
+M="$(mutate_lib 'o == "--git-dir"' 'o == "--git-dir-NOT"')"
 flips "--git-dir dropped from the operand list, so the walk loses the subcommand" \
   "$M" "git --git-dir .git clean -fd" DENY PASS
 flips "...while the =-spelling still fires, since it needs no operand skip" \
@@ -896,7 +897,7 @@ flips "the --prune test loosened to the word prune, so gc --no-prune is gated" \
 # 14. The walk. --shallow-file out of the operand list puts its operand in subcommand
 #     position; the help/version stop removed brings back #254's false positive; and
 #     the wrapper option table unconsulted puts nice's "5" where git should be.
-M="$(mutate '|| o == "--shallow-file")' ')')"
+M="$(mutate_lib '|| o == "--shallow-file")' ')')"
 flips "--shallow-file dropped from the operand list, so the walk loses the subcommand" \
   "$M" "git --shallow-file x clean -fdx" DENY PASS
 M="$(mutate 'if (o == "-h" || o == "--help"' 'if (o == "-h-NOT" || o == "--help-NOT"')"

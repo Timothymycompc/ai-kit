@@ -250,15 +250,124 @@ function cmdword_x(T, n, reskip, operands,   ci, w) {
   return ""
 }
 
-# kit_inline_code — index of the token a stage runs as shell code: the string a
-# shell takes with -c (`sh -c '…'`, `bash -lc "…"`) or eval's argument, past any
-# non-shell wrapper in front; 0 when it runs none.  `bash ./x.sh "a; b"` is 0:
-# that string is the script's argument.
-function kit_inline_code(T, n,   ci, w, i, c) {
+# kit_plain — t is one word the shell reads back as itself: no blank, quote,
+# operator, expansion or glob.  The set is git's own test for whether a command
+# needs a shell (run-command.c, prepare_shell_cmd).
+function kit_plain(t) { return (t != "" && t !~ /[|&;<>()$`\\"\047 \t\n*?#~=%[]/) }
+
+# kit_shq — t as one shell word: itself when plain, single-quoted otherwise.
+function kit_shq(t,   n, P, i, s) {
+  if (kit_plain(t)) return t
+  n = split(t, P, /\047/); s = P[1]
+  for (i = 2; i <= n; i++) s = s "\047\\\047\047" P[i]
+  return "\047" s "\047"
+}
+
+# kit_join — T[i..n] joined by spaces, each word quoted as one (kit_shq) when q is set.
+function kit_join(T, i, n, q,   s) {
+  s = ""
+  for (; i <= n; i++) s = s (s == "" ? "" : " ") (q ? kit_shq(T[i]) : T[i])
+  return s
+}
+
+# kit_git_optarg — a git-level option, ahead of the subcommand, that takes the next
+# word.  egress-guard.awk's git_global_operand reads this table too, and says how
+# each entry was verified.
+function kit_git_optarg(o) {
+  return (o == "-C" || o == "-c" || o == "--git-dir" || o == "--work-tree" \
+       || o == "--namespace" || o == "--attr-source" || o == "--super-prefix" \
+       || o == "--config-env" || o == "--shallow-file")
+}
+
+# kit_git_code — git at T[ci] running a code string.  `rebase` with --exec or -x
+# returns the index of the first, KIC_CODE holding each one a line apiece: the
+# sequencer runs every one with sh -c after a commit.  `submodule foreach` returns
+# the index of CMD, with KIC_CODE set as kit_inline_code describes, or minus that
+# index when CMD is a plain word, which git runs as a command.  0 otherwise.
+function kit_git_code(T, n, ci,   i, o, v, p) {
+  for (i = ci + 1; i <= n && T[i] ~ /^-/; i++) if (kit_git_optarg(T[i])) i++
+  if (i > n) return 0
+  if (T[i] == "submodule") {
+    i++; while (i <= n && T[i] ~ /^-/) i++
+    if (i > n || T[i] != "foreach") return 0
+    for (i++; i <= n && T[i] ~ /^-/; i++) if (T[i] == "--") { i++; break }
+    if (i > n) return 0
+    if (kit_plain(T[i])) return -i
+    KIC_CODE = T[i] (i < n ? " " kit_join(T, i + 1, n, 1) : "")
+    return i
+  }
+  if (T[i] != "rebase") return 0
+  p = 0
+  for (i++; i <= n && T[i] != "--"; i++) {
+    o = T[i]
+    if (o ~ /^-[iqvnfkmr]*x$/ || kit_long_arg(o, "exec")) { if (i == n) break; v = T[++i] }
+    else if (o ~ /^-[iqvnfkmr]*x./) { v = o; sub(/^-[iqvnfkmr]*x/, "", v) }
+    else if (o ~ /^--ex(ec?)?=/) { v = o; sub(/^[^=]*=/, "", v) }
+    else continue
+    KIC_CODE = KIC_CODE (p ? "\n" : "") v
+    if (!p) p = i
+  }
+  return p
+}
+
+# kit_env_split — env's option at T[ci] is -S or --split-string, whose STRING env
+# splits into words and reads, with the words after it, as arguments of its own.
+# Sets KIC_CODE to that env command line and returns 1.  A STRING of one plain word
+# needs no splitting: the walk reads it where it stands.
+function kit_env_split(T, n, ci,   o, s, j, W, nw, k) {
+  o = T[ci]; j = ci + 1
+  if (o ~ /^-[iv0]*S$/ || kit_long_arg(o, "split-string")) { if (ci == n) return 0; s = T[j++] }
+  else if (o ~ /^-[iv0]*S./) { s = o; sub(/^-[iv0]*S/, "", s) }
+  else if (o ~ /^--s[a-z-]*=/ && kit_long_arg(substr(o, 1, index(o, "=") - 1), "split-string")) s = substr(o, index(o, "=") + 1)
+  else return 0
+  if (kit_plain(s)) return 0
+  nw = tokenize(s, W); KIC_CODE = "env"
+  for (k = 1; k <= nw; k++) KIC_CODE = KIC_CODE " " kit_shq(W[k])
+  for (k = j; k <= n; k++) KIC_CODE = KIC_CODE " " kit_shq(T[k])
+  return 1
+}
+
+# kit_inline_code — index of the first word of the code a stage runs through a
+# shell, past any wrapper in front; 0 when it runs none.  The code is T[p], or
+# KIC_CODE when that is set, for the programs that build it from more than one word:
+#
+#   sh -c CODE, bash -lc CODE        CODE.  `bash ./x.sh "a; b"` is 0: that string
+#                                    is the script's argument.
+#   flock FILE -c CODE               CODE, which flock runs with $SHELL -c.
+#   eval WORD…, watch WORD…          the words joined by spaces, the string each hands
+#                                    to a shell: `watch echo 'a; npm publish'` runs the
+#                                    publish.  watch -x runs them as a command instead.
+#   git submodule foreach CMD ARG…   CMD, then each ARG quoted as the one word it was:
+#                                    git runs `sh -c 'CMD "$@"' CMD ARG…`.
+#   git rebase --exec CODE, -x CODE  every CODE, a line each.
+#   env -S STRING ARG…               env again, with STRING's words and each ARG.
+#
+# Given words that need no shell (kit_plain), eval, watch, foreach and env -S run
+# them as a command, so the walk goes on into it: a chain of `eval eval … npm
+# publish` is read in one pass, where a code string per eval would cost a pass
+# each, quadratic in the chain.  Where that walk ends on a command behind eval or
+# foreach, the code is the words from there, because kit_unwrap stops at both and
+# the anchored gates need a statement start.  np is the last word that is not
+# plain, found once: asked again at each eval, the chain was quadratic after all.
+function kit_inline_code(T, n,   ci, w, i, c, need, np) {
+  KIC_CODE = ""; need = 0
+  for (np = n; np > 0 && kit_plain(T[np]); np--) ;
   ci = first_word(T, n)
   while (ci <= n) {
     w = base(T[ci])
-    if (w == "eval") return (ci < n) ? ci + 1 : 0
+    if (w == "eval" || w == "watch") {
+      i = ci + 1; c = 1
+      if (w == "watch")
+        for (; i <= n && T[i] ~ /^-/; i++) {
+          if (T[i] == "--") { i++; break }
+          if (T[i] ~ /^-[A-Za-z]*x[A-Za-z]*$/ || kit_long_arg(T[i], "exec")) c = 0
+          else if (i < n && kit_wrapper_optarg(w, T[i])) i++
+        }
+      if (i > n) return 0
+      if (c && i <= np) { KIC_CODE = kit_join(T, i, n, 0); return i }
+      if (w == "eval") need = 1
+      ci = i; continue
+    }
     if (is_shell(w)) {
       c = 0
       for (i = ci + 1; i <= n; i++) {
@@ -269,17 +378,34 @@ function kit_inline_code(T, n,   ci, w, i, c) {
       }
       return 0
     }
+    if (w == "git" && (i = kit_git_code(T, n, ci)) != 0) {
+      if (i > 0) return i
+      need = 1; ci = -i; continue
+    }
+    if (need && !is_wrapper(w)) { KIC_CODE = kit_join(T, ci, n, 1); return ci }
     if (!is_wrapper(w)) return 0
     ci++
-    while (ci <= n && T[ci] ~ /^-/) { if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++; ci++ }
+    while (ci <= n && T[ci] ~ /^-/) {
+      if (w == "env" && kit_env_split(T, n, ci)) return ci
+      if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++
+      ci++
+    }
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
+    if (w == "flock" && ci < n && (T[ci] == "-c" || T[ci] == "--command")) return ci + 1
     while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
   }
   return 0
 }
 
-# kit_expand_code — append the statements of every shell -c string and eval
-# argument in ST[1..nst] to ST as statements of their own, those nested in them
+# kit_code_hint — s names a program kit_inline_code reads code out of.  A cheap
+# pre-check, so a stage that names none is never tokenized for it.
+function kit_code_hint(s) {
+  return (index(s, "sh") || index(s, "eval") || index(s, "watch") || index(s, "flock") \
+       || index(s, "env") || index(s, "foreach") || index(s, "rebase"))
+}
+
+# kit_expand_code — append the statements of every code string in ST[1..nst]
+# (kit_inline_code) to ST as statements of their own, those nested in them
 # included, and return the new count.  The unwrap passes add such code as one
 # stage, which showed only its first command: `sh -c 'true; git -P clean -fdx'`
 # and `sh -c 'if true; then gh auth token; fi'` walked past.  Statements, not
@@ -290,14 +416,33 @@ function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k) {
   for (q = 1; q <= nst && nst - n0 < 256; q++) {
     ng = split(ST[q], G, /\002/)
     for (g = 1; g <= ng; g++) {
-      if (!index(G[g], "sh") && !index(G[g], "eval")) continue
+      if (!kit_code_hint(G[g])) continue
       n = tokenize(G[g], T); if (n == 0) continue
       if ((p = kit_inline_code(T, n)) == 0) continue
-      ns = split(split_cmd(T[p]), S, /\001/)
+      ns = split(split_cmd(KIC_CODE == "" ? T[p] : KIC_CODE), S, /\001/)
       for (k = 1; k <= ns && nst - n0 < 256; k++) if (S[k] ~ /[^ \t\002]/) ST[++nst] = S[k]
     }
   }
   return nst
+}
+
+# kit_payloads — append to P each code string kit_inline_code finds in text, and
+# return the new count.  Not recursive: a caller reading each P[k] the same way
+# reaches the code nested in it.  At most 4096, more than 32 KB of code can hold,
+# so a run of decoys cannot use the count up ahead of the one that matters.
+function kit_payloads(text, P, np,   ns, S, k, ng, G, g, n, T, p) {
+  if (!kit_code_hint(text)) return np
+  ns = split(split_cmd(text), S, /\001/)
+  for (k = 1; k <= ns && np < 4096; k++) {
+    ng = split(S[k], G, /\002/)
+    for (g = 1; g <= ng && np < 4096; g++) {
+      if (!kit_code_hint(G[g])) continue
+      n = tokenize(G[g], T); if (n == 0) continue
+      if (!(p = kit_inline_code(T, n))) continue
+      P[++np] = (KIC_CODE == "") ? T[p] : KIC_CODE
+    }
+  }
+  return np
 }
 
 # ---------------------------------------------------------------- heredocs
@@ -777,6 +922,31 @@ function kit_stmt_sep(st, sep, q, codeat,   sp, sc, qq, top, code, esc) {
 # Nothing else changes: a text with neither comes back byte for byte, which is
 # what keeps every other verdict where it was.
 #
+# With kw set, every code string another program runs (kit_inline_code) follows
+# as lines of its own, read the same way, the strings nested in it included.  A
+# pattern anchored on a statement start then finds one at the head of the string
+# and after each separator in it, where in place the string is a quoted argument:
+# `sh -c "npm publish"`, `git rebase --exec 'npm publish' main` and `git submodule
+# foreach 'git push --force origin HEAD'` were silent at High, where the bare
+# commands are denied.  Read apart from the line that carries it, the string
+# keeps its own quoting: `bash -c 'git commit -m "x; then npm publish"'` is still
+# a message.  The strings read are bounded to 8 bytes for each byte of raw, which
+# the deepest nesting quoting allows in 32 KB stays inside.
+function kit_shell_text(raw, kw,   out, nc, C, k, left) {
+  out = kit_read_text(raw, kw)
+  if (!kw) return out
+  nc = kit_payloads(KT_CODE, C, 0); left = 8 * length(raw) + 4096
+  for (k = 1; k <= nc && (left -= length(C[k])) >= 0; k++) {
+    out = out (out ~ /\n$/ ? "" : "\n") kit_read_text(C[k], 1)
+    nc = kit_payloads(KT_CODE, C, nc)
+  }
+  return out
+}
+
+# kit_read_text — kit_shell_text's reading of one text, without the code strings.
+# With kw set it leaves the text's code in KT_CODE, heredoc bodies left out: a
+# document naming `sh -c '…'` runs nothing.
+#
 # A heredoc body is copied untouched, since a document's `\` and `then` are not
 # the shell's.  Only an operator the shell reads opens one (kit_hd_ops), quoted
 # delimiter or not: a `<<` inside quotes or a comment is text, and reading it as
@@ -784,7 +954,8 @@ function kit_stmt_sep(st, sep, q, codeat,   sp, sc, qq, top, code, esc) {
 # delimiter is read by the shared kit_hd_delim and the body end by kit_hd_end, so a
 # partly quoted delimiter and an indented `<<-` terminator are read as the shell
 # reads them.
-function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, DDASH, rest, st, sep, cmd, np, j, mark) {
+function kit_read_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, DDASH, rest, st, sep, cmd, np, j, mark) {
+  KT_CODE = ""
   if (!kw && index(raw, "\\\n") == 0) return raw
   nl = split(raw, L, "\n")
   out = ""; first = 1; q = ""; nd = 0; di = 0; KP = ""
@@ -809,6 +980,7 @@ function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, DD
       }
       if (!kw) q = qj
       else {
+        KT_CODE = KT_CODE l "\n"
         KQ_PREV = ""; KQ_COMMENT = 0
         rest = l; l = ""
         while (length(rest)) {
