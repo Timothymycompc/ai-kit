@@ -346,10 +346,13 @@ function kit_hd_delim(s,   i, L, c, delim, quoted, dash, st, j) {
       delim = delim substr(s, st, i - st) substr(s, i + 1, 1); quoted = 1
       i += 2; st = i; continue
     }
-    # An unquoted word character.  The word ends at an unquoted blank, a `\r` that
-    # is line-ending noise, or a shell metacharacter, as bash ends a redirection
-    # target word.
-    if (c == " " || c == "\t" || c == "\r" || c == "\n" || c == ";" || c == "&" \
+    # An unquoted word character.  The word ends at an unquoted blank or a shell
+    # metacharacter, as bash ends a redirection target word.  A `\r` is NOT one:
+    # bash keeps it, so a CRLF line's `cat <<EOF` has the delimiter `EOF\r` and the
+    # body ends at the line `EOF\r`.  Stopping at it left a delimiter no CRLF line
+    # matched, and the body ran away over the command bash runs next — a mainnet
+    # deploy after `EOF\r` was silent in every guard (measured, on main too).
+    if (c == " " || c == "\t" || c == "\n" || c == ";" || c == "&" \
         || c == "|" || c == "(" || c == ")" || c == "<" || c == ">") break
     i++
   }
