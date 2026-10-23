@@ -32,7 +32,11 @@ HOOK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$HOOK_DIR/lib-headless.sh"
 
 KIT_INPUT=$(cat)
-case $KIT_INPUT in *solana* | *anchor* | *spl-token*) ;; *) exit 0 ;; esac
+# Cheap pre-filter on the raw JSON.  The last arm is a backslash-newline as JSON
+# spells it: the shell deletes that pair before it reads words, so
+# `sol\<newline>ana program deploy` is `solana program deploy` and must reach the
+# normaliser below, which joins it.
+case $KIT_INPUT in *solana* | *anchor* | *spl-token* | *'\\\n'*) ;; *) exit 0 ;; esac
 kit_parse
 [ -n "$KIT_CMD" ] || exit 0
 

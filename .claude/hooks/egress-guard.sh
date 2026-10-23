@@ -121,9 +121,29 @@ if [ -n "${KIT_MCP-}" ]; then
   fi
 fi
 
+# ---- the text the two position-anchored patterns below read.  The shell deletes
+# a backslash-newline before it splits words, and a reserved word is never the
+# command, so `git push \<newline>--force` and `if true; then npm publish; fi` are
+# the force push and the publish they run.  Read raw, both walked past these
+# gates at High.  kit_shell_text joins the one and drops the other, and leaves
+# quoted strings and heredoc bodies alone: `git commit -m "…; then npm publish"`
+# stays the prose it is.
+KIT_CMDJ=$KIT_CMD
+case $KIT_CMD in
+  # Neither pattern can match a text naming none of these, and only a
+  # continuation could assemble one, so the awk pass is skipped there.
+  *publish* | *git* | *gh* | *"\\$KIT_NL"*)
+    if [ -f "$HOOK_DIR/lib-tokenize.awk" ] && [ -f "$HOOK_DIR/egress-guard.awk" ]; then
+      KIT_CMDJ=$(printf '%s\n' "$KIT_CMD" | KIT_SHELL_TEXT=1 \
+        awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/egress-guard.awk" 2>/dev/null) || KIT_CMDJ=
+      [ -n "$KIT_CMDJ" ] || KIT_CMDJ=$KIT_CMD
+    fi
+    ;;
+esac
+
 # ---- publish: irreversible, and the registry is always an allowed domain.
 PUB='(^|[;&|(]|\$\()[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?(npm|yarn|pnpm|bun|cargo)[[:space:]]+publish([[:space:]][^;&|]*)?([;&|)]|$)'
-PSEG=$(printf '%s\n' "$KIT_CMD" | grep -oE "$PUB") || PSEG=
+PSEG=$(printf '%s\n' "$KIT_CMDJ" | grep -oE "$PUB") || PSEG=
 if [ -n "$PSEG" ] && ! printf '%s\n' "$PSEG" | grep -q -- '--dry-run'; then
   REASON='publishes this package to a public registry. A published version cannot be unpublished or replaced.'
   # Medium and High refuse it, and the refusal holds in a headless run: a pipeline must
@@ -156,7 +176,7 @@ fi
 # optionally behind env assignments and a path prefix.  Matching `git push` anywhere in
 # the string is what makes a hook fire on a commit message that mentions it.
 git_seg() { # git_seg <subcommand-alternation> -> the matching statement, or empty
-  printf '%s\n' "$KIT_CMD" | grep -oE "(^|[;&|(]|\\\$\\()[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?($1)([[:space:]][^;&|]*)?([;&|)]|\$)" || true
+  printf '%s\n' "$KIT_CMDJ" | grep -oE "(^|[;&|(]|\\\$\\()[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?($1)([[:space:]][^;&|]*)?([;&|)]|\$)" || true
 }
 
 # gate <reason> — the shared ladder.  Relaxed is silent by returning.

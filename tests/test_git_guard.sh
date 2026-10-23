@@ -531,6 +531,89 @@ expect relaxed DENY "--exec-path=<dir> sets the path and runs the subcommand" "g
 # git help reads config (man.<tool>.cmd, web.browser), so a -c ahead of --help counts.
 expect relaxed DENY "a -c behind another option, ahead of --help" "git --no-pager -c man.viewer=x --help clean"
 
+# ── the command the shell runs: reserved words and continuations ─────────────
+# Two spellings walked past all three gates. A reserved word in command position (`if`,
+# `then`, `!`, `do`, `{` …) is grammar and never the command, but the walk took it for
+# the command word; and a backslash-newline, which the shell deletes before it splits
+# words, stayed inside a token, so `git config \<newline>core.hooksPath` had a key no
+# gate knew. Every case here is the bare form's verdict; the bare forms are above.
+BS='\'
+NL='
+'
+echo ""
+echo "[a reserved word in command position]"
+expect relaxed DENY "behind if"                    "if git -P clean -fdx; then :; fi"
+expect relaxed DENY "behind for … do"              "for x in 1; do git -P clean -fdx; done"
+expect relaxed DENY "behind !, a config key"       "! git config core.hooksPath .evil"
+expect relaxed DENY "behind then, the case spelling" "if true; then git config Alias.z '!x'; fi"
+expect relaxed DENY "behind while … do, -c after -P" "while true; do git --no-pager -c core.pager=evil log; done"
+expect relaxed DENY "behind elif"                  "if false; then :; elif git -P prune; then :; fi"
+expect relaxed DENY "behind else"                  "if false; then :; else git --shallow-file x clean -fdx; fi"
+expect relaxed DENY "behind until"                 "until git -P reset --hard HEAD~3; do :; done"
+expect relaxed DENY "behind time !, which bash accepts" "time ! git -P clean -fdx"
+expect relaxed DENY "behind coproc"                "coproc git -P clean -fdx"
+expect relaxed DENY "behind ! and an assignment"   "! X=/tmp/x.sh git -P --config-env=core.fsmonitor=X status"
+expect relaxed DENY "a heredoc fed to a shell behind then" \
+  "if true; then bash <<EOF${NL}git config core.hooksPath .evil${NL}EOF${NL}fi"
+expect high    DENY "and at High"                  "if true; then git -P clean -fdx; fi"
+
+echo ""
+echo "[every statement of a shell's -c string, not only the first]"
+# The bare `sh -c 'git -P clean -fdx'` is denied above; each of these hid it behind a
+# statement before it in the same string.
+expect relaxed DENY "behind if, inside sh -c"      "sh -c 'if true; then git -P clean -fdx; fi'"
+expect relaxed DENY "a second statement"           "sh -c 'true; git -P clean -fdx'"
+expect relaxed DENY "a second line"                "sh -c \"echo hi${NL}git config core.hooksPath .evil\""
+expect relaxed DENY "behind sudo -u me bash -c"    "sudo -u me bash -c 'cd /tmp; git --no-pager -c core.pager=evil log'"
+expect relaxed DENY "nested"                       "sh -c 'sh -c \"true; git -P clean -fdx\"'"
+expect relaxed DENY "eval"                         "eval 'cd /tmp; git config Alias.z \"!x\"'"
+expect relaxed PASS "a message behind another wrapper stays a message" "nice git commit -m \"refresh; git -P clean -fdx\""
+expect relaxed PASS "a script's argument stays an argument" "bash ./x.sh \"a; git -P clean -fdx\""
+expect relaxed PASS "a message inside the -c string stays a message" "sh -c \"git commit -m 'x; git -P clean -fdx'\""
+
+echo ""
+echo "[a backslash-newline continuation]"
+expect relaxed DENY "-c after a continued -P"      "git -P $BS${NL}-c core.fsmonitor=/tmp/x.sh status"
+expect relaxed DENY "clean after a continued --no-pager" "git --no-pager $BS${NL}clean -fdx"
+expect relaxed DENY "the key after a continued config" "git config $BS${NL}core.hooksPath .evil"
+expect relaxed DENY "a continuation inside the key" "git config core.hooks$BS${NL}Path .evil"
+expect relaxed DENY "inside a double-quoted key, where the shell joins it too" \
+  "git config \"core.hooks$BS${NL}Path\" .evil"
+expect relaxed DENY "a continued wrapper"          "nice $BS${NL}-n 5 git --no-pager clean -fdx"
+expect relaxed DENY "a heredoc head continued onto the next line" \
+  "bash $BS${NL}<<EOF${NL}git -P clean -fdx${NL}EOF"
+
+echo ""
+echo "[reserved words as text: an argument, a message, a document]"
+expect relaxed PASS "--grep=if"                    "git log --grep=if"
+expect relaxed PASS "echo then"                    "echo then"
+expect relaxed PASS "a loop that only reads"       "while read l; do echo \"\$l\"; done < file"
+expect relaxed PASS "time make build"              "time make build"
+expect relaxed PASS "if [ -f x ]"                  "if [ -f x ]; then echo done; fi"
+expect relaxed PASS "the keyword form quoted in a message" \
+  "git commit -m \"if true; then git config core.hooksPath .evil; fi\""
+expect relaxed PASS "a message line that starts with !" "git commit -m \"x${NL}! git config core.hooksPath .evil\""
+expect relaxed PASS "a heredoc document"           "cat > notes.md <<'EOF'${NL}if git -P clean -fdx; then :; fi${NL}EOF"
+expect relaxed PASS "an ordinary push continued"   "git push origin $BS${NL}  main"
+
+echo ""
+echo "[a spaced GNU long option takes its operand, as the short one does]"
+expect relaxed DENY "timeout --signal KILL 5"      "timeout --signal KILL 5 git --no-pager clean -fdx"
+expect relaxed DENY "timeout --kill-after 3 5"     "timeout --kill-after 3 5 git --no-pager clean -fdx"
+expect relaxed DENY "nice --adjustment 5, config"  "nice --adjustment 5 git config core.hooksPath .evil"
+expect relaxed DENY "nice --adj 5, the abbreviation getopt_long accepts" "nice --adj 5 git config core.hooksPath .evil"
+expect relaxed DENY "stdbuf --output 0"            "stdbuf --output 0 git --no-pager clean -fdx"
+expect relaxed DENY "xargs --max-args 1"           "xargs --max-args 1 git --no-pager prune"
+expect relaxed DENY "xargs --max-procs 2"          "xargs --max-procs 2 git --no-pager prune"
+expect relaxed DENY "sudo --user me"               "sudo --user me git --no-pager clean -fdx"
+expect relaxed DENY "sudo --group wheel, -c after -P" "sudo --group wheel git -P --config-env=core.fsmonitor=X status"
+expect relaxed DENY "env --chdir D"                "env --chdir D git --no-pager clean -fdx"
+expect relaxed DENY "time --output f"              "time --output f git --no-pager clean -fdx"
+# An optional argument has to be attached with `=`, so the spaced word after one is the
+# command. Listing --max-lines as taking an operand would swallow `git` here.
+expect relaxed DENY "xargs --max-lines takes no spaced operand" "xargs --max-lines git -P clean -fdx"
+expect relaxed PASS "nice --adjustment 5 git status" "nice --adjustment 5 git status"
+
 echo ""
 echo "[tiers: the deny does not ladder, and holds headless]"
 expect off     PASS "Off disables GITCFG too"    "git --no-pager --config-env=core.fsmonitor=X status"
@@ -826,5 +909,77 @@ flips "the wrapper option table unconsulted, so nice -n 5 hides git" \
   "$M" "nice -n 5 git --no-pager clean -fdx" DENY PASS
 flips "...while a wrapper with no option still fires, so only the table broke" \
   "$M" "nice git --no-pager clean -fdx" DENY DENY
+
+# 15. Reserved words: kit_reserved emptied, so each spelling reads `if` or `!` as the
+#     command word again and walks past.
+M="$(mutate_lib 'return (t == "!" || t == "if"' 'return 0 && (t == "!" || t == "if"')"
+for c in "if git -P clean -fdx; then :; fi" "for x in 1; do git -P clean -fdx; done" \
+         "! git config core.hooksPath .evil" "if true; then git config Alias.z '!x'; fi" \
+         "while true; do git --no-pager -c core.pager=evil log; done" \
+         "if false; then :; elif git -P prune; then :; fi" "if false; then :; else git --shallow-file x clean -fdx; fi" \
+         "until git -P reset --hard HEAD~3; do :; done" "time ! git -P clean -fdx" "coproc git -P clean -fdx" \
+         "! X=/tmp/x.sh git -P --config-env=core.fsmonitor=X status" \
+         "if true; then bash <<EOF${NL}git config core.hooksPath .evil${NL}EOF${NL}fi"; do
+  flips "reserved words read as the command word again: ${c//$NL/\\n}" "$M" "$c" DENY PASS
+done
+flips "...while the bare form still fires, so only the reserved-word skip broke" "$M" "git -P clean -fdx" DENY DENY
+
+# 16. Continuations: both readers planted back out, split_cmd keeping the pair as text
+#     and kit_shell_text no longer joining the lines. Either one alone still catches
+#     every case below, which is the point of having both, so the control needs both.
+M="$(mutate_lib 'if (c == "\n") continue' 'if (0) continue')"
+mutate_file "$M/.claude/hooks/lib-tokenize.awk" 'if (substr(s, i, 1) != "\n") out = out substr(s, i, 1)' 'out = out substr(s, i, 1)'
+mutate_file "$M/.claude/hooks/lib-tokenize.awk" 'if (!kw && index(raw, "\\\n") == 0) return raw' 'return raw'
+for c in "git -P $BS${NL}-c core.fsmonitor=/tmp/x.sh status" "git --no-pager $BS${NL}clean -fdx" \
+         "git config $BS${NL}core.hooksPath .evil" "git config core.hooks$BS${NL}Path .evil" \
+         "git config \"core.hooks$BS${NL}Path\" .evil" "nice $BS${NL}-n 5 git --no-pager clean -fdx" \
+         "bash $BS${NL}<<EOF${NL}git -P clean -fdx${NL}EOF"; do
+  flips "continuations kept as text again: ${c//$NL/\\n}" "$M" "$c" DENY PASS
+done
+
+# 17. Long options: kit_long_arg emptied, so each spaced long form puts its operand in
+#     command position again; and --max-lines planted into xargs' table, so an option
+#     whose argument is optional swallows the command.
+M="$(mutate_lib 'if (f !~ /^--[A-Za-z]/ || index(f, "=") > 0) return 0' 'return 0')"
+for c in "timeout --signal KILL 5 git --no-pager clean -fdx" "timeout --kill-after 3 5 git --no-pager clean -fdx" \
+         "nice --adjustment 5 git config core.hooksPath .evil" "nice --adj 5 git config core.hooksPath .evil" \
+         "stdbuf --output 0 git --no-pager clean -fdx" "xargs --max-args 1 git --no-pager prune" \
+         "xargs --max-procs 2 git --no-pager prune" "sudo --user me git --no-pager clean -fdx" \
+         "sudo --group wheel git -P --config-env=core.fsmonitor=X status" "env --chdir D git --no-pager clean -fdx" \
+         "time --output f git --no-pager clean -fdx"; do
+  flips "spaced long options unread again: $c" "$M" "$c" DENY PASS
+done
+flips "...while the short form still fires, so only the long table broke" \
+  "$M" "timeout -s KILL 5 git --no-pager clean -fdx" DENY DENY
+M="$(mutate_lib '"max-args max-procs max-chars delimiter arg-file"' '"max-args max-procs max-chars delimiter arg-file max-lines"')"
+flips "--max-lines listed as taking a spaced operand, so it swallows git" \
+  "$M" "xargs --max-lines git -P clean -fdx" DENY PASS
+
+# 18. A shell's -c string: its statements no longer expanded, so only the first one is
+#     seen; and, the other way, every wrapped command's last argument read as code.
+M="$(mutate_lib 'if ((p = kit_inline_code(T, n)) == 0) continue' 'continue')"
+for c in "sh -c 'if true; then git -P clean -fdx; fi'" "sh -c 'true; git -P clean -fdx'" \
+         "sh -c \"echo hi${NL}git config core.hooksPath .evil\"" \
+         "sudo -u me bash -c 'cd /tmp; git --no-pager -c core.pager=evil log'" \
+         "sh -c 'sh -c \"true; git -P clean -fdx\"'" "eval 'cd /tmp; git config Alias.z \"!x\"'"; do
+  flips "a -c string's later statements unread again: ${c//$NL/\\n}" "$M" "$c" DENY PASS
+done
+# The message carries "sh" (refresh), so it gets past kit_expand_code's cheap pre-check
+# to the test this control is about.
+M="$(mutate_lib 'if (!is_wrapper(w)) return 0' 'if (!is_wrapper(w)) return n')"
+flips "any wrapped command's last argument read as code, so a commit message is a command" \
+  "$M" "nice git commit -m \"refresh; git -P clean -fdx\"" PASS DENY
+M="$(mutate_lib 'return c ? i : 0' 'return c ? i : n')"
+flips "a script's last argument read as code" "$M" "bash ./x.sh \"a; git -P clean -fdx\"" PASS DENY
+
+# 19. A newline inside a quoted argument is not a statement boundary. The awk macOS
+#     ships also splits a one-character string separator on newline, which made the
+#     message line below a command there and nowhere else, so this control can only
+#     bite on that awk.
+if [ "$(awk 'BEGIN { print split("a\nb", A, "x") }')" = 2 ]; then
+  M="$(mutate 'nst = split(text, ST, /\001/)' 'nst = split(text, ST, "\001")')"
+  flips "statements split on a one-character string again, so a message line is a command" \
+    "$M" "git commit -m \"x${NL}! git config core.hooksPath .evil\"" PASS DENY
+fi
 
 print_summary

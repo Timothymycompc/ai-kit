@@ -48,9 +48,11 @@ KIT_INPUT=$(cat)
 #
 # The broad branch comes first on purpose.  Ordered the other way, a command
 # naming two ecosystems (`npm exec -y cargo-foo`) would be judged by the cargo
-# test alone, find no "install", and bail — a miss.
+# test alone, find no "install", and bail — a miss.  Its last arm is a
+# backslash-newline as JSON spells it, since the shell deletes that pair before
+# it reads words: `np\<newline>x -y evil` names no runner here and runs one.
 case $KIT_INPUT in
-  *npx* | *dlx* | *bunx* | *uvx* | *pipx* | *npm* | *bun* | *yarn* | *pnpm*) ;;
+  *npx* | *dlx* | *bunx* | *uvx* | *pipx* | *npm* | *bun* | *yarn* | *pnpm* | *'\\\n'*) ;;
   *cargo*) case $KIT_INPUT in *install*) ;; *) exit 0 ;; esac ;;
   *uv*) case $KIT_INPUT in *run* | *tool*) ;; *) exit 0 ;; esac ;;
   *go*) case $KIT_INPUT in *install* | *run*) ;; *) exit 0 ;; esac ;;

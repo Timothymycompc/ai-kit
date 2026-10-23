@@ -312,10 +312,14 @@ BEGIN {
 }
 { raw = raw $0 "\n" }
 END {
-  text = split_cmd(strip_heredocs(raw))
-  nst = split(text, ST, "\001")
+  text = split_cmd(strip_heredocs(kit_shell_text(raw, 0)))
+  # Regex separators: macOS's awk also splits a one-character string separator
+  # on newline, which cut a multi-line quoted argument into statements there.
+  # A shell's -c string adds its own statements after them (kit_expand_code).
+  nst = split(text, ST, /\001/)
+  nst = kit_expand_code(ST, nst)
   for (q = 1; q <= nst; q++) {
-    nstg = split(ST[q], STG, "\002")
+    nstg = split(ST[q], STG, /\002/)
 
     # Unwrap one level of `sh -c "<inner>"` / `eval "<inner>"`: the quoted
     # string is code, so it becomes a stage of its own.

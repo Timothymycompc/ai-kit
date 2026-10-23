@@ -490,6 +490,8 @@ print(json.dumps({"hook_event_name": "PreToolUse", "tool_name": sys.argv[1],
 
 # run_bash <hook-cmd> <tier> <command> — the same shape for the Bash equivalent, so the
 # two can be compared rather than asserted against a hand-written expectation.
+# RUN_PROJ, when set, is the project whose .claude/hooks the hook command resolves:
+# a mutation fixture, for the controls at the end.
 run_bash() {
   local payload
   payload="$(python3 -c '
@@ -498,7 +500,7 @@ print(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
                   "tool_input": {"command": sys.argv[1]}}))' "$3")"
   set +e
   OUT="$(cd "$WORK" && printf '%s' "$payload" | PATH="$WORK/bin:$PATH" \
-    CLAUDE_PROJECT_DIR="$REPO_ROOT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugin" \
+    CLAUDE_PROJECT_DIR="${RUN_PROJ:-$REPO_ROOT}" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugin" \
     KIT_FIREWALL_TIER="$2" KIT_FIREWALL_HEADLESS="${4:-0}" sh -c "$1" 2>"$WORK/err")"
   RC=$?
   set -e
@@ -584,11 +586,15 @@ body = "\n".join("print(%d); d = {\"k\": [1,2,3]}" % i for i in range(2000))
 print(json.dumps({"language": "python", "code": body + "\nos.system(\"solana balance\")"}))')"
 run_mcp "$M_CHAIN" relaxed mcp__context-mode__ctx_execute "$BIG_OVER_CHAIN"
 assert_eq "deny" "$DECISION" "an oversize payload that does carry an on-chain verb is refused"
-# Bash is deliberately exempt: a pattern miss there still meets the OS sandbox, so there
-# is no fail-open to protect against and capping it would break legitimate long scripts.
+# Bash is capped too (kit_size_cap; see [size cap] below). The sandbox backs a pattern
+# miss on files and the network, but not the gates only a hook enforces, and Off has no
+# sandbox. A script this long belongs in a file the agent writes and then runs.
 run_bash "$M_SECRETS" relaxed "$(python3 -c '
 print("\n".join("echo %d" % i for i in range(4000)))')"
-assert_eq "silent" "$DECISION" "a long Bash command is not size-capped (the sandbox backs it up)"
+assert_eq "deny" "$DECISION" "a 39 KB inline Bash script is refused, past the 32 KB of code the guards read in time"
+run_bash "$M_SECRETS" relaxed "$(python3 -c '
+print("\n".join("echo %d" % i for i in range(3000)))')"
+assert_eq "silent" "$DECISION" "a 29 KB one is still read, and passes"
 
 # --- No false positives. Prose fields are prose, and ordinary work stays silent.
 for G in "$M_SECRETS" "$M_CHAIN" "$M_EGRESS"; do
@@ -851,5 +857,382 @@ for C in "git rebase --continue" "git rebase --abort" "git rebase --skip" \
          "git commit -m 'fix: amend the docs'" "git log --oneline -d" "git status"; do
   run_bash "$M_EGRESS" high "$C"; assert_eq "silent" "$DECISION" "high stays silent: $C"
 done
+
+# ── reserved words and line continuations ────────────────────────────────────
+#
+# Two spellings walked past every gate only a hook enforces, a mainnet deploy at High
+# included, because the guards did not read the command the shell runs: a reserved word
+# in command position (`if true; then anchor deploy …; fi`, `! solana program deploy …`)
+# was taken for the command word, and a backslash-newline continuation, which the shell
+# deletes before it splits words, stayed in the text or inside a token. Each variant is
+# held to its bare one-line form at every tier, and the bare verdict is pinned as well,
+# so a parity that holds because both went silent cannot pass.
+#
+# The last argument of each case is its control: a copy of the hooks with the mechanism
+# behind it planted back out, against which the variant is replayed at High and has to
+# move off the bare form's verdict.
+
+# mutant <name> <file> <find> <replace> [<file> <find> <replace> …] -> a project dir
+# Each find string must sit on exactly one non-comment line, or the suite stops: a
+# mutation that applied nowhere would pass its control for the wrong reason.
+mutant() {
+  local dir="$WORK/mut-$1"; shift
+  rm -rf "$dir"; mkdir -p "$dir/.claude"; cp -R "$REPO_ROOT/.claude/hooks" "$dir/.claude/hooks"
+  while [ $# -ge 3 ]; do
+    python3 - "$dir/.claude/hooks/$1" "$2" "$3" <<'PY' || return 1
+import sys
+path, find, repl = sys.argv[1:4]
+lines = open(path, encoding="utf-8").read().split("\n")
+hits = [i for i, l in enumerate(lines) if find in l and not l.lstrip().startswith("#")]
+if len(hits) != 1:
+    sys.exit("mutation target %r matched %d non-comment lines in %s, wanted 1" % (find, len(hits), path))
+lines[hits[0]] = lines[hits[0]].replace(find, repl)
+open(path, "w", encoding="utf-8").write("\n".join(lines))
+PY
+    shift 3
+  done
+  printf '%s' "$dir"
+}
+MUT_KW="$(mutant kw lib-tokenize.awk 'return (t == "!" || t == "if"' 'return 0 && (t == "!" || t == "if"')" || MUT_KW=
+MUT_CONT="$(mutant cont lib-tokenize.awk 'if (c == "\n") continue' 'if (0) continue' \
+  lib-tokenize.awk 'if (substr(s, i, 1) != "\n") out = out substr(s, i, 1)' 'out = out substr(s, i, 1)' \
+  lib-tokenize.awk 'if (!kw && index(raw, "\\\n") == 0) return raw' 'return raw')" || MUT_CONT=
+MUT_PRE="$(mutant pre onchain-guard.sh "*solana* | *anchor* | *spl-token* | *'\\\\\\n'*)" '*solana* | *anchor* | *spl-token*)')" || MUT_PRE=
+MUT_LONG="$(mutant long lib-tokenize.awk 'if (f !~ /^--[A-Za-z]/ || index(f, "=") > 0) return 0' 'return 0')" || MUT_LONG=
+MUT_QUOTE="$(mutant quote lib-tokenize.awk 'return (t == "" || t == "p" || t == "b" || t == "S" || t == "D")' 'return 1')" || MUT_QUOTE=
+MUT_COMMENT="$(mutant comment lib-tokenize.awk 'if (p == "" || p ~ /[ \t;&|(]/) { KQ_COMMENT = 1; break }' 'if (0) { KQ_COMMENT = 1; break }')" || MUT_COMMENT=
+MUT_ESC="$(mutant esc lib-tokenize.awk 'if (i == L) KQ_CONT = 1; i++; continue' 'if (i == L) KQ_CONT = 1; continue')" || MUT_ESC=
+MUT_SQ="$(mutant sq lib-tokenize.awk 'if (top == "s" || top == "S") {' 'if (top == "S") {')" || MUT_SQ=
+MUT_HDOC="$(mutant hdoc lib-tokenize.awk 'if (di < nd) {' 'if (0) {')" || MUT_HDOC=
+MUT_DOC="$(mutant doc onchain-guard.awk 'if (who == "") mode = quoted ? "drop" : "subst"' 'if (who == "") mode = "shell"' \
+  secrets-guard.awk 'if (who == "") mode = quoted ? "drop" : "subst"' 'if (who == "") mode = "shell"')" || MUT_DOC=
+HD_OPT='while (ci <= n && T[ci] ~ /^-/) { if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++; ci++ }'
+MUT_HDOPT="$(mutant hdopt onchain-guard.awk "$HD_OPT" 'while (ci <= n && T[ci] ~ /^-/) ci++' \
+  secrets-guard.awk "$HD_OPT" 'while (ci <= n && T[ci] ~ /^-/) ci++')" || MUT_HDOPT=
+MUT_EXPAND="$(mutant expand lib-tokenize.awk 'if ((p = kit_inline_code(T, n)) == 0) continue' 'continue')" || MUT_EXPAND=
+MUT_ANYARG="$(mutant anyarg lib-tokenize.awk 'if (!is_wrapper(w)) return 0' 'if (!is_wrapper(w)) return n')" || MUT_ANYARG=
+MUT_SCRIPTARG="$(mutant scriptarg lib-tokenize.awk 'return c ? i : 0' 'return c ? i : n')" || MUT_SCRIPTARG=
+for M in "$MUT_KW" "$MUT_CONT" "$MUT_PRE" "$MUT_LONG" "$MUT_QUOTE" "$MUT_COMMENT" "$MUT_ESC" "$MUT_SQ" "$MUT_HDOC" \
+         "$MUT_DOC" "$MUT_HDOPT" "$MUT_EXPAND" "$MUT_ANYARG" "$MUT_SCRIPTARG"; do
+  assert_eq "yes" "$([ -n "$M" ] && [ -d "$M/.claude/hooks" ] && echo yes || echo no)" "mutation fixture built: ${M##*/}"
+done
+
+# control <hook> <mutant> <command> <shipped-verdict> — at High, the planted regression
+# moves <command> off the verdict the shipped hooks give it.
+control() {
+  RUN_PROJ="$2" run_bash "$1" high "$3"
+  TOTAL=$((TOTAL + 1))
+  if [ "$DECISION" != "$4" ]; then
+    echo "  PASS: planted failure caught (${2##*/mut-}: $4 -> $DECISION): ${3//$NL/\\n}"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: planted failure NOT caught (${2##*/mut-} still $DECISION): ${3//$NL/\\n}"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# same <hook> <relaxed> <medium> <high> <bare> <variant> <mutant>
+same() {
+  local t want b
+  for t in relaxed medium high; do
+    case $t in relaxed) want="$2" ;; medium) want="$3" ;; high) want="$4" ;; esac
+    run_bash "$1" "$t" "$5"; b="$DECISION"
+    run_bash "$1" "$t" "$6"
+    assert_eq "$want $want" "$b $DECISION" "[$t] $want, as its bare form: ${6//$NL/\\n}"
+  done
+  control "$1" "$7" "$6" "$4"
+}
+
+# quiet <hook> <command> <mutant> — silent at every tier, as it is without the fix;
+# <mutant> breaks the property that keeps it so, and the control proves it matters.
+quiet() {
+  local t
+  for t in relaxed medium high; do
+    run_bash "$1" "$t" "$2"; assert_eq "silent" "$DECISION" "[$t] stays silent: ${2//$NL/\\n}"
+  done
+  [ -z "${3:-}" ] || control "$1" "$3" "$2" silent
+}
+
+BS='\'
+DA='anchor deploy --provider.cluster mainnet'
+DS='solana program deploy --url mainnet-beta ./t.so'
+DF='solana program set-upgrade-authority PID --final'
+
+echo "[on-chain: a reserved word in command position]"
+same "$M_CHAIN" ask ask deny "$DA" "if true; then $DA; fi" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DS" "! $DS" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DS" "while true; do $DS; done" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DA" "if false; then :; elif true; then $DA; fi" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DA" "if false; then :; else $DA; fi" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DS" "{ $DS; }" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DS" "coproc $DS" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DS" "time ! $DS" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DA" "if true; then FOO=1 $DA; fi" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "$DA" "if true${NL}then $DA${NL}fi" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "x=\$($DA)" "x=\$(if true; then $DA; fi)" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "bash -c \"$DA\"" "bash -c \"if true; then $DA; fi\"" "$MUT_KW"
+same "$M_CHAIN" ask ask deny "sh -c '$DS'" "sh -c '! $DS'" "$MUT_KW"
+same "$M_CHAIN" deny deny deny "$DF" "if ! $DF; then :; fi" "$MUT_KW"
+same "$M_CHAIN" deny deny deny "bash <<'EOF'${NL}$DF${NL}EOF" "if true; then bash <<'EOF'${NL}$DF${NL}EOF${NL}fi" "$MUT_KW"
+same "$M_CHAIN" deny deny deny "bash <<'EOF'${NL}$DF${NL}EOF" "bash <<'EOF'${NL}if true; then $DF; fi${NL}EOF" "$MUT_KW"
+
+echo "[on-chain: a backslash-newline continuation]"
+same "$M_CHAIN" ask ask deny "solana program deploy ./t.so --url mainnet-beta" \
+  "solana program deploy ./t.so $BS${NL}--url mainnet-beta" "$MUT_CONT"
+same "$M_CHAIN" deny deny deny "$DF" "solana program set-upgrade-authority PID $BS${NL}--final" "$MUT_CONT"
+same "$M_CHAIN" deny deny deny "$DF" "solana program $BS${NL}set-upgrade-authority PID --final" "$MUT_CONT"
+same "$M_CHAIN" ask ask deny "$DA" "anchor deploy $BS${NL}  --provider.cluster mainnet" "$MUT_CONT"
+same "$M_CHAIN" ask ask deny "$DS" "sol$BS${NL}ana program deploy --url mainnet-beta ./t.so" "$MUT_CONT"
+same "$M_CHAIN" deny deny deny "bash <<'EOF'${NL}$DF${NL}EOF" "bash $BS${NL}<<'EOF'${NL}$DF${NL}EOF" "$MUT_CONT"
+# A continuation can split the verb itself, and the cheap pre-filter on the raw JSON
+# matched whole words only.
+control "$M_CHAIN" "$MUT_PRE" "sol$BS${NL}ana program deploy --url mainnet-beta ./t.so" deny
+
+echo "[on-chain: a spaced GNU long option takes its operand, as the short one does]"
+same "$M_CHAIN" ask ask deny "timeout -s KILL 5 $DS" "timeout --signal KILL 5 $DS" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "nice -n 5 $DA" "nice --adjustment 5 $DA" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "nice -n 5 $DA" "nice --adj 5 $DA" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "stdbuf -o 0 $DS" "stdbuf --output 0 $DS" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "stdbuf -i 0 $DS" "stdbuf --input 0 $DS" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "stdbuf -e 0 $DS" "stdbuf --error 0 $DS" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "xargs -n 1 $DS" "xargs --max-args 1 $DS" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "sudo -u me $DS" "sudo --user me $DS" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "sudo -g wheel $DS" "sudo --group wheel $DS" "$MUT_LONG"
+same "$M_CHAIN" ask ask deny "env -u X $DS" "env --unset X $DS" "$MUT_LONG"
+# The heredoc classifier walks the same table now, so a shell fed a body behind a
+# wrapper option still runs it.
+same "$M_CHAIN" deny deny deny "bash <<'EOF'${NL}$DF${NL}EOF" "nice -n 5 bash <<'EOF'${NL}$DF${NL}EOF" "$MUT_HDOPT"
+
+echo "[on-chain: what only names a gated command stays silent]"
+quiet "$M_CHAIN" "if [ -f x ]; then echo done; fi"
+quiet "$M_CHAIN" "git commit -m \"if true; then $DA; fi\"" "$MUT_QUOTE"
+quiet "$M_CHAIN" "echo 'if true; then $DA; fi'" "$MUT_QUOTE"
+quiet "$M_CHAIN" "git commit -m \"subject${NL}${NL}if true; then $DA; fi\"" "$MUT_QUOTE"
+quiet "$M_CHAIN" "cat > notes.md <<'EOF'${NL}if true; then $DA; fi${NL}EOF" "$MUT_DOC"
+quiet "$M_CHAIN" "echo hi # x; then $DA" "$MUT_COMMENT"
+# The shell keeps a backslash that is itself escaped, and does not continue a comment,
+# so the line after each is a command of its own and keeps its own verdict.
+for c in "echo foo$BS$BS${NL}$DA|$MUT_ESC" "echo hi # note $BS${NL}$DA|$MUT_COMMENT"; do
+  cmd="${c%|*}"
+  for t in relaxed high; do
+    run_bash "$M_CHAIN" "$t" "$cmd"
+    assert_eq "$([ $t = high ] && echo deny || echo ask)" "$DECISION" "[$t] the next line is its own command: ${cmd//$NL/\\n}"
+  done
+  control "$M_CHAIN" "${c##*|}" "$cmd" deny
+done
+
+echo "[secrets: the same two spellings]"
+same "$M_SECRETS" deny deny deny "gh auth token" "if gh auth token; then :; fi" "$MUT_KW"
+same "$M_SECRETS" deny deny deny "gh auth token" "! gh auth token" "$MUT_KW"
+same "$M_SECRETS" deny deny deny "solana-keygen new --force" "if true; then solana-keygen new --force; fi" "$MUT_KW"
+same "$M_SECRETS" deny deny deny "security find-generic-password -s x" \
+  "while true; do security find-generic-password -s x; done" "$MUT_KW"
+same "$M_SECRETS" deny deny deny "bash -c 'gh auth token'" "if true; then bash -c 'gh auth token'; fi" "$MUT_KW"
+same "$M_SECRETS" deny deny deny "bash <<'EOF'${NL}gh auth token${NL}EOF" \
+  "if true; then bash <<'EOF'${NL}gh auth token${NL}EOF${NL}fi" "$MUT_KW"
+# `echo` of a path prints the path: silent bare, and now behind `!` too, where the
+# reserved word used to stand in for a command word nothing exempts.
+same "$M_SECRETS" silent silent silent "echo ~/.ssh/id_rsa" "! echo ~/.ssh/id_rsa" "$MUT_KW"
+same "$M_SECRETS" deny deny deny "gh auth token" "gh auth $BS${NL}token" "$MUT_CONT"
+same "$M_SECRETS" deny deny deny "solana-keygen new --force" "solana-keygen new $BS${NL}--force" "$MUT_CONT"
+same "$M_SECRETS" deny deny deny "aws configure get aws_secret_access_key" \
+  "aws configure $BS${NL}get aws_secret_access_key" "$MUT_CONT"
+same "$M_SECRETS" deny deny deny "bash <<'EOF'${NL}cat ~/.ssh/id_rsa${NL}EOF" \
+  "bash $BS${NL}<<'EOF'${NL}cat ~/.ssh/id_rsa${NL}EOF" "$MUT_CONT"
+same "$M_SECRETS" deny deny deny "bash <<'EOF'${NL}gh auth token${NL}EOF" \
+  "sudo -u me bash <<'EOF'${NL}gh auth token${NL}EOF" "$MUT_HDOPT"
+# A shell's -c string is code, so every statement in it is one, not only the first:
+# the reserved-word form inside a payload, a second statement, a second line.
+same "$M_SECRETS" deny deny deny "bash -c 'gh auth token'" "bash -c 'if true; then gh auth token; fi'" "$MUT_EXPAND"
+same "$M_SECRETS" deny deny deny "bash -c 'gh auth token'" "bash -c 'cd /tmp; gh auth token'" "$MUT_EXPAND"
+same "$M_SECRETS" deny deny deny "bash -c 'gh auth token'" "bash -c \"echo hi${NL}gh auth token\"" "$MUT_EXPAND"
+same "$M_SECRETS" deny deny deny "eval 'gh auth token'" "env FOO=1 eval 'cd /tmp; gh auth token'" "$MUT_EXPAND"
+# Only a shell's -c string and eval's argument: anything else is an argument, the
+# wrapped command's message or a script's parameter. The message carries "sh"
+# (refresh), so it gets past kit_expand_code's cheap pre-check to the real test.
+quiet "$M_SECRETS" "nice git commit -m \"refresh; gh auth token\"" "$MUT_ANYARG"
+quiet "$M_SECRETS" "bash ./x.sh \"a; gh auth token\"" "$MUT_SCRIPTARG"
+quiet "$M_SECRETS" "bash -c 'git commit -m \"x; gh auth token\"'"
+quiet "$M_SECRETS" "git commit -m \"if true; then gh auth token; fi\""
+quiet "$M_SECRETS" "cat > notes.md <<'EOF'${NL}if true; then gh auth token; fi${NL}EOF" "$MUT_DOC"
+# A newline inside a quoted argument is not a statement boundary. The awk macOS ships
+# split on it anyway (a one-character string separator also splits on newline there),
+# so this body line read as a command on macOS alone; the control can only bite there.
+quiet "$M_SECRETS" "git commit -m \"subject${NL}then gh auth token\""
+if [ "$(awk 'BEGIN { print split("a\nb", A, "x") }')" = 2 ]; then
+  MUT_NLSPLIT="$(mutant nlsplit secrets-guard.awk 'nst = split(text, ST, /\001/)' 'nst = split(text, ST, "\001")')"
+  control "$M_SECRETS" "$MUT_NLSPLIT" "git commit -m \"subject${NL}then gh auth token\"" silent
+fi
+
+echo "[publish, force push and merge: the same two spellings]"
+same "$M_EGRESS" ask deny deny "npm publish" "if true; then npm publish; fi" "$MUT_KW"
+same "$M_EGRESS" ask deny deny "npm publish" "{ npm publish; }" "$MUT_KW"
+same "$M_EGRESS" ask deny deny "x=\$(npm publish)" "x=\$(if true; then npm publish; fi)" "$MUT_KW"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "if git push --force origin main; then :; fi" "$MUT_KW"
+same "$M_EGRESS" silent ask deny "git push origin +main" "while true; do git push origin +main; done" "$MUT_KW"
+same "$M_EGRESS" silent ask deny "gh pr merge 12" "if true; then gh pr merge 12; fi" "$MUT_KW"
+same "$M_EGRESS" silent silent ask "git commit --amend --no-edit" "! git commit --amend --no-edit" "$MUT_KW"
+same "$M_EGRESS" ask deny deny "npm publish" "npm pub$BS${NL}lish" "$MUT_CONT"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "git push $BS${NL}--force origin main" "$MUT_CONT"
+same "$M_EGRESS" silent ask deny "gh pr merge 12" "gh pr $BS${NL}merge 12" "$MUT_CONT"
+quiet "$M_EGRESS" "git commit -m \"if true; then npm publish; fi\"" "$MUT_QUOTE"
+quiet "$M_EGRESS" "git commit -m \"subject${NL}then git push --force origin main\"" "$MUT_QUOTE"
+quiet "$M_EGRESS" "cat > notes.md <<'EOF'${NL}if true; then npm publish; fi${NL}EOF" "$MUT_HDOC"
+quiet "$M_EGRESS" "echo hi # x; then npm publish" "$MUT_COMMENT"
+for c in "git log --grep=if" "echo then" "while read l; do echo \"\$l\"; done < file" "time make build"; do
+  quiet "$M_EGRESS" "$c"
+done
+
+# The text those two patterns read, checked directly: kit_shell_text joins a
+# continuation where the shell does and nowhere else.
+shell_text() { printf '%s\n' "$1" | KIT_SHELL_TEXT=1 awk -f "$REPO_ROOT/.claude/hooks/lib-tokenize.awk" -f "$REPO_ROOT/.claude/hooks/egress-guard.awk"; }
+assert_eq "git push --force" "$(shell_text "git push $BS${NL}--force")" "a continuation outside quotes is joined"
+assert_eq "echo \"ab\"" "$(shell_text "echo \"a$BS${NL}b\"")" "a continuation inside double quotes is joined, as the shell joins it"
+assert_eq "echo 'a$BS${NL}b'" "$(shell_text "echo 'a$BS${NL}b'")" "a backslash-newline inside single quotes is kept: it is not a continuation"
+assert_eq "echo foo$BS$BS${NL}b" "$(shell_text "echo foo$BS$BS${NL}b")" "an escaped backslash at the end of a line is not a continuation"
+assert_eq "true; npm publish; fi" "$(shell_text "if true; then npm publish; fi")" "the reserved words leading a command are dropped"
+assert_eq "git commit -m \"if true; then npm publish; fi\"" "$(shell_text "git commit -m \"if true; then npm publish; fi\"")" \
+  "inside quotes they are text and stay"
+SQ_OUT="$(printf '%s\n' "echo 'a$BS" "b'" | KIT_SHELL_TEXT=1 awk -f "$MUT_SQ/.claude/hooks/lib-tokenize.awk" -f "$MUT_SQ/.claude/hooks/egress-guard.awk")"
+TOTAL=$((TOTAL + 1))
+if [ "$SQ_OUT" != "echo 'a$BS${NL}b'" ]; then
+  echo "  PASS: planted failure caught (sq: single quotes read like double, so the pair is joined)"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: planted failure NOT caught (sq): single-quoted backslash-newline still kept"
+  FAIL=$((FAIL + 1))
+fi
+
+
+# --- Size cap: a command too large to read in time is refused, not waved through ---
+# Every guard runs with timeout 10, and a hook that times out does not block the call.
+# Measured before the cap: an echo carrying 234 KB ahead of a mainnet anchor deploy
+# kept onchain-guard busy 18 s. lib-headless.sh's kit_size_cap holds a command past
+# 32 KB to 32 KB of code, 10,000 lines and 256 KB in all; kit-code-size.awk leaves
+# out a heredoc body written to a file with cat or tee, and only on rules strict
+# enough that each case below is refused when one of them is broken.
+echo "[size cap]"
+SZ="$WORK/size"; mkdir -p "$SZ"
+python3 - "$SZ" <<'PY'
+import json, sys
+d = sys.argv[1]
+def fill(unit, k, head=""):
+    s = head
+    while len(s) < k:
+        s += unit
+    return s[:k]
+DA = "anchor deploy --provider.cluster mainnet"
+CODE = "\n".join(["x;" * 58] * 350)          # 41 KB of ; statements over 350 lines
+LINE = "some ordinary line of file text here\n"
+cases = {
+    "line40k": fill("ab ", 40000, "echo "),
+    "line30k": fill("ab ", 30000, "echo "),
+    "final": "solana program set-upgrade-authority PID --final" + fill(" \\\n  x", 234000),
+    "cat200k": "cat > f.txt <<'EOF'\n" + LINE * 5500 + "EOF",
+    "cat433k": "cat > f.txt <<'EOF'\n" + LINE * 12000 + "EOF",
+    "lines": "cat > f.txt <<'EOF'\n" + "yyy\n" * 10100 + "EOF",
+    "unqplain": "cat > f.txt <<EOF\n" + LINE * 1100 + "EOF",
+    "bash40k": "bash <<'EOF'\n" + CODE + "\n" + DA + "\nEOF",
+    # The shell reads none of these bodies as a file's text, so each has to count.
+    "fakemark": "cat '<<EOF'\n" + CODE + "\nEOF\n" + DA,
+    "pipebash": "cat <<'EOF' | bash\n" + CODE + "\n" + DA + "\nEOF",
+    "unqsubst": "cat <<EOF > f.txt\n$(\n" + CODE + "\n" + DA + "\n)\nEOF",
+    "unterm": "cat <<'EOF' > f.txt\n" + CODE,
+    "contbash": "bash \\\ncat <<'EOF'\n" + CODE + "\n" + DA + "\nEOF",
+    # egress-guard reads a body behind `bash cat` as fed to bash, and parsed this one
+    # past its timeout when the cap had looked through the shell to cat.
+    "shellcat": "bash cat <<EOF\n" + "\n".join(["a" * 25] * 1600) + "\n" + DA + "\nEOF",
+}
+for name, cmd in cases.items():
+    with open(d + "/" + name + ".json", "w") as f:
+        json.dump({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}, f)
+PY
+# run_payload <hook> <tier> <payload file> [project] — run_bash for a payload too big
+# to pass as an argument.
+run_payload() {
+  set +e
+  OUT="$(cd "$WORK" && PATH="$WORK/bin:$PATH" CLAUDE_PROJECT_DIR="${4:-$REPO_ROOT}" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugin" KIT_FIREWALL_TIER="$2" KIT_FIREWALL_HEADLESS=0 \
+    sh -c "$1" < "$3" 2>"$WORK/err")"
+  set -e
+  case "$OUT" in *'"deny"'*) DECISION=deny ;; *'"ask"'*) DECISION=ask ;; *) DECISION=silent ;; esac
+}
+for g in "$M_SECRETS" "$M_EGRESS"; do
+  run_payload "$g" relaxed "$SZ/line40k.json"
+  assert_eq deny "$DECISION" "40 KB of shell code is refused rather than read past the timeout"
+  assert_contains "$OUT" "too large for the firewall hooks to read" "...saying why"
+  run_payload "$g" relaxed "$SZ/line30k.json"
+  assert_eq silent "$DECISION" "30 KB of ordinary shell code is still read, and passes"
+done
+for t in off relaxed high; do
+  run_payload "$M_CHAIN" "$t" "$SZ/final.json"
+  assert_eq deny "$DECISION" "[$t] --final padded with 234 KB of continuations is still refused"
+done
+for g in "$M_CHAIN" "$M_SECRETS" "$M_EGRESS"; do
+  for t in relaxed high; do
+    run_payload "$g" "$t" "$SZ/cat200k.json"
+    assert_eq silent "$DECISION" "[$t] a 200 KB file written with cat and a quoted heredoc is not code, and passes"
+  done
+  run_payload "$g" relaxed "$SZ/unqplain.json"
+  assert_eq silent "$DECISION" "an unquoted cat heredoc with no substitution in it is not code either"
+  # onchain-guard reads nothing that names no on-chain verb (its prefilter exits
+  # first), so it meets the cap only on the cases that carry the deploy.
+  cs="bash40k fakemark pipebash unqsubst contbash shellcat"
+  [ "$g" = "$M_CHAIN" ] || cs="$cs cat433k lines unterm"
+  for c in $cs; do
+    run_payload "$g" relaxed "$SZ/$c.json"
+    assert_contains "$OUT" "too large for the firewall hooks to read" "refused by the size cap: $c"
+  done
+done
+# Each planted failure breaks one rule, and the case that rule refuses passes again.
+MUT_SIZE="$(mutant size lib-headless.sh '[ -z "$KIT_CMD" ] || kit_size_cap' '[ -z "$KIT_CMD" ] || :')" || MUT_SIZE=
+MUT_SIZECAT="$(mutant sizecat kit-code-size.awk 'exempt = (np == 1' 'exempt = 0 && (np == 1')" || MUT_SIZECAT=
+MUT_SIZEQ="$(mutant sizeq lib-tokenize.awk 'if (top == "s") { if (c == SQ) q = substr(q, 1, length(q) - 1); continue }' 'if (0) { }' \
+  kit-code-size.awk 'KH_S[1] == "" && ' '')" || MUT_SIZEQ=
+MUT_SIZEPIPE="$(mutant sizepipe kit-code-size.awk ' && x !~ /[|(`]/)' ')')" || MUT_SIZEPIPE=
+MUT_SIZESUBST="$(mutant sizesubst kit-code-size.awk 'if (!quoted && (index(l, "$(")' 'if (0 && (index(l, "$(")')" || MUT_SIZESUBST=
+MUT_SIZEUNTERM="$(mutant sizeunterm kit-code-size.awk 'if (delim != "" && exempt) SIZE += pend' 'if (0) SIZE += pend')" || MUT_SIZEUNTERM=
+MUT_SIZECONT="$(mutant sizecont kit-code-size.awk '!cont && !wascont && ' '')" || MUT_SIZECONT=
+MUT_SIZELINES="$(mutant sizelines kit-code-size.awk 'NR <= LINES' '1')" || MUT_SIZELINES=
+MUT_SIZEHEAD="$(mutant sizehead kit-code-size.awk 'fw = first_word(HT, hn); hw = (fw <= hn) ? base(HT[fw]) : ""' 'hw = cmdword_x(HT, hn, 0, 0)')" || MUT_SIZEHEAD=
+for pair in "$MUT_SIZE|line40k|deny" "$MUT_SIZECAT|cat200k|silent" "$MUT_SIZEQ|fakemark|deny" \
+            "$MUT_SIZEPIPE|pipebash|deny" "$MUT_SIZESUBST|unqsubst|deny" "$MUT_SIZEUNTERM|unterm|deny" \
+            "$MUT_SIZECONT|contbash|deny" "$MUT_SIZELINES|lines|deny" "$MUT_SIZEHEAD|shellcat|deny"; do
+  mdir="${pair%%|*}"; rest="${pair#*|}"; payload="${rest%%|*}"; was="${rest#*|}"
+  run_payload "$M_EGRESS" relaxed "$SZ/$payload.json" "$mdir"
+  TOTAL=$((TOTAL + 1))
+  if [ -n "$mdir" ] && [ "$DECISION" != "$was" ]; then
+    echo "  PASS: planted failure caught (${mdir##*/mut-}: $was -> $DECISION): $payload"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: planted failure NOT caught (${mdir##*/mut-} still $DECISION): $payload"
+    FAIL=$((FAIL + 1))
+  fi
+done
+# The plugin resolves hooks under CLAUDE_PLUGIN_ROOT; kit_size_cap reads this file.
+TOTAL=$((TOTAL + 1))
+if [ -e "$REPO_ROOT/plugin/hooks/kit-code-size.awk" ]; then
+  echo "  PASS: plugin/hooks/kit-code-size.awk resolves"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: plugin/hooks/kit-code-size.awk is missing, so a plugin install refuses every large command"
+  FAIL=$((FAIL + 1))
+fi
+
+# --- A `<<` the shell reads as text opens no heredoc. Read as an opener, `echo '<<X'`
+# turned every line after it into a body nothing normalised, and the spellings above
+# were silent again behind it. kit_hd_ops reads quotes and comments as hd_open does.
+echo "[a quoted or commented << opens no heredoc]"
+M_FETCH="$(hook "$SETTINGS_MAIN" PreToolUse 'fetch-exec-guard')"
+MUT_HDQ="$(mutant hdq lib-tokenize.awk 'if (top == "s") { if (c == SQ) q = substr(q, 1, length(q) - 1); continue }' 'if (0) { }' \
+  lib-tokenize.awk 'if (top == "d") {' 'if (0) {')" || MUT_HDQ=
+MUT_HDC="$(mutant hdc lib-tokenize.awk 'else if (c == "#" && (i == 1 || substr(l, i - 1, 1) ~ /[ \t;&|(]/)) break' 'else if (0) break')" || MUT_HDC=
+same "$M_CHAIN" ask ask deny "$DA" "echo '<<X'${NL}anchor $BS${NL}deploy --provider.cluster mainnet" "$MUT_HDQ"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "echo '<<X'${NL}git push $BS${NL}--force origin main" "$MUT_HDQ"
+same "$M_EGRESS" ask deny deny "npm publish" "echo \"<<X\"${NL}if true; then npm publish; fi" "$MUT_HDQ"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "true # <<X${NL}git push $BS${NL}--force origin main" "$MUT_HDC"
+same "$M_FETCH" silent silent deny "npx -y x" "echo '<<X'${NL}if true; then npx -y x; fi" "$MUT_HDQ"
+same "$M_FETCH" silent silent deny "cargo install x" "echo '<<X'${NL}cargo $BS${NL}install x" "$MUT_HDQ"
+quiet "$M_EGRESS" "cat > notes.md <<'EOF'${NL}if true; then npm publish; fi${NL}EOF"
 
 print_summary

@@ -21,6 +21,13 @@
 # heredoc heads — and keeps its own pass.  Rewriting it onto
 # split_cmd is a behaviour change to the mainnet gate and belongs in its own
 # change, with its own test corpus, not in a refactor.
+#
+# What it does take since: kit_shell_text, which joins backslash-newline
+# continuations before anything else reads the text, and kit_qscan, which tells
+# the pass below whether a statement starts in code or inside a quoted argument.
+# A reserved word leading a statement (`if true; then anchor deploy …`) is
+# dropped like a wrapper, but only in code: the split below is quote-blind on
+# purpose, so `git commit -m "…; then anchor deploy …"` reaches strip() too.
 
 # ---- the library's callbacks.  cmdword_x and strip_heredocs are never reached
 # from here, but awk resolves a call lazily and a stray one would be a runtime
@@ -39,17 +46,23 @@ function wrapper(b) { return (is_wrapper(b) || is_shell(b) || b == "ash") }
 # The options of those wrappers that swallow the next word (env -u HOME,
 # xargs -I {}, nice -n 5, sudo -u me) are the library's kit_wrapper_optarg, the
 # table this file carried first and lib-tokenize.awk now shares with the git gates.
-function strip(st,   n, A, i, j, w, b, cur, hadw, keep, out) {
+#
+# cmd is 1 when st starts in code, which is when a reserved word leading it is
+# grammar to drop rather than text to keep.  ST_PAYLOAD comes back as the position
+# in st of the quote that opens a wrapper's payload (`bash -c "…`), or 0, so the
+# caller can read that quote as code and the rest of the payload with it.
+function strip(st, cmd,   n, A, i, j, w, b, cur, hadw, keep, out) {
   n = split(st, A, /[ \t\r]+/)
   i = 1
   while (i <= n && A[i] == "") i++
-  keep = ""; hadw = 0
+  keep = ""; hadw = 0; ST_PAYLOAD = 0
   while (i <= n) {
     w = A[i]; b = base(w)
     # VAR=value is kept, not dropped: the cluster resolver in onchain-guard.sh
     # reads ANCHOR_PROVIDER_URL= out of this string, and the regex already allows
     # a run of assignments in front of the verb.
     if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { keep = keep w " "; i++; continue }
+    if (cmd && kit_reserved(w)) { i++; continue }
     if (!wrapper(b)) break
     cur = b; hadw = 1; i++
     while (i <= n) {
@@ -64,8 +77,20 @@ function strip(st,   n, A, i, j, w, b, cur, hadw, keep, out) {
   for (j = i; j <= n; j++) out = out (out == "" ? "" : " ") A[j]
   # A wrapper was consumed, so a quote here opens its payload (sh -c "solana
   # ...") rather than being part of the command word.
-  if (hadw) sub(/^["\047]/, "", out)
+  if (hadw && sub(/^["\047]/, "", out)) {
+    ST_PAYLOAD = field_pos(st, i)
+    if (cmd) out = kit_unreserve(out)
+  }
   return keep out
+}
+# field_pos — where field i of split(s, A, /[ \t\r]+/) starts in s.
+function field_pos(s, i,   p, f) {
+  p = 1
+  for (f = 1; f < i; f++) {
+    if (!match(substr(s, p), /[ \t\r]+/)) return 0
+    p += RSTART + RLENGTH - 1
+  }
+  return p
 }
 # ---- heredoc classifier (#166).  This block, through hd_strip, is identical in
 # secrets-guard.awk and onchain-guard.awk (tests/test_hooks.sh checks).  It
@@ -90,15 +115,16 @@ function hd_interp(w) {
        || w == "Rscript" || w == "lua" || w == "tclsh")
 }
 function hd_shell(w) { return (is_shell(w) || w == "ash") }
-# hd_cmd — index of the command word, past assignments and non-shell wrappers.
+# hd_cmd — index of the command word, past assignments, reserved words
+# (`then bash <<'EOF'`) and non-shell wrappers with the words their options take.
 function hd_cmd(T, n,   ci, w) {
   ci = 1
   while (ci <= n) {
-    while (ci <= n && T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) ci++
+    while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
     if (ci > n) break
     w = base(T[ci]); if (!is_wrapper(w) || w == "eval") break
     ci++
-    while (ci <= n && T[ci] ~ /^-/) ci++
+    while (ci <= n && T[ci] ~ /^-/) { if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++; ci++ }
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
   }
   return ci
@@ -244,17 +270,24 @@ function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }
 
 { raw = raw $0 "\n" }
 END {
-  nl = split(hd_strip(raw), LN, "\n")
+  # Continuations are joined first, so a heredoc head split over two lines is
+  # still one head to hd_strip.  qs is the quote stack carried from statement to
+  # statement and line to line: a statement starting inside a plain quote is an
+  # argument, so its leading `then` stays and the regex never anchors on it.
+  nl = split(hd_strip(kit_shell_text(raw, 0)), LN, "\n")
+  qs = ""
   for (k = 1; k <= nl; k++) {
     line = LN[k]; out = ""
     if (k == nl && line == "") break
+    KQ_PREV = ""; KQ_COMMENT = 0
     while (length(line)) {
       if (match(line, /(\|\||&&|\$\(|[;&|()])/)) {
         st = substr(line, 1, RSTART - 1)
         sep = substr(line, RSTART, RLENGTH)
         line = substr(line, RSTART + RLENGTH)
       } else { st = line; sep = ""; line = "" }
-      out = out strip(st) sep
+      out = out strip(st, !KQ_COMMENT && kit_code_top(qs)) sep
+      qs = kit_qscan(st sep, qs, ST_PAYLOAD)
     }
     print out
   }

