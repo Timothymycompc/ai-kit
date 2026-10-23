@@ -585,6 +585,7 @@
       "Bash(zsh -c *)",
       "Bash(git -c *)",
       "Bash(git --config-env*)",
+      "Bash(git --exec-path=*)",
       "Bash(git -C *)",
       "Bash(git config *alias.*)",
       "Bash(git config alias.*)",

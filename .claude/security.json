@@ -14,9 +14,9 @@
 
   "enforced": {
     "tier": "relaxed",
-    "ruleSetVersion": 8,
+    "ruleSetVersion": 9,
     "target": ".claude/settings.json",
-    "sha256": "f2adf26d34416e5fe26c7ffedce5878a0c011c0d98528b984d631304b0199208",
+    "sha256": "5122d1ac271bd24fedaa93425e314f66795f55f20d0150e9bfa92e064daeab4a",
     "ruleIds": [
       "Bash(anchor *)",
       "Bash(cargo build*)",
@@ -324,6 +324,7 @@
       "Bash(zsh -c *)",
       "Bash(git -c *)",
       "Bash(git --config-env*)",
+      "Bash(git --exec-path=*)",
       "Bash(git -C *)",
       "Bash(git config *alias.*)",
       "Bash(git config alias.*)",

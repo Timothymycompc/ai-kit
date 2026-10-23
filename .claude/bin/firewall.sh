@@ -152,7 +152,14 @@ SECURITY = os.path.join(TARGET, SECURITY_REL)
 # The maintainer tier (#162) arrived WITHOUT a bump, deliberately: the four user tiers
 # generate the same bytes they did at 8, so no install that already has a security.json
 # needs a re-apply, and none can be on maintainer from before it existed.
-RULE_SET_VERSION = 8
+#   8 -> 9: `git --exec-path=<dir>` joins `git -c` in DENY_WRAPPERS at every tier; the
+#           maintainer tier inherits it from Relaxed. A shell write fence on an
+#           out-of-project git common dir's config and hooks/ was tried at every
+#           sandboxed tier and taken back out: below High it broke a first-time
+#           `git submodule update --init` in a linked worktree, which shippability gate 4
+#           keeps working, and High already has it, since its Edit deny reaches the
+#           sandbox (git_common_edit_deny).
+RULE_SET_VERSION = 9
 # The four user tiers. `maintainer` is deliberately not one of them: it is a variant of
 # its base tier for the kit's own repository, so it is absent from bootstrap_ids() (no
 # install ever wrote its rules before enforced.ruleIds existed) and from every loop that
@@ -804,6 +811,14 @@ DENY_WRAPPERS = [
     "Bash(zsh -c *)",
     "Bash(git -c *)",
     "Bash(git --config-env*)",
+    # `git --exec-path=<dir>` puts dir first on the path git searches for its helpers
+    # and its own subcommands, so the directory decides what runs: `git
+    # --exec-path=$d ls-remote https://…` ran $d/git-remote-https. The `=` is in the
+    # rule because the bare `git --exec-path` only prints the path, and git reads the
+    # spaced form the same way, printing and ignoring the rest. No twin is needed: a
+    # deny rule matches past a leading assignment, and egress-guard.awk's gxp_scan
+    # covers the option behind another git-level option.
+    "Bash(git --exec-path=*)",
     "Bash(git -C *)",
     "Bash(git config *alias.*)",
     "Bash(git config alias.*)",

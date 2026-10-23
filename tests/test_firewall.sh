@@ -716,7 +716,8 @@ for r in "Bash(claude *)" "Bash(env *)" "Bash(git -c *)" "Bash(git -C *)" "Bash(
          "Bash(git push *--exec*)" "Bash(git push --exec*)" \
          "Bash(gh issue delete *)" "Bash(gh repo delete *)" "Bash(gh repo delete)" \
          "Bash(git config *alias.*)" "Bash(git config alias.*)" \
-         "Bash(git --config-env*)" "Bash(git reflog delete *)" "Bash(git reflog drop *)"; do
+         "Bash(git --config-env*)" "Bash(git reflog delete *)" "Bash(git reflog drop *)" \
+         "Bash(git --exec-path=*)"; do
   TOTAL=$((TOTAL + 1))
   if printf '%s\n' "$DENY_LIVE" | grep -qxF "$r"; then
     echo "  PASS: the never-allowed set denies $r"
@@ -768,6 +769,22 @@ done
 assert_eq "no" "$(python3 "$WORK/gap_probe.py" --match "git --config-env *" \
   "git --config-env=core.fsmonitor=X status" 2>&1)" \
   "planted: the spaced shape Bash(git --config-env *) would leave the = spelling open"
+# git --exec-path=<dir> makes git run the helpers and subcommands it finds in dir.
+# Denied at every tier with the `=` in the rule: the bare option only prints the path,
+# and git reads the spaced form the same way, so both stay open.
+echo "[git --exec-path=]"
+for t in $TIERS; do
+  assert_eq "yes" "$(python3 -c "
+import json
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+print('yes' if 'Bash(git --exec-path=*)' in deny else 'no')" 2>/dev/null)" "$t denies git --exec-path="
+  assert_eq "none" "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$t.json" "git --exec-path" 2>&1)" \
+    "$t leaves the bare \`git --exec-path\` open (it prints the path)"
+done
+for cmd in "git --exec-path=/tmp/x ls-remote origin" "git --exec-path=/tmp/x"; do
+  assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "git --exec-path=*" "$cmd" 2>&1)" \
+    "Bash(git --exec-path=*) matches \`$cmd\`"
+done
 for verb in "git reflog delete" "git reflog drop"; do
   assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "$verb *" "$verb" 2>&1)" \
     "Bash($verb *) denies a bare \`$verb\` by itself, so it needs no twin"
@@ -933,6 +950,16 @@ deny = (json.load(open(sys.argv[1])).get('permissions') or {}).get('deny') or []
 print(' '.join(r for r in deny if '.git/' in r and r.startswith('Edit(')) or 'none')" "$WORK/wt.$t.json" 2>/dev/null)" \
         "worktree '$WT_LABEL' at $t: no .git Edit rule (High only, even in a worktree)"
     done
+    # Below High the common dir stays shell-writable on purpose: shippability gate 4
+    # keeps a first-time `git submodule update --init` working in a linked worktree, and
+    # that writes submodule.<name>.url into the common config.
+    for t in relaxed medium; do
+      assert_eq "none" "$(python3 -c "
+import json, sys
+dw = ((json.load(open(sys.argv[1])).get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
+print(' '.join(p for p in dw if p.startswith(sys.argv[2])) or 'none')" "$WORK/wt.$t.json" "$COMMON" 2>/dev/null)" \
+        "worktree '$WT_LABEL' at $t: no shell fence on the common dir, so submodule init keeps working"
+    done
   done
   # Planted: the same High file with its absolute rules taken out, which is what the
   # project-relative rules alone would leave — the common dir's config writable.
@@ -945,6 +972,50 @@ json.dump(s, open(sys.argv[2], "w"))
 PY
   assert_contains "$(python3 "$WORK/edit_deny.py" "$WORK/planted-wt.json" denied "$COMMON/config" 2>&1)" \
     "$COMMON/config" "planted: without the absolute rules a worktree's common config is writable, and the check says so"
+fi
+
+# The kit installed in a monorepo's subfolder: the parent repository's .git is the common
+# dir, outside the project, so git_common_write() grants it to the shell. High denies its
+# config and hooks/ by absolute path, and that Edit deny reaches the sandbox as a write
+# deny too. Below High nothing does, deliberately, as for a linked worktree above. A plain
+# repository gets no absolute .git entry at any tier: its .git is inside the project.
+echo "[a monorepo parent's .git, and a plain repository]"
+MONO="$WORK/mono"
+if git init -q "$MONO" > "$WORK/mono.log" 2>&1 && mkdir -p "$MONO/app/.claude/bin" && git init -q "$WORK/plainrepo" >> "$WORK/mono.log" 2>&1 \
+   && mkdir -p "$WORK/plainrepo/.claude/bin"; then
+  MCOMMON="$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$MONO/.git")"
+  PCOMMON="$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$WORK/plainrepo/.git")"
+  for d in "$MONO/app" "$WORK/plainrepo"; do
+    cp "$REPO_ROOT/.claude/settings.json" "$SECURITY" "$d/.claude/"
+    cp "$FIREWALL" "$d/.claude/bin/firewall.sh"
+  done
+  for t in off relaxed medium high; do
+    (cd "$MONO/app" && CLAUDE_PROJECT_DIR="$MONO/app" bash .claude/bin/firewall.sh apply "$t") > "$WORK/mono-apply.log" 2>&1 || true
+    cp "$MONO/app/.claude/settings.json" "$WORK/mono.$t.json"
+    (cd "$WORK/plainrepo" && CLAUDE_PROJECT_DIR="$WORK/plainrepo" bash .claude/bin/firewall.sh apply "$t") > "$WORK/plain-apply.log" 2>&1 || true
+    cp "$WORK/plainrepo/.claude/settings.json" "$WORK/plainrepo.$t.json"
+  done
+  assert_eq "none" "$(python3 "$WORK/edit_deny.py" "$WORK/mono.high.json" denied \
+    "$MCOMMON/config" "$MCOMMON/hooks" "$MCOMMON/hooks/pre-commit" 2>&1)" \
+    "monorepo at high: the parent's .git config and hooks are denied by absolute path"
+  for t in off relaxed medium; do
+    assert_eq "none" "$(python3 -c "
+import json, sys
+s = json.load(open(sys.argv[1]))
+deny = (s.get('permissions') or {}).get('deny') or []
+dw = ((s.get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
+print(' '.join([r for r in deny if sys.argv[2] in r] + [p for p in dw if p.startswith(sys.argv[2])]) or 'none')" "$WORK/mono.$t.json" "$MCOMMON" 2>/dev/null)" \
+      "monorepo at $t: no fence on the parent's .git (submodule init keeps working)"
+  done
+  for t in off relaxed medium high; do
+    assert_eq "none" "$(python3 -c "
+import json, sys
+print(' '.join(x for x in [json.dumps(json.load(open(sys.argv[1])))] if sys.argv[2] in x) and 'absolute .git path' or 'none')" "$WORK/plainrepo.$t.json" "$PCOMMON" 2>/dev/null)" \
+      "plain repository at $t: no absolute .git path anywhere in the generated file"
+  done
+else
+  TOTAL=$((TOTAL + 1)); FAIL=$((FAIL + 1))
+  echo "  FAIL: could not build the monorepo fixture: $(tail -3 "$WORK/mono.log")"
 fi
 
 # A git alias is the third evasion of that family and the only one that outlives the
