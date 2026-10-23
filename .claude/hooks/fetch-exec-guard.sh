@@ -74,7 +74,7 @@ VERDICT=$(printf '%s\n' "$KIT_CMD" |
 # in part, which would miss a fetch-and-run in the unread inner code.  Before the
 # tier read, so Off refuses it too, the way the size cap does.
 case $VERDICT in
-  DEEP*) kit_deny "this command carries more shell code than the firewall hooks can read within their timeout: code strings (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec) nested more than 3 levels deep, or more than 4096 of them or of the statements inside them. It is refused at every tier rather than run with part of it unchecked. Run the inner commands directly, or put a long script in a file and run that." ;;
+  DEEP*) kit_deny_deep ;;
 esac
 
 # The tier is read only once there is something to decide, which keeps a whole

@@ -446,6 +446,8 @@ function kit_code_hint(s) {
 # bounded to that depth, which is what keeps a deeply nested command from reading
 # past the hook's timeout.  The 8x byte budget matches kit_shell_text's.
 function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k, DEP, left) {
+  # 8 bytes per byte of the 32 KB of code kit_size_cap admits; kit_shell_text and
+  # onchain-guard budget 8 per byte of the command itself, which that cap bounds.
   n0 = nst; left = 8 * 32768
   for (q = 1; q <= nst; q++) {
     ng = split(ST[q], G, /\002/)
