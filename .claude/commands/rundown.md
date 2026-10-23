@@ -14,7 +14,7 @@ Bring the user back up to speed from facts gathered now, not from memory. Argume
 
 ## Report
 
-Five sections, each numbering its items from 1, stand in for Done / Warnings / Open in this reply; skip an empty one.
+Five sections, each numbering its items from 1, stand in for Done / Warnings / Open in this reply; skip an empty one. Every PR, issue, commit and file they name is a clickable link: a full URL (`https://github.com/<owner>/<repo>/pull/<n>`), or a path from the project root with its line (`src/lib.rs:42`).
 
 1. **Decided while you were away:** what landed (commits, merges, finished lanes, with links), then the calls made without the user: one-way calls and calls that went against a recommendation or an adversary first, each with its record id and how to reverse it, then a count of the rest.
 2. **Needs your call:** every open question, provisional calls to ratify included, as a numbered brief in the user's language, ordered by what it blocks and restated in full, never as a pointer to an earlier message:

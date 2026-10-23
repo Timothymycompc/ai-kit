@@ -119,7 +119,7 @@ The kit pins no effort level and no agent teams; [docs/configuration.md](docs/co
 
 Every agent runs on Opus (never a pinned Fable), whatever your session model. See [docs/agents-and-commands.md → Agents](docs/agents-and-commands.md#agents) for the routing.
 
-### 47 Slash Commands
+### 54 Slash Commands
 
 **Building:**
 - `/build-program` - Build Anchor or native programs
@@ -175,8 +175,11 @@ Every agent runs on Opus (never a pinned Fable), whatever your session model. Se
 - `/crew` - Run intake through fix wave, pausing at your gates; ends before `/ship`
 - `/parallel` - Modifier: run any task with parallel agents (only you can run it)
 - `/adversarial` - Modifier: proposer vs adversary on a task's key claims (only you can run it)
+- `/explore` - Triage tasks as adversarial, parallel, serial or yours, then run each that way (only you can run it)
 - `/proceed` - Resume interrupted work without redoing what finished (only you can run it)
 - `/rundown` - What was decided while you were away, what needs your call, what is next
+- `/report` - Put results on a linked HTML page; every page in `.claude/reports/` shares one navigation bar
+- `/adv`, `/par`, `/rep`, `/res`, `/exp` - Short for `/adversarial`, `/parallel`, `/report`, `/research`, `/explore` (only you can run them)
 
 ### Agent Teams
 
@@ -239,7 +242,7 @@ your-project/
 ├── CLAUDE.md              # ← Main config (copied from CLAUDE-solana.md)
 ├── .claude/
 │   ├── agents/            # 15 specialized AI agents
-│   ├── commands/          # 47 slash commands
+│   ├── commands/          # 54 slash commands
 │   ├── skills/            # Progressive knowledge
 │   │   ├── SKILL.md           # Unified hub (start here)
 │   │   ├── ext/               # Skill packs: core by default, extensions as installed
@@ -330,6 +333,14 @@ Claude: [Intake, research and decisions, then a plan it stops for you to approve
 
 You: /parallel /adversarial plan the migration to Token-2022
 Claude: [Loads both: parallel lanes, each key claim put to a proposer and an adversary]
+
+You: great work, now /rep(/adv(check the fee math) and /adv(check the upgrade path)), also /par(update the docs, add the tests and regenerate the client)
+Claude: [Prints the split; both adversarial runs and the three lanes start together;
+         the report waits for its two]
+
+You: /exp rewrite the secret-upload guard, add a CSV export, pick the landing-page palette
+Claude: [One line per task: adversarial, parallel, yours, each with its reason; runs the first two,
+         puts the palette on a decision page]
 
 You: /rundown
 Claude: [Decided while you were away, needs your call, in flight, blocked, next]
