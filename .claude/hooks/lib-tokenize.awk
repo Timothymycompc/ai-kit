@@ -278,8 +278,9 @@ function cmdword_x(T, n, reskip, operands,   ci, w) {
 
 # kit_plain — t is one word the shell reads back as itself: no blank, quote,
 # operator, expansion or glob.  The set is git's own test for whether a command
-# needs a shell (run-command.c, prepare_shell_cmd).
-function kit_plain(t) { return (t != "" && t !~ /[|&;<>()$`\\"\047 \t\n*?#~=%[]/) }
+# needs a shell (run-command.c, prepare_shell_cmd).  \003, split_cmd's mark for an
+# escaped space, is a blank here: `watch npm\ publish` hands sh "npm publish".
+function kit_plain(t) { return (t != "" && t !~ /[|&;<>()$`\\"\047 \t\n\003*?#~=%[]/) }
 
 # kit_shq — t as one shell word: itself when plain, single-quoted otherwise.
 function kit_shq(t,   n, P, i, s) {
@@ -347,7 +348,7 @@ function kit_env_split(T, n, ci,   o, s, j, W, nw, k) {
   else if (o ~ /^--s[a-z-]*=/ && kit_long_arg(substr(o, 1, index(o, "=") - 1), "split-string")) s = substr(o, index(o, "=") + 1)
   else return 0
   if (kit_plain(s)) return 0
-  nw = tokenize(s, W); KIC_CODE = "env"
+  nw = tokenize(unmark(s), W); KIC_CODE = "env"
   for (k = 1; k <= nw; k++) KIC_CODE = KIC_CODE " " kit_shq(W[k])
   for (k = j; k <= n; k++) KIC_CODE = KIC_CODE " " kit_shq(T[k])
   return 1
@@ -355,7 +356,9 @@ function kit_env_split(T, n, ci,   o, s, j, W, nw, k) {
 
 # kit_inline_code — index of the first word of the code a stage runs through a
 # shell, past any wrapper in front; 0 when it runs none.  The code is T[p], or
-# KIC_CODE when that is set, for the programs that build it from more than one word:
+# KIC_CODE when that is set, for the programs that build it from more than one word.
+# Its escaped spaces (\003) are restored where it is read as code, since the shell
+# reading it splits there: `sh -c npm\ publish` runs npm publish.
 #
 #   sh -c CODE, bash -lc CODE        CODE.  `bash ./x.sh "a; b"` is 0: that string
 #                                    is the script's argument.
@@ -456,7 +459,7 @@ function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k, DEP, lef
       n = tokenize(G[g], T); if (n == 0) continue
       if ((p = kit_inline_code(T, n)) == 0) continue
       if (DEP[q] >= KIT_MAXDEPTH) { KIT_DEEP = 1; continue }
-      ns = split(split_cmd(KIC_CODE == "" ? T[p] : KIC_CODE), S, /\001/)
+      ns = split(split_cmd(unmark(KIC_CODE == "" ? T[p] : KIC_CODE)), S, /\001/)
       for (k = 1; k <= ns; k++) if (S[k] ~ /[^ \t\002]/) {
         if ((left -= length(S[k])) < 0 || nst - n0 >= KIT_MAXCODE) { KIT_DEEP = 1; return nst }
         ST[++nst] = S[k]; DEP[nst] = DEP[q] + 1
@@ -481,7 +484,7 @@ function kit_payloads(text, P, np,   ns, S, k, ng, G, g, n, T, p) {
       n = tokenize(G[g], T); if (n == 0) continue
       if (!(p = kit_inline_code(T, n))) continue
       if (np >= KIT_MAXCODE) { KIT_DEEP = 1; return np }
-      P[++np] = (KIC_CODE == "") ? T[p] : KIC_CODE
+      P[++np] = unmark((KIC_CODE == "") ? T[p] : KIC_CODE)
     }
   }
   return np
