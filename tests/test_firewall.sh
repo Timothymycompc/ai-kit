@@ -716,7 +716,8 @@ for r in "Bash(claude *)" "Bash(env *)" "Bash(git -c *)" "Bash(git -C *)" "Bash(
          "Bash(git push *--exec*)" "Bash(git push --exec*)" \
          "Bash(gh issue delete *)" "Bash(gh repo delete *)" "Bash(gh repo delete)" \
          "Bash(git config *alias.*)" "Bash(git config alias.*)" \
-         "Bash(git --config-env*)" "Bash(git reflog delete *)" "Bash(git reflog drop *)"; do
+         "Bash(git --config-env*)" "Bash(git reflog delete *)" "Bash(git reflog drop *)" \
+         "Bash(git --exec-path=*)"; do
   TOTAL=$((TOTAL + 1))
   if printf '%s\n' "$DENY_LIVE" | grep -qxF "$r"; then
     echo "  PASS: the never-allowed set denies $r"
@@ -768,6 +769,22 @@ done
 assert_eq "no" "$(python3 "$WORK/gap_probe.py" --match "git --config-env *" \
   "git --config-env=core.fsmonitor=X status" 2>&1)" \
   "planted: the spaced shape Bash(git --config-env *) would leave the = spelling open"
+# git --exec-path=<dir> makes git run the helpers and subcommands it finds in dir.
+# Denied at every tier with the `=` in the rule: the bare option only prints the path,
+# and git reads the spaced form the same way, so both stay open.
+echo "[git --exec-path=]"
+for t in $TIERS; do
+  assert_eq "yes" "$(python3 -c "
+import json
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+print('yes' if 'Bash(git --exec-path=*)' in deny else 'no')" 2>/dev/null)" "$t denies git --exec-path="
+  assert_eq "none" "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$t.json" "git --exec-path" 2>&1)" \
+    "$t leaves the bare \`git --exec-path\` open (it prints the path)"
+done
+for cmd in "git --exec-path=/tmp/x ls-remote origin" "git --exec-path=/tmp/x"; do
+  assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "git --exec-path=*" "$cmd" 2>&1)" \
+    "Bash(git --exec-path=*) matches \`$cmd\`"
+done
 for verb in "git reflog delete" "git reflog drop"; do
   assert_eq "yes" "$(python3 "$WORK/gap_probe.py" --match "$verb *" "$verb" 2>&1)" \
     "Bash($verb *) denies a bare \`$verb\` by itself, so it needs no twin"
@@ -933,6 +950,13 @@ deny = (json.load(open(sys.argv[1])).get('permissions') or {}).get('deny') or []
 print(' '.join(r for r in deny if '.git/' in r and r.startswith('Edit(')) or 'none')" "$WORK/wt.$t.json" 2>/dev/null)" \
         "worktree '$WT_LABEL' at $t: no .git Edit rule (High only, even in a worktree)"
     done
+    for t in relaxed medium high; do
+      assert_eq "yes yes" "$(python3 -c "
+import json, sys
+dw = ((json.load(open(sys.argv[1])).get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
+print(' '.join('yes' if sys.argv[2] + p in dw else 'no' for p in ('/config', '/hooks')))" "$WORK/wt.$t.json" "$COMMON" 2>/dev/null)" \
+        "worktree '$WT_LABEL' at $t: the sandbox denies shell writes to the common dir's config and hooks"
+    done
   done
   # Planted: the same High file with its absolute rules taken out, which is what the
   # project-relative rules alone would leave — the common dir's config writable.
@@ -945,6 +969,47 @@ json.dump(s, open(sys.argv[2], "w"))
 PY
   assert_contains "$(python3 "$WORK/edit_deny.py" "$WORK/planted-wt.json" denied "$COMMON/config" 2>&1)" \
     "$COMMON/config" "planted: without the absolute rules a worktree's common config is writable, and the check says so"
+fi
+
+# The kit installed in a monorepo's subfolder: the parent repository's .git is the common
+# dir, outside the project, so git_common_write() grants it and its config and hooks/
+# were writable from the shell. The sandbox now denies those two, at every tier it is on,
+# and leaves the rest of the grant alone. A plain repository gets no such entry: its .git
+# is inside the project, where Claude Code's own sandbox protects config and hooks/.
+echo "[a monorepo parent's .git: config and hooks fenced from the shell]"
+MONO="$WORK/mono"
+if git init -q "$MONO" > "$WORK/mono.log" 2>&1 && mkdir -p "$MONO/app/.claude/bin"; then
+  MCOMMON="$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$MONO/.git")"
+  cp "$REPO_ROOT/.claude/settings.json" "$SECURITY" "$MONO/app/.claude/"
+  cp "$FIREWALL" "$MONO/app/.claude/bin/firewall.sh"
+  for t in off relaxed medium high; do
+    (cd "$MONO/app" && CLAUDE_PROJECT_DIR="$MONO/app" bash .claude/bin/firewall.sh apply "$t") \
+      > "$WORK/mono-apply.log" 2>&1 || true
+    cp "$MONO/app/.claude/settings.json" "$WORK/mono.$t.json"
+  done
+  for t in relaxed medium high; do
+    assert_eq "yes yes yes" "$(python3 -c "
+import json, sys
+fs = (json.load(open(sys.argv[1])).get('sandbox') or {}).get('filesystem') or {}
+dw, aw = fs.get('denyWrite') or [], fs.get('allowWrite') or []
+print(' '.join('yes' if c else 'no' for c in (sys.argv[2] + '/config' in dw, sys.argv[2] + '/hooks' in dw, sys.argv[2] in aw)))" "$WORK/mono.$t.json" "$MCOMMON" 2>/dev/null)" \
+      "monorepo at $t: the parent's .git config and hooks are denied, inside a grant that still covers the dir"
+  done
+  python3 - "$WORK/mono.relaxed.json" "$WORK/planted-mono.json" "$MCOMMON" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+fs = s["sandbox"]["filesystem"]
+fs["denyWrite"] = [p for p in fs["denyWrite"] if not p.startswith(sys.argv[3])]
+json.dump(s, open(sys.argv[2], "w"))
+PY
+  assert_eq "no no" "$(python3 -c "
+import json, sys
+dw = ((json.load(open(sys.argv[1])).get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
+print(' '.join('yes' if sys.argv[2] + p in dw else 'no' for p in ('/config', '/hooks')))" "$WORK/planted-mono.json" "$MCOMMON" 2>/dev/null)" \
+    "planted: without the fence the parent's config and hooks are writable, and the check says so"
+else
+  TOTAL=$((TOTAL + 1)); FAIL=$((FAIL + 1))
+  echo "  FAIL: could not build the monorepo fixture: $(tail -3 "$WORK/mono.log")"
 fi
 
 # A git alias is the third evasion of that family and the only one that outlives the

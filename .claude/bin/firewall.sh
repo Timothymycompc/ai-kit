@@ -152,7 +152,12 @@ SECURITY = os.path.join(TARGET, SECURITY_REL)
 # The maintainer tier (#162) arrived WITHOUT a bump, deliberately: the four user tiers
 # generate the same bytes they did at 8, so no install that already has a security.json
 # needs a re-apply, and none can be on maintainer from before it existed.
-RULE_SET_VERSION = 8
+#   8 -> 9: `git --exec-path=<dir>` joins `git -c` in DENY_WRAPPERS at every tier, and
+#           the sandbox denies shell writes to an out-of-project git common dir's config
+#           and hooks/ at every tier it is on — a monorepo parent's .git or a linked
+#           worktree's — the protection Claude Code already gives a project's own .git.
+#           The maintainer tier inherits both from Relaxed.
+RULE_SET_VERSION = 9
 # The four user tiers. `maintainer` is deliberately not one of them: it is a variant of
 # its base tier for the kit's own repository, so it is absent from bootstrap_ids() (no
 # install ever wrote its rules before enforced.ruleIds existed) and from every loop that
@@ -804,6 +809,14 @@ DENY_WRAPPERS = [
     "Bash(zsh -c *)",
     "Bash(git -c *)",
     "Bash(git --config-env*)",
+    # `git --exec-path=<dir>` puts dir first on the path git searches for its helpers
+    # and its own subcommands, so the directory decides what runs: `git
+    # --exec-path=$d ls-remote https://…` ran $d/git-remote-https. The `=` is in the
+    # rule because the bare `git --exec-path` only prints the path, and git reads the
+    # spaced form the same way, printing and ignoring the rest. No twin is needed: a
+    # deny rule matches past a leading assignment, and egress-guard.awk's gxp_scan
+    # covers the option behind another git-level option.
+    "Bash(git --exec-path=*)",
     "Bash(git -C *)",
     "Bash(git config *alias.*)",
     "Bash(git config alias.*)",
@@ -1577,6 +1590,7 @@ def plan(tier):
         SB_PERSISTENCE,
         SB_HISTORY,
         SB_POLICY_FILES,
+        git_common_shell_deny(),
     ]
 
     # allowWrite is an allowlist, and a project-settings one APPENDS to Claude Code's
@@ -1644,6 +1658,23 @@ def git_common_write():
     """Write access to the git common dir, only when it is outside the project."""
     common = git_common_outside()
     return [".git"] + ([common] if common else [])
+
+
+def git_common_shell_deny():
+    """The out-of-project common dir's config and hooks/, for the sandbox's denyWrite.
+
+    git_common_write() grants that dir so git can write objects, refs and the index
+    there, which also made its config and hooks/ writable from the shell: a kit
+    installed in a monorepo's subfolder could have the agent set core.hooksPath in the
+    parent repo's .git/config with `>>`. Claude Code's own sandbox already refuses those
+    writes for a project's own .git, so this gives a monorepo or a linked worktree what a
+    plain repository has. denyWrite is a deny-within-allow, so the grant still covers the
+    rest of the dir, and `git config` there fails as it does in a plain repository.
+    """
+    common = git_common_outside()
+    if not common:
+        return []
+    return [common + "/config", common + "/hooks"]
 
 
 def git_common_edit_deny():
