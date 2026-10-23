@@ -245,6 +245,9 @@ assert_eq "1" "$(ignore_status "$TEMP_DIR" AGENTS.md)" \
   "git does not ignore AGENTS.md (Grok Build skips an ignored instruction file)"
 assert_eq "0" "$(ignore_status "$TEMP_DIR" .mcp.json)" \
   "...while the rest of the kit config stays ignored (.mcp.json)"
+# report-page.sh writes to the reports folder of the directory it is installed in.
+assert_eq "1" "$(grep -cxF '.agents/reports/' "$TEMP_DIR/.gitignore")" \
+  ".gitignore lists .agents/reports/ (report pages) in the local-only block"
 assert_no_dangling_refs "$TEMP_DIR" "no dangling .claude/ references in the installed tree"
 assert_eq "$BOTH_MODE_EXPECTED" "$(both_mode_files "$TEMP_DIR")" \
   "only the known both-mode files keep a .claude/ path (new ones need classifying)"

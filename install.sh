@@ -719,6 +719,9 @@ if ! grep -qF "# solana-ai-kit local-only" "$GITIGNORE"; then
 fi
 append_ignore "CLAUDE.local.md"
 append_ignore "$CONFIG_DIR/context/"
+# The pages bin/report-page.sh writes for /report and /decide, which can hold private
+# decisions. The folder also ignores itself, for projects that predate this line.
+append_ignore "$CONFIG_DIR/reports/"
 append_ignore ".env"
 append_ignore ".env.local"
 # memsearch's local store: a Milvus Lite DB plus a ~558 MB ONNX model, rebuilt from the

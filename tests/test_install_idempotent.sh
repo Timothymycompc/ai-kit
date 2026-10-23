@@ -59,6 +59,9 @@ assert_eq "1" "$EXT_DUPES" "No duplicate ext/ entries in .gitignore"
 LOCAL_DUPES=$(grep -c "CLAUDE.local.md" "$TEMP_DIR/.gitignore" | tr -d ' ')
 assert_eq "1" "$LOCAL_DUPES" "No duplicate CLAUDE.local.md entries in .gitignore"
 
+REPORTS_DUPES=$(grep -cxF ".claude/reports/" "$TEMP_DIR/.gitignore" | tr -d ' ')
+assert_eq "1" "$REPORTS_DUPES" "No duplicate .claude/reports/ entries in .gitignore"
+
 # --- Third install: CLAUDE.md now matches the kit's, so the backup of the user's copy must survive ---
 echo "[third install]"
 SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash "$REPO_ROOT/install.sh" "$TEMP_DIR" > "$QUIET_LOG" 2>&1 || quiet_fail "install.sh"

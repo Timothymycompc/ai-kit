@@ -58,6 +58,7 @@ assert_file_exists "$TEMP_DIR/.gitignore" ".gitignore exists"
 GITIGNORE_CONTENT="$(cat "$TEMP_DIR/.gitignore")"
 assert_contains "$GITIGNORE_CONTENT" ".claude/skills/ext/" ".gitignore contains ext/ entry"
 assert_contains "$GITIGNORE_CONTENT" "CLAUDE.local.md" ".gitignore contains CLAUDE.local.md entry"
+assert_eq "1" "$(grep -cxF '.claude/reports/' "$TEMP_DIR/.gitignore")" ".gitignore lists .claude/reports/ once (report pages stay on this machine)"
 assert_contains "$GITIGNORE_CONTENT" ".gitmodules" ".gitignore contains .gitmodules (config gitignored by default)"
 assert_contains "$GITIGNORE_CONTENT" ".mcp.json" ".gitignore contains .mcp.json (config gitignored by default)"
 assert_contains "$GITIGNORE_CONTENT" "solana-ai-kit config" ".gitignore has config markers for /commit-claude-config"
@@ -79,6 +80,11 @@ COMMITTED="$WORK/committed"; mkdir -p "$COMMITTED"; git -C "$COMMITTED" init -q
 sed '/# >>> solana-ai-kit config/,/# <<< solana-ai-kit config <<</d' "$TEMP_DIR/.gitignore" > "$COMMITTED/.gitignore"
 assert_eq "0" "$(ignore_status "$COMMITTED" CLAUDE.local.md)" \
   "...and still does once /commit-claude-config deletes the config block"
+# The pages bin/report-page.sh writes can hold private decisions: committing the config
+# must not commit them. Asked with no reports folder present, so its own .gitignore (which
+# report-page.sh writes) plays no part and the local-only line is what is tested.
+assert_eq "0" "$(ignore_status "$COMMITTED" .claude/reports/2026-01-02-090000-decisions-x.html)" \
+  "git ignores .claude/reports/ (report pages) once /commit-claude-config deletes the config block"
 
 # Check .claude/VERSION exists
 assert_file_exists "$TEMP_DIR/.claude/VERSION" ".claude/VERSION file exists"
