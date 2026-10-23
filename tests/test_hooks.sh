@@ -1441,6 +1441,20 @@ same "$M_FETCH" silent silent deny "npx -y x" "cat <<'EOF' | bash${NL}npx -y x${
 same "$M_FETCH" silent silent deny "npx -y x" "bash <<EOF${NL}npx -y x${NL}EOF" "$MUT_HDWHO"
 same "$M_FETCH" silent silent deny "npx -y x" "python3 - <<'EOF'${NL}import os; os.system('npx -y x')${NL}EOF" "$MUT_HDWHO"
 same "$M_FETCH" silent silent deny "npx -y x" "node - <<'EOF'${NL}require('child_process').execSync('npx -y x')${NL}EOF" "$MUT_HDWHO"
+# `<( … )` hands a body to the command before it as a file, and bash runs it; a
+# versioned interpreter name is the same interpreter.
+MUT_PROCSUB="$(mutant procsub lib-tokenize.awk 'if (ng > 1 && G[ng-1] ~ /<[ \t]*$/) {' 'if (0) {')" || MUT_PROCSUB=
+MUT_INTERPV="$(mutant interpv lib-tokenize.awk 'return (w ~ /^(python|pypy|php|ruby|perl|lua)[0-9.]*$/ || w == "node" || w == "nodejs" \' \
+  'return (w ~ /^(python|php|ruby|perl|lua)[23]?$/ || w == "node" || w == "node" \')" || MUT_INTERPV=
+for M in "$MUT_PROCSUB" "$MUT_INTERPV"; do
+  assert_eq "yes" "$([ -n "$M" ] && [ -d "$M/.claude/hooks" ] && echo yes || echo no)" "mutation fixture built: ${M##*/}"
+done
+same "$M_CHAIN" ask ask deny "$DA" "bash <(cat <<'EOF'${NL}$DA${NL}EOF${NL})" "$MUT_PROCSUB"
+same "$M_CHAIN" ask ask deny "$DA" "source <(cat <<'EOF'${NL}$DA${NL}EOF${NL})" "$MUT_PROCSUB"
+same "$M_EGRESS" deny deny deny "$UP" "bash < <(cat <<'EOF'${NL}$UP${NL}EOF${NL})" "$MUT_PROCSUB"
+quiet "$M_CHAIN" "diff <(cat <<'EOF'${NL}$DA${NL}EOF${NL}) notes.md"
+same "$M_CHAIN" ask ask deny "$DA" "python3.12 - <<'EOF'${NL}import os; os.system(\"$DA\")${NL}EOF" "$MUT_INTERPV"
+same "$M_FETCH" silent silent deny "npx -y x" "nodejs - <<'EOF'${NL}require('child_process').execSync('npx -y x')${NL}EOF" "$MUT_INTERPV"
 # A redirection is not a script file, and `-s` reads the program from stdin whatever
 # follows it. Read as an operand, each made the body data in all four guards.
 same "$M_CHAIN" ask ask deny "$DA" "bash 2>&1 <<'EOF'${NL}$DA${NL}EOF" "$MUT_HDREDIR"

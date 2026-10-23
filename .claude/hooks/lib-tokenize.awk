@@ -484,10 +484,10 @@ function kit_hd_ops(l, q,   i, L, c, top, k) {
 # Each includer defines hd_interp_line(w, l): what line l of a body interpreter w
 # runs becomes in the text the guard reads.
 
+# A versioned name is the same interpreter: python3.12, pypy3, php8.2, nodejs.
 function hd_interp(w) {
-  return (w == "python" || w == "python2" || w == "python3" || w == "node" || w == "deno" \
-       || w == "bun" || w == "perl" || w == "ruby" || w == "php" || w == "osascript" \
-       || w == "Rscript" || w == "lua" || w == "tclsh")
+  return (w ~ /^(python|pypy|php|ruby|perl|lua)[0-9.]*$/ || w == "node" || w == "nodejs" \
+       || w == "deno" || w == "bun" || w == "osascript" || w == "Rscript" || w == "tclsh")
 }
 function hd_shell(w) { return (is_shell(w) || w == "ash") }
 # hd_redir — how many words the redirection at T[i] spans: 1 with its target
@@ -528,7 +528,7 @@ function hd_inline_flag(w, t) {
 # value, which is then no script file: `node -r dotenv/config -`, `bash -o pipefail`.
 function hd_optarg(w, sh, t) {
   if (sh) return (t == "-o" || t == "+o" || t == "-O" || t == "+O" || t == "--rcfile" || t == "--init-file")
-  if (w == "node") return (t == "-r" || t == "--require" || t == "--import" || t == "--loader" \
+  if (w == "node" || w == "nodejs") return (t == "-r" || t == "--require" || t == "--import" || t == "--loader" \
                         || t == "--experimental-loader" || t == "-C" || t == "--conditions")
   if (w == "ruby") return (t == "-I" || t == "-r" || t == "-C")
   return (t ~ /^-[WX]$/)
@@ -570,14 +570,21 @@ function hd_inline(T, n, ci,   w, i) {
   return 0
 }
 # hd_consumer — the word that runs a heredoc opened between head and tail on one
-# line, or "" when its body is data.
-function hd_consumer(head, tail,   ns, S, ng, G, g, n, T, Q, ci) {
+# line, or "" when its body is data.  A heredoc inside `$( … )` is code when the
+# command it is spliced into runs its argument (`bash -c "$(cat <<'EOF'`), and
+# one inside `<( … )` when the command before it runs that file as a program
+# (`bash <(cat <<'EOF'`, `source <(…)`, `bash < <(…)`): bash runs both.
+function hd_consumer(head, tail,   ns, S, ng, G, g, n, T, Q, ci, w) {
   ns = split(split_cmd(head), S, "\001"); ng = split(S[ns], G, "\002")
   n = tokenize(G[ng], T, Q); ci = hd_cmd(T, n)
   if (ci <= n && hd_stdin_code(T, n, ci)) return base(T[ci])
   if (ng > 1 && G[ng-1] ~ /\$__X__[ \t]*$/) {
     n = tokenize(G[ng-1], T, Q); ci = hd_cmd(T, n)
     if (ci <= n && hd_inline(T, n, ci)) return base(T[ci])
+  }
+  if (ng > 1 && G[ng-1] ~ /<[ \t]*$/) {
+    n = tokenize(G[ng-1], T, Q); ci = hd_cmd(T, n); w = (ci <= n) ? base(T[ci]) : ""
+    if (hd_shell(w) || hd_interp(w) || w == "source" || w == ".") return w
   }
   ns = split(split_cmd(tail), S, "\001"); ng = split(S[1], G, "\002")
   for (g = 2; g <= ng; g++) {
