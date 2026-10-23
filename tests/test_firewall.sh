@@ -950,12 +950,15 @@ deny = (json.load(open(sys.argv[1])).get('permissions') or {}).get('deny') or []
 print(' '.join(r for r in deny if '.git/' in r and r.startswith('Edit(')) or 'none')" "$WORK/wt.$t.json" 2>/dev/null)" \
         "worktree '$WT_LABEL' at $t: no .git Edit rule (High only, even in a worktree)"
     done
-    for t in relaxed medium high; do
-      assert_eq "yes yes" "$(python3 -c "
+    # Below High the common dir stays shell-writable on purpose: shippability gate 4
+    # keeps a first-time `git submodule update --init` working in a linked worktree, and
+    # that writes submodule.<name>.url into the common config.
+    for t in relaxed medium; do
+      assert_eq "none" "$(python3 -c "
 import json, sys
 dw = ((json.load(open(sys.argv[1])).get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
-print(' '.join('yes' if sys.argv[2] + p in dw else 'no' for p in ('/config', '/hooks')))" "$WORK/wt.$t.json" "$COMMON" 2>/dev/null)" \
-        "worktree '$WT_LABEL' at $t: the sandbox denies shell writes to the common dir's config and hooks"
+print(' '.join(p for p in dw if p.startswith(sys.argv[2])) or 'none')" "$WORK/wt.$t.json" "$COMMON" 2>/dev/null)" \
+        "worktree '$WT_LABEL' at $t: no shell fence on the common dir, so submodule init keeps working"
     done
   done
   # Planted: the same High file with its absolute rules taken out, which is what the
@@ -972,41 +975,44 @@ PY
 fi
 
 # The kit installed in a monorepo's subfolder: the parent repository's .git is the common
-# dir, outside the project, so git_common_write() grants it and its config and hooks/
-# were writable from the shell. The sandbox now denies those two, at every tier it is on,
-# and leaves the rest of the grant alone. A plain repository gets no such entry: its .git
-# is inside the project, where Claude Code's own sandbox protects config and hooks/.
-echo "[a monorepo parent's .git: config and hooks fenced from the shell]"
+# dir, outside the project, so git_common_write() grants it to the shell. High denies its
+# config and hooks/ by absolute path, and that Edit deny reaches the sandbox as a write
+# deny too. Below High nothing does, deliberately, as for a linked worktree above. A plain
+# repository gets no absolute .git entry at any tier: its .git is inside the project.
+echo "[a monorepo parent's .git, and a plain repository]"
 MONO="$WORK/mono"
-if git init -q "$MONO" > "$WORK/mono.log" 2>&1 && mkdir -p "$MONO/app/.claude/bin"; then
+if git init -q "$MONO" > "$WORK/mono.log" 2>&1 && mkdir -p "$MONO/app/.claude/bin" && git init -q "$WORK/plainrepo" >> "$WORK/mono.log" 2>&1 \
+   && mkdir -p "$WORK/plainrepo/.claude/bin"; then
   MCOMMON="$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$MONO/.git")"
-  cp "$REPO_ROOT/.claude/settings.json" "$SECURITY" "$MONO/app/.claude/"
-  cp "$FIREWALL" "$MONO/app/.claude/bin/firewall.sh"
+  PCOMMON="$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$WORK/plainrepo/.git")"
+  for d in "$MONO/app" "$WORK/plainrepo"; do
+    cp "$REPO_ROOT/.claude/settings.json" "$SECURITY" "$d/.claude/"
+    cp "$FIREWALL" "$d/.claude/bin/firewall.sh"
+  done
   for t in off relaxed medium high; do
-    (cd "$MONO/app" && CLAUDE_PROJECT_DIR="$MONO/app" bash .claude/bin/firewall.sh apply "$t") \
-      > "$WORK/mono-apply.log" 2>&1 || true
+    (cd "$MONO/app" && CLAUDE_PROJECT_DIR="$MONO/app" bash .claude/bin/firewall.sh apply "$t") > "$WORK/mono-apply.log" 2>&1 || true
     cp "$MONO/app/.claude/settings.json" "$WORK/mono.$t.json"
+    (cd "$WORK/plainrepo" && CLAUDE_PROJECT_DIR="$WORK/plainrepo" bash .claude/bin/firewall.sh apply "$t") > "$WORK/plain-apply.log" 2>&1 || true
+    cp "$WORK/plainrepo/.claude/settings.json" "$WORK/plainrepo.$t.json"
   done
-  for t in relaxed medium high; do
-    assert_eq "yes yes yes" "$(python3 -c "
-import json, sys
-fs = (json.load(open(sys.argv[1])).get('sandbox') or {}).get('filesystem') or {}
-dw, aw = fs.get('denyWrite') or [], fs.get('allowWrite') or []
-print(' '.join('yes' if c else 'no' for c in (sys.argv[2] + '/config' in dw, sys.argv[2] + '/hooks' in dw, sys.argv[2] in aw)))" "$WORK/mono.$t.json" "$MCOMMON" 2>/dev/null)" \
-      "monorepo at $t: the parent's .git config and hooks are denied, inside a grant that still covers the dir"
-  done
-  python3 - "$WORK/mono.relaxed.json" "$WORK/planted-mono.json" "$MCOMMON" <<'PY'
+  assert_eq "none" "$(python3 "$WORK/edit_deny.py" "$WORK/mono.high.json" denied \
+    "$MCOMMON/config" "$MCOMMON/hooks" "$MCOMMON/hooks/pre-commit" 2>&1)" \
+    "monorepo at high: the parent's .git config and hooks are denied by absolute path"
+  for t in off relaxed medium; do
+    assert_eq "none" "$(python3 -c "
 import json, sys
 s = json.load(open(sys.argv[1]))
-fs = s["sandbox"]["filesystem"]
-fs["denyWrite"] = [p for p in fs["denyWrite"] if not p.startswith(sys.argv[3])]
-json.dump(s, open(sys.argv[2], "w"))
-PY
-  assert_eq "no no" "$(python3 -c "
+deny = (s.get('permissions') or {}).get('deny') or []
+dw = ((s.get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
+print(' '.join([r for r in deny if sys.argv[2] in r] + [p for p in dw if p.startswith(sys.argv[2])]) or 'none')" "$WORK/mono.$t.json" "$MCOMMON" 2>/dev/null)" \
+      "monorepo at $t: no fence on the parent's .git (submodule init keeps working)"
+  done
+  for t in off relaxed medium high; do
+    assert_eq "none" "$(python3 -c "
 import json, sys
-dw = ((json.load(open(sys.argv[1])).get('sandbox') or {}).get('filesystem') or {}).get('denyWrite') or []
-print(' '.join('yes' if sys.argv[2] + p in dw else 'no' for p in ('/config', '/hooks')))" "$WORK/planted-mono.json" "$MCOMMON" 2>/dev/null)" \
-    "planted: without the fence the parent's config and hooks are writable, and the check says so"
+print(' '.join(x for x in [json.dumps(json.load(open(sys.argv[1])))] if sys.argv[2] in x) and 'absolute .git path' or 'none')" "$WORK/plainrepo.$t.json" "$PCOMMON" 2>/dev/null)" \
+      "plain repository at $t: no absolute .git path anywhere in the generated file"
+  done
 else
   TOTAL=$((TOTAL + 1)); FAIL=$((FAIL + 1))
   echo "  FAIL: could not build the monorepo fixture: $(tail -3 "$WORK/mono.log")"
