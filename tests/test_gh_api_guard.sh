@@ -402,8 +402,11 @@ flips "the gh api anchor removed, so an echoed example fires" "$M" relaxed \
 flips "...and so does a curl to the same path" "$M" relaxed \
   "curl -s -X PUT https://api.example.com/repos/O/R/actions/secrets/K" PASS DENY
 
-# 6. Reach: sh -c unwrapped for this pass, and `command` looked past.
+# 6. Reach: sh -c unwrapped for this pass, and `command` looked past. Two readers
+# reach inside `sh -c` now (unwrap and kit_expand_code), so the control plants
+# both out.
 M="$(mutate 'ngstg = unwrap(STG, nstg)' 'ngstg = nstg')"
+[ -z "$M" ] || mutate_file "$M/.claude/hooks/egress-guard.awk" 'ngst = kit_expand_code(GST, ngst)' 'ngst = ngst' || M=
 flips "sh -c no longer unwrapped for gh api" "$M" relaxed \
   "sh -c \"gh api -X PUT repos/O/R/actions/secrets/K\"" DENY PASS
 M="$(mutate_lib 'c == "command" ||' 'c == "command-NOT" ||')"
