@@ -110,6 +110,9 @@ function kit_wrapper_optarg(b, f) {
   if (b == "stdbuf") return (f ~ /^-[ioe]$/ || kit_long_arg(f, "input output error"))
   if (b == "exec") return (f == "-a")
   if (b == "time") return (f ~ /^-[fo]$/ || kit_long_arg(f, "format output"))
+  if (b == "ionice") return (f ~ /^-[cnpPu]$/ || kit_long_arg(f, "class classdata pid pgid uid"))
+  if (b == "watch") return (f ~ /^-[nq]$/ || kit_long_arg(f, "interval equexit"))
+  if (b == "flock") return (f ~ /^-[wE]$/ || kit_long_arg(f, "wait timeout conflict-exit-code"))
   return 0
 }
 
@@ -128,9 +131,10 @@ function kit_long_arg(f, opts,   n, O, i) {
 # leaves `timeout 5 npx -y evil` with "5" in command position, so the gate never
 # sees npx at all.  Only callers passing operands=1 to cmdword_x get this.
 #
-# Deliberately narrow.  `flock -w 5 f cmd` still misses, because skipping every
-# non-flag token until something looks like a command would walk past the command
-# itself on a wrapper nobody models.
+# Deliberately narrow: one operand, and only where the wrapper's is known.  Skipping
+# every non-flag token until something looks like a command would walk past the
+# command itself on a wrapper nobody models.  `flock -w 5 f cmd` reaches cmd
+# because -w has a row in kit_wrapper_optarg.
 function kit_wrapper_operand(w, t) {
   if (w == "timeout" && t ~ /^[0-9]/) return 1
   if (w == "flock" && t !~ /^-/) return 1
@@ -424,6 +428,71 @@ function kit_unreserve(st,   lead) {
   return lead st
 }
 
+# kit_unwrap — st without what stands between a statement's start and its
+# command, for the patterns that anchor on the command word: the reserved words,
+# a `function NAME` or `coproc NAME {` header, and the wrappers that run the next
+# word as a command (`nice -n 5`, `timeout 5`, `env FOO=1`, `command`, `sudo -u
+# me`) with their options and operands.  The indent and any VAR= assignment are
+# kept, since the patterns read those.  Claude Code strips timeout, time, nice,
+# nohup, stdbuf, command and builtin before matching a rule, so `nice npm
+# publish` met `Bash(npm *)` in permissions.allow and nothing else; read here as
+# it was, the publish pattern never saw npm in command position.  A text with
+# nothing to drop comes back unchanged.
+function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j) {
+  lead = st; sub(/[^ \t].*$/, "", lead)
+  n = split(substr(st, length(lead) + 1), A, /[ \t]+/)
+  i = 1; keep = ""
+  while (i <= n) {
+    w = A[i]
+    if (w == "") { i++; continue }
+    if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { keep = keep w " "; i++; continue }
+    # `coproc NAME { cmd; }` names the coprocess; the command is in the braces.
+    if (w == "coproc" && i + 2 <= n && A[i + 2] == "{") { i += 2; continue }
+    if (kit_reserved(w)) { i++; continue }
+    if (w == "function" && i < n) { i += 2; continue }
+    cur = base(w)
+    if (!is_wrapper(cur) || cur == "eval") break
+    i++
+    while (i <= n) {
+      if (A[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { keep = keep A[i] " "; i++; continue }
+      if (A[i] == "--") { i++; break }
+      if (A[i] ~ /^-/) { if (i < n && kit_wrapper_optarg(cur, A[i])) i++; i++; continue }
+      break
+    }
+    # One operand at most, as cmdword_x takes it: flock's lock file, timeout's
+    # duration.  Read as a loop, every word after `flock f` was an operand.
+    if (i <= n && kit_wrapper_operand(cur, A[i])) i++
+  }
+  if (i == 1) return st
+  out = ""
+  for (j = i; j <= n; j++) if (A[j] != "") out = out (out == "" ? "" : " ") A[j]
+  return lead keep out
+}
+
+# kit_stmt_sep — sep as the text after statement st should carry it, read from
+# quote stack q (codeat as kit_qscan takes it).  A `)` in code that does not
+# close a `$(` ends a case pattern or a function header, so a `;` is added after
+# it and the command that follows starts a statement for the anchored patterns:
+# `case x in a) anchor deploy …;;` and `f() { npm publish; }` were silent.
+# After a subshell's `)` no command can follow, so the `;` changes nothing there.
+# KP is the stack of the parentheses open in code, `$` for a substitution; the
+# caller empties it at the start of a text.  KQ_PREV and KQ_COMMENT are left as
+# they were, so the caller's own scan of the same text is undisturbed.
+function kit_stmt_sep(st, sep, q, codeat,   sp, sc, qq, top, code, esc) {
+  if (sep != "(" && sep != ")" && sep != "$(") return sep
+  sp = KQ_PREV; sc = KQ_COMMENT
+  qq = kit_qscan(st, q, codeat); top = substr(qq, length(qq))
+  code = !KQ_COMMENT && kit_code_top(qq)
+  esc = match(st, /\\+$/) && RLENGTH % 2 == 1
+  KQ_PREV = sp; KQ_COMMENT = sc
+  if (esc) return sep
+  if (sep == "$(") { if (!KQ_COMMENT && top != "s" && top != "S") KP = KP "$"; return sep }
+  if (!code) return sep
+  if (sep == "(") { KP = KP "("; return sep }
+  top = substr(KP, length(KP)); KP = substr(KP, 1, length(KP) - 1)
+  return (top == "$") ? sep : sep ";"
+}
+
 # kit_shell_text — raw as the shell reads it, for the guards that match a regex
 # over the text rather than walking tokens.  Every backslash-newline outside '…'
 # is joined, as the shell joins it before splitting words; with kw set, the
@@ -437,10 +506,10 @@ function kit_unreserve(st,   lead) {
 # the shell's.  Only an operator the shell reads opens one (kit_hd_ops), quoted
 # delimiter or not: a `<<` inside quotes or a comment is text, and reading it as
 # an opener switched the normalising off for every line after `echo '<<X'`.
-function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t, s, d, rest, st, sep, cmd, np, j) {
+function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t, s, d, rest, st, sep, cmd, np, j, mark) {
   if (!kw && index(raw, "\\\n") == 0) return raw
   nl = split(raw, L, "\n")
-  out = ""; first = 1; q = ""; nd = 0; di = 0
+  out = ""; first = 1; q = ""; nd = 0; di = 0; KP = ""
   for (k = 1; k <= nl; k++) {
     l = L[k]
     if (di < nd) {
@@ -473,8 +542,9 @@ function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t,
             rest = substr(rest, RSTART + RLENGTH)
           } else { st = rest; sep = ""; rest = "" }
           cmd = !KQ_COMMENT && kit_code_top(q)
+          mark = kit_stmt_sep(st, sep, q, 0)
           q = kit_qscan(st sep, q, 0)
-          l = l (cmd ? kit_unreserve(st) : st) sep
+          l = l (cmd ? kit_unwrap(st) : st) mark
         }
       }
     }

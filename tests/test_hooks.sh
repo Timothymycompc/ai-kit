@@ -1235,4 +1235,58 @@ same "$M_FETCH" silent silent deny "npx -y x" "echo '<<X'${NL}if true; then npx 
 same "$M_FETCH" silent silent deny "cargo install x" "echo '<<X'${NL}cargo $BS${NL}install x" "$MUT_HDQ"
 quiet "$M_EGRESS" "cat > notes.md <<'EOF'${NL}if true; then npm publish; fi${NL}EOF"
 
+# --- The anchored gates read a statement start, and a case arm, a function body,
+# --- a coproc and a wrapper Claude Code strips all hid one. Each spelling gets its
+# --- bare form's verdict; each control plants the mechanism back out.
+echo "[case arms, function bodies, coproc and wrappers: the anchored gates]"
+MUT_PAREN="$(mutant paren lib-tokenize.awk 'return (top == "$") ? sep : sep ";"' 'return sep')" || MUT_PAREN=
+MUT_UNWRAP="$(mutant unwrap lib-tokenize.awk 'l = l (cmd ? kit_unwrap(st) : st) mark' 'l = l (cmd ? kit_unreserve(st) : st) mark')" || MUT_UNWRAP=
+MUT_HDRFN="$(mutant hdrfn lib-tokenize.awk 'if (w == "function" && i < n) { i += 2; continue }' 'if (0) { }' \
+  onchain-guard.awk 'if (cmd && w == "function" && i < n) { i += 2; continue }' 'if (0) { }')" || MUT_HDRFN=
+MUT_COPROC="$(mutant coproc lib-tokenize.awk 'if (w == "coproc" && i + 2 <= n && A[i + 2] == "{") { i += 2; continue }' 'if (0) { }' \
+  onchain-guard.awk 'if (cmd && w == "coproc" && i + 2 <= n && A[i + 2] == "{") { i += 2; continue }' 'if (0) { }')" || MUT_COPROC=
+same "$M_CHAIN" ask ask deny "$DA" "case x in a) $DA;; esac" "$MUT_PAREN"
+same "$M_CHAIN" ask ask deny "$DA" "case x in (a) $DA;; esac" "$MUT_PAREN"
+same "$M_CHAIN" ask ask deny "$DA" "f() { $DA; }; f" "$MUT_PAREN"
+same "$M_CHAIN" ask ask deny "$DA" "function f { $DA; }; f" "$MUT_HDRFN"
+same "$M_CHAIN" ask ask deny "$DA" "coproc X { $DA; }" "$MUT_COPROC"
+same "$M_EGRESS" ask deny deny "npm publish" "case x in a) npm publish;; esac" "$MUT_PAREN"
+same "$M_EGRESS" ask deny deny "npm publish" "f() { npm publish; }; f" "$MUT_PAREN"
+same "$M_EGRESS" ask deny deny "npm publish" "function f { npm publish; }; f" "$MUT_HDRFN"
+same "$M_EGRESS" ask deny deny "npm publish" "coproc X { npm publish; }" "$MUT_COPROC"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "case x in a) git push --force origin main;; esac" "$MUT_PAREN"
+# Claude Code strips timeout, time, nice, nohup, stdbuf, command and builtin before it
+# matches a rule, so each of these met an allow rule and nothing else.
+same "$M_EGRESS" ask deny deny "npm publish" "nice npm publish" "$MUT_UNWRAP"
+same "$M_EGRESS" ask deny deny "npm publish" "timeout 5 npm publish" "$MUT_UNWRAP"
+same "$M_EGRESS" ask deny deny "npm publish" "env NODE_ENV=production npm publish" "$MUT_UNWRAP"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "nohup git push --force origin main" "$MUT_UNWRAP"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "time git push --force origin main" "$MUT_UNWRAP"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "stdbuf -o0 git push --force origin main" "$MUT_UNWRAP"
+same "$M_EGRESS" silent ask deny "gh pr merge 12" "command gh pr merge 12" "$MUT_UNWRAP"
+# A wrapper takes one operand at most (flock's lock file), and the options that take
+# a value have rows: `flock -w 5`, `ionice -c 3`, `watch -n 5`. Read otherwise, the
+# value or the whole command landed where the command word goes.
+MUT_OPERAND="$(mutant operand lib-tokenize.awk 'if (i <= n && kit_wrapper_operand(cur, A[i])) i++' 'while (i <= n && kit_wrapper_operand(cur, A[i])) i++')" || MUT_OPERAND=
+MUT_ROWS="$(mutant rows lib-tokenize.awk 'if (b == "ionice") return' 'if (0) return' \
+  lib-tokenize.awk 'if (b == "watch") return' 'if (0) return' lib-tokenize.awk 'if (b == "flock") return' 'if (0) return')" || MUT_ROWS=
+same "$M_EGRESS" ask deny deny "npm publish" "flock /tmp/l npm publish" "$MUT_OPERAND"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "flock -w 5 /tmp/l git push --force origin main" "$MUT_ROWS"
+same "$M_EGRESS" ask deny deny "npm publish" "ionice -c 3 npm publish" "$MUT_ROWS"
+same "$M_EGRESS" ask deny deny "npm publish" "watch -n 5 npm publish" "$MUT_ROWS"
+same "$M_CHAIN" ask ask deny "$DA" "ionice -c 3 $DA" "$MUT_ROWS"
+same "$M_CHAIN" ask ask deny "$DA" "flock -w 5 /tmp/l $DA" "$MUT_ROWS"
+quiet "$M_EGRESS" "flock /tmp/l make build"
+quiet "$M_EGRESS" "ionice -c 3 make"
+# A `)` that closes a substitution, or one that is text, starts nothing.
+quiet "$M_EGRESS" 'echo "a) npm publish"'
+quiet "$M_EGRESS" 'echo a\) npm publish'
+quiet "$M_EGRESS" 'echo $(date) npm publish'
+quiet "$M_EGRESS" 'git commit -m "case x in a) npm publish;; esac"'
+quiet "$M_EGRESS" '[[ $x =~ ^(a)$ ]] && echo ok'
+quiet "$M_CHAIN" 'case $net in mainnet) echo anchor deploy;; esac'
+for c in "nice make build" "timeout 60 cargo test" "env RUST_LOG=debug anchor test" "fn() { echo hi; }; fn"; do
+  quiet "$M_EGRESS" "$c"
+done
+
 print_summary
