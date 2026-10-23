@@ -27,10 +27,9 @@
 #   - the delimiter line arrives.  An unterminated body counts.
 function kit_wrapper(c) { return (is_wrapper(c) || is_shell(c)) }
 function kit_heredoc_is_code(c) { return 1 }
-function code_line(l,   t, np, s, d, hs, HS, hn, HT, HQ, hw, x, wascont, fw) {
+function code_line(l,   np, hs, HS, hn, HT, HQ, hw, x, wascont, fw) {
   if (delim != "") {
-    t = l; gsub(/^[ \t]+|[ \t]+$/, "", t)
-    if (t == delim) { delim = ""; SIZE += length(l) + 1; return }
+    if (kit_hd_end(l, delim, dash)) { delim = ""; SIZE += length(l) + 1; return }
     if (!exempt) { SIZE += length(l) + 1; return }
     pend += length(l) + 1
     if (!quoted && (index(l, "$(") || index(l, "`"))) { exempt = 0; SIZE += pend; pend = 0 }
@@ -42,21 +41,17 @@ function code_line(l,   t, np, s, d, hs, HS, hn, HT, HQ, hw, x, wascont, fw) {
   # Ending in a backslash outside '…' continues the line, as the shell reads it.
   wascont = cont; cont = (l ~ /\\$/ && q !~ /s$/)
   if (np == 0) return
-  s = substr(l, KH_P[1]); quoted = 0
-  if (match(s, "^" HD_DQ) || match(s, "^" HD_SQ)) quoted = 1
-  else if (!match(s, "^" HD_BARE)) return
-  d = substr(s, 1, RLENGTH); sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
+  # A delimiter the shared parser cannot read is no opener, so the body counts.
+  if (!kit_hd_delim(substr(l, KH_P[1]))) return
+  quoted = KHD_QUOTED; dash = KHD_DASH
   hs = split(split_cmd(substr(l, 1, KH_P[1] - 1)), HS, /\001/)
   hs = split(HS[hs], HS, /\002/); hn = tokenize(HS[hs], HT, HQ)
   fw = first_word(HT, hn); hw = (fw <= hn) ? base(HT[fw]) : ""
   x = l; gsub(/\|\|/, "", x)
   exempt = (np == 1 && !cont && !wascont && KH_S[1] == "" && (hw == "cat" || hw == "tee") && x !~ /[|(`]/)
-  delim = d; pend = 0
+  delim = KHD_DELIM; pend = 0
 }
 BEGIN {
-  HD_DQ = "<<-?[ \t]*\"[A-Za-z_][A-Za-z0-9_]*\""
-  HD_SQ = "<<-?[ \t]*" SQ "[A-Za-z_][A-Za-z0-9_]*" SQ
-  HD_BARE = "<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*"
   LIMIT = ENVIRON["KIT_CODE_LIMIT"] + 0
   if (LIMIT < 1) LIMIT = 32768
   LINES = ENVIRON["KIT_LINE_LIMIT"] + 0

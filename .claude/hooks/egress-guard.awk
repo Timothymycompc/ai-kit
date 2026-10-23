@@ -822,9 +822,6 @@ BEGIN {
   KIT_CWD = ENVIRON["KIT_CWD"]; if (KIT_CWD == "") KIT_CWD = "."
   MAXCLASS = ENVIRON["KIT_MAXCLASS"] + 0
   if (MAXCLASS < 1) MAXCLASS = 1
-  HD_DQ = "<<-?[ \t]*\"[A-Za-z_][A-Za-z0-9_]*\""
-  HD_SQ = "<<-?[ \t]*" SQ "[A-Za-z_][A-Za-z0-9_]*" SQ
-  HD_BARE = "<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*"
   # The code-executing config keys, in their canonical spellings so the set a
   # reader checks against the docs is the set the code compares.  Matched
   # lowercased; `alias.*` means every variable in the section.
@@ -847,31 +844,36 @@ END {
   # Exception: an UNQUOTED delimiter feeding a shell or interpreter is code.  The
   # command it feeds is the one the head's last statement ends on, so neither
   # `cd x; bash <<EOF` nor `if true; then bash <<EOF` hides the shell; and a head
-  # continued from the line before is one head, since raw is joined first.
-  text = ""; delim = ""; hdq = ""
+  # continued from the line before is one head, since raw is joined first.  The
+  # delimiter is read by the shared kit_hd_delim (so a partly quoted delimiter is
+  # read whole) and the body end by kit_hd_end.  An unquoted body that is data
+  # still runs its `$( … )` and `` ` … ` `` across lines, so those are kept
+  # (kit_hd_subst) and fed to the gates: a `$(git config core.hooksPath …)` or a
+  # `$(curl -d @.env …)` written into a file is still run while the file is written.
+  text = ""; delim = ""; hdsub = 0; hdq = ""
   nl = split(kit_shell_text(raw, 0), L, "\n")
   for (k = 1; k <= nl; k++) {
     l = L[k]
     if (delim != "") {
-      t = l; gsub(/^[ \t]+|[ \t]+$/, "", t)
-      if (t == delim) delim = ""
+      if (kit_hd_end(l, delim, hddash)) {
+        if (hdsub) { hss = kit_hd_subst_flush(); if (hss != "") text = text hss "\n" }
+        delim = ""; hdsub = 0; continue
+      }
+      if (hdsub) { hss = kit_hd_subst(l); if (hss != "") text = text hss "\n" }
       continue
     }
     # Only an operator the shell reads opens a body (kit_hd_ops): `echo '<<X'`
     # is an argument, and the lines after it are still commands.
-    hdn = kit_hd_ops(l, hdq); hdq = KH_QEND; RSTART = 0
-    for (hdj = 1; hdj <= hdn && RSTART == 0; hdj++) {
-      hdat = KH_P[hdj]; hds = substr(l, hdat); quoted = 0
-      if (match(hds, "^" HD_DQ) || match(hds, "^" HD_SQ)) quoted = 1
-      else if (!match(hds, "^" HD_BARE)) RSTART = 0
-      if (RSTART > 0) RSTART += hdat - 1
-    }
-    if (RSTART > 0) {
-      d = substr(l, RSTART, RLENGTH)
-      sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
-      hs = split(split_cmd(substr(l, 1, RSTART - 1)), HS, "\001"); hd = HS[hs]
+    hdn = kit_hd_ops(l, hdq); hdq = KH_QEND; hdat = 0
+    for (hdj = 1; hdj <= hdn && hdat == 0; hdj++) if (kit_hd_delim(substr(l, KH_P[hdj]))) hdat = KH_P[hdj]
+    if (hdat > 0) {
+      hs = split(split_cmd(substr(l, 1, hdat - 1)), HS, "\001"); hd = HS[hs]
       hs = split(hd, HS, "\002"); hn = tokenize(HS[hs], HT); hw = firstword(HT, hn)
-      if (quoted || !(is_shell(hw) || is_interp(hw))) delim = d
+      if (KHD_QUOTED || !(is_shell(hw) || is_interp(hw))) {
+        delim = KHD_DELIM; hddash = KHD_DASH
+        hdsub = !KHD_QUOTED
+        if (hdsub) kit_hd_subst_reset()
+      }
     }
     text = text l "\n"
   }

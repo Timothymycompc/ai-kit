@@ -43,7 +43,6 @@
 
 BEGIN {
   SQ = sprintf("%c", 39)
-  KIT_HDRE = "<<-?[ \t]*[\"" SQ "]?[A-Za-z_][A-Za-z0-9_]*"
 }
 
 # ---------------------------------------------------------------- small predicates
@@ -295,6 +294,137 @@ function kit_expand_code(ST, nst,   q, n0, ng, G, g, n, T, p, ns, S, k) {
 
 # ---------------------------------------------------------------- heredocs
 
+# kit_hd_delim — the delimiter word at s, which begins at a `<<` an operator scan
+# found.  bash reads the whole word, quote-removes it, and does NOT expand the body
+# if ANY part of the word was quoted (a single quote, a double quote, or a
+# backslash).  Every reader used to take the delimiter from a regex that stopped at
+# the first non-identifier byte, so a quote inside the word (`<<E'O'F`), a dash or
+# dot (`<<END-OF`, `<<END.TXT`), or an unquoted run after a quoted one (`<<"EOF"x`)
+# produced a truncated delimiter that no body line ever matched: the body ran away
+# and swallowed every command after it, a mainnet deploy at High among them.  This
+# reads the word the way bash's tokenizer does.  Sets:
+#   KHD_DELIM   the quote-removed delimiter
+#   KHD_QUOTED  1 when the body is NOT expanded (any part of the word was quoted)
+#   KHD_DASH    1 for `<<-`, which strips leading TABS from the body and the
+#               terminator line (only tabs, and only with the dash — measured)
+#   KHD_LEN     bytes of s consumed, the operator through the end of the word, so a
+#               caller can read what follows the delimiter (`cat <<EOF | sh`)
+# Returns 1 when s opens a heredoc, 0 when it does not.  As every reader always has,
+# a word whose first quote-removed character is not [A-Za-z_] is treated as no
+# opener: that keeps the verdicts on `(( a << b ))` and `(( a << 2 ))` arithmetic,
+# where `<<` is a left shift, exactly where they were, and confines this change to
+# the shapes above.  The caller's operator scan has already checked that this `<<`
+# is outside quotes and comments and is not a `<<<` here-string.
+function kit_hd_delim(s,   i, L, c, delim, quoted, dash, st, j) {
+  if (substr(s, 1, 2) != "<<") { KHD_LEN = 0; return 0 }
+  i = 3; dash = 0
+  if (substr(s, 3, 1) == "-") { dash = 1; i = 4 }
+  L = length(s)
+  while (i <= L && (substr(s, i, 1) == " " || substr(s, i, 1) == "\t")) i++
+  # The word is built from whole runs, never a byte at a time: appending a byte to
+  # a growing string copies it, and a 30 KB delimiter built that way cost seconds.
+  delim = ""; quoted = 0; st = i
+  while (i <= L) {
+    c = substr(s, i, 1)
+    if (c == SQ) {                                   # '…' is literal and quotes the body
+      delim = delim substr(s, st, i - st); quoted = 1
+      j = i + 1; while (j <= L && substr(s, j, 1) != SQ) j++
+      delim = delim substr(s, i + 1, j - i - 1); i = j + 1; st = i; continue
+    }
+    if (c == "\"") {                                 # "…" too; \" \\ \$ \` are its escapes
+      delim = delim substr(s, st, i - st); quoted = 1
+      j = i + 1; st = j
+      while (j <= L && (c = substr(s, j, 1)) != "\"") {
+        if (c == "\\" && j < L && index("\"\\$`", substr(s, j + 1, 1))) {
+          delim = delim substr(s, st, j - st); st = j + 1; j += 2; continue
+        }
+        j++
+      }
+      delim = delim substr(s, st, j - st); i = j + 1; st = i; continue
+    }
+    if (c == "\\") {                                 # \x outside quotes is x, and quotes
+      delim = delim substr(s, st, i - st) substr(s, i + 1, 1); quoted = 1
+      i += 2; st = i; continue
+    }
+    # An unquoted word character.  The word ends at an unquoted blank or a shell
+    # metacharacter, as bash ends a redirection target word.  A `\r` is NOT one:
+    # bash keeps it, so a CRLF line's `cat <<EOF` has the delimiter `EOF\r` and the
+    # body ends at the line `EOF\r`.  Stopping at it left a delimiter no CRLF line
+    # matched, and the body ran away over the command bash runs next — a mainnet
+    # deploy after `EOF\r` was silent in every guard (measured, on main too).
+    if (c == " " || c == "\t" || c == "\n" || c == ";" || c == "&" \
+        || c == "|" || c == "(" || c == ")" || c == "<" || c == ">") break
+    i++
+  }
+  if (i > L + 1) i = L + 1
+  delim = delim substr(s, st, i - st)
+  if (delim == "" || substr(delim, 1, 1) !~ /[A-Za-z_]/) { KHD_LEN = 0; return 0 }
+  KHD_DELIM = delim; KHD_QUOTED = quoted; KHD_DASH = dash; KHD_LEN = i - 1
+  return 1
+}
+
+# kit_hd_end — does body line l end a heredoc with delimiter delim?  bash compares
+# the line to the delimiter exactly; `<<-` first strips leading TABS (only tabs, not
+# spaces) from the line.  The readers once trimmed all surrounding whitespace, which
+# ended the body one line early on an indented or trailing-space terminator and let a
+# second, unterminated heredoc after it swallow a gated command.  A `\r` is left on,
+# as bash leaves it, so an `EOF\r` in a body that is otherwise LF does not terminate
+# and a CRLF document is copied whole rather than read as commands.
+function kit_hd_end(l, delim, dash,   t) {
+  t = l
+  if (dash) sub(/^\t+/, "", t)
+  return (t == delim)
+}
+
+# kit_hd_subst — the command substitutions an UNQUOTED heredoc body still runs, as
+# statements a guard that anchors on a statement start can read.  bash expands an
+# unquoted body, so a `$( … )`, `$(( … ))` or `` ` … ` `` in it runs while the body
+# is written — across body lines too, which the per-line reader this replaces missed:
+# a `$(` that opened on one line and closed on a later one hid a mainnet deploy from
+# onchain-guard.  A quoted body expands nothing and never calls this.  Stateful over a
+# body: kit_hd_subst_reset() clears the carry before one begins, kit_hd_subst(l)
+# returns the `; $( … )` fragments that CLOSE on line l (an opener still unclosed is
+# carried to the next line, bash's body newline becoming a `;` so its statements stay
+# separate), and kit_hd_subst_flush() emits an opener the body ended still inside.
+# A backtick is rewritten to `$( … )`, the form the existing readers emitted.
+#
+# Quotes are literal in the body itself — bash expands `it's $(cmd)` — so only a
+# backslash escapes there.  Inside `$( … )` the text is a command line again, so a
+# `)` inside '…' or "…" closes nothing: read naively, `$(echo ')'; npx -y x)` ended
+# at the quoted paren and the fetch after it was never seen.  That quote state
+# carries across lines with the rest (KHS_Q).  Text is copied in whole runs, a line
+# at a time, not a byte at a time, so the cost stays linear in the body.
+function kit_hd_subst_reset() { KHS_IN = 0; KHS_DEPTH = 0; KHS_Q = ""; KHS_BUF = "" }
+function kit_hd_subst(l,   out, i, L, c, st) {
+  out = ""; L = length(l); st = 1
+  for (i = 1; i <= L; i++) {
+    c = substr(l, i, 1)
+    if (KHS_IN == 0) {
+      if (c == "\\") { i++; continue }
+      if (substr(l, i, 2) == "$(") { KHS_IN = 1; KHS_DEPTH = 1; KHS_Q = ""; KHS_BUF = ""; i++; st = i + 1; continue }
+      if (c == "`") { KHS_IN = 2; KHS_BUF = ""; st = i + 1 }
+      continue
+    }
+    if (KHS_IN == 1) {                                # inside $( … ); $(( … )) balances here too
+      if (KHS_Q == SQ) { if (c == SQ) KHS_Q = ""; continue }
+      if (c == "\\") { i++; continue }
+      if (KHS_Q == "\"") { if (c == "\"") KHS_Q = ""; continue }
+      if (c == SQ || c == "\"") KHS_Q = c
+      else if (c == "(") KHS_DEPTH++
+      else if (c == ")" && --KHS_DEPTH == 0) { out = out "; $(" KHS_BUF substr(l, st, i - st) ")"; KHS_IN = 0 }
+      continue
+    }
+    if (c == "\\") { i++; continue }                  # inside ` … `
+    if (c == "`") { out = out "; $(" KHS_BUF substr(l, st, i - st) ")"; KHS_IN = 0 }
+  }
+  if (KHS_IN != 0) KHS_BUF = KHS_BUF substr(l, st) ";"
+  return out
+}
+function kit_hd_subst_flush(   out) {
+  if (KHS_IN == 0) return ""
+  out = "; $(" KHS_BUF ")"; KHS_IN = 0; return out
+}
+
 # kit_hd_ops — the `<<` heredoc operators the shell reads in l, starting in quote
 # stack q: KH_P[i] is where the i-th starts and KH_S[i] the stack there; returns
 # the count, and leaves the stack at the end of l in KH_QEND.  A `<<` inside '…'
@@ -333,35 +463,36 @@ function kit_hd_ops(l, q,   i, L, c, top, k) {
 # what is left.  A document that merely names a gated command or a credential
 # path must never fire; writing one is not running it.
 #
-# One exception: an UNQUOTED delimiter feeding something that executes its input
-# is code, not prose, so that body is kept and inspected.  The caller decides
-# what executes its input, via kit_heredoc_is_code.
-function strip_heredocs(raw,   text, delim, nl, L, k, l, t, quoted, d, head, hn, HT, HQ, hw, HD_DQ, HD_SQ, HD_BARE, q, np, j, at, s) {
-  HD_DQ = "<<-?[ \t]*\"[A-Za-z_][A-Za-z0-9_]*\""
-  HD_SQ = "<<-?[ \t]*" SQ "[A-Za-z_][A-Za-z0-9_]*" SQ
-  HD_BARE = "<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*"
-  text = ""; delim = ""; q = ""
+# Two exceptions.  An UNQUOTED delimiter feeding something that executes its input
+# is code, not prose, so that body is kept and inspected — the caller decides what
+# executes its input, via kit_heredoc_is_code.  And any UNQUOTED body, code or not,
+# still runs its `$( … )` and `` ` … ` `` substitutions as the body is written, so
+# those are kept (kit_hd_subst) and the prose around them dropped; a quoted body
+# runs nothing.  The delimiter itself is read by the shared kit_hd_delim, so a
+# partly quoted delimiter (`<<E'O'F`) no longer runs the body away.
+function strip_heredocs(raw,   text, delim, dash, sub_mode, nl, L, k, l, head, hn, HT, HQ, hw, q, np, j, at, s) {
+  text = ""; delim = ""; sub_mode = 0; q = ""
   nl = split(raw, L, "\n")
   for (k = 1; k <= nl; k++) {
     l = L[k]
     if (delim != "") {
-      t = l; gsub(/^[ \t]+|[ \t]+$/, "", t)
-      if (t == delim) delim = ""
+      if (kit_hd_end(l, delim, dash)) {
+        if (sub_mode) { s = kit_hd_subst_flush(); if (s != "") text = text s "\n" }
+        delim = ""; sub_mode = 0; continue
+      }
+      if (sub_mode) { s = kit_hd_subst(l); if (s != "") text = text s "\n" }
       continue
     }
-    np = kit_hd_ops(l, q); q = KH_QEND; RSTART = 0
-    for (j = 1; j <= np && RSTART == 0; j++) {
-      at = KH_P[j]; s = substr(l, at); quoted = 0
-      if (match(s, "^" HD_DQ) || match(s, "^" HD_SQ)) quoted = 1
-      else if (!match(s, "^" HD_BARE)) RSTART = 0
-      if (RSTART > 0) RSTART += at - 1
-    }
-    if (RSTART > 0) {
-      d = substr(l, RSTART, RLENGTH)
-      sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
-      head = substr(l, 1, RSTART - 1)
+    np = kit_hd_ops(l, q); q = KH_QEND; at = 0
+    for (j = 1; j <= np && at == 0; j++) if (kit_hd_delim(substr(l, KH_P[j]))) at = KH_P[j]
+    if (at > 0) {
+      head = substr(l, 1, at - 1)
       hn = tokenize(split_cmd(head), HT, HQ); hw = cmdword_x(HT, hn, 0, 0)
-      if (quoted || !kit_heredoc_is_code(hw)) delim = d
+      if (KHD_QUOTED || !kit_heredoc_is_code(hw)) {
+        delim = KHD_DELIM; dash = KHD_DASH
+        sub_mode = !KHD_QUOTED
+        if (sub_mode) kit_hd_subst_reset()
+      }
     }
     text = text l "\n"
   }
@@ -507,16 +638,18 @@ function kit_stmt_sep(st, sep, q, codeat,   sp, sc, qq, top, code, esc) {
 # A heredoc body is copied untouched, since a document's `\` and `then` are not
 # the shell's.  Only an operator the shell reads opens one (kit_hd_ops), quoted
 # delimiter or not: a `<<` inside quotes or a comment is text, and reading it as
-# an opener switched the normalising off for every line after `echo '<<X'`.
-function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t, s, d, rest, st, sep, cmd, np, j, mark) {
+# an opener switched the normalising off for every line after `echo '<<X'`.  The
+# delimiter is read by the shared kit_hd_delim and the body end by kit_hd_end, so a
+# partly quoted delimiter and an indented `<<-` terminator are read as the shell
+# reads them.
+function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, DDASH, rest, st, sep, cmd, np, j, mark) {
   if (!kw && index(raw, "\\\n") == 0) return raw
   nl = split(raw, L, "\n")
   out = ""; first = 1; q = ""; nd = 0; di = 0; KP = ""
   for (k = 1; k <= nl; k++) {
     l = L[k]
     if (di < nd) {
-      t = l; gsub(/^[ \t]+|[ \t]+$/, "", t)
-      if (t == D[di + 1]) di++
+      if (kit_hd_end(l, D[di + 1], DDASH[di + 1])) di++
     } else {
       # Each physical line is read once, from the state the last one left: a
       # rescan of the growing line per continuation was quadratic, and a hook
@@ -529,10 +662,8 @@ function kit_shell_text(raw, kw,   nl, L, k, l, out, first, q, qj, nd, di, D, t,
       }
       np = (index(l, "<<") > 0) ? kit_hd_ops(l, q) : 0
       for (j = 1; j <= np; j++) {
-        if (!match(substr(l, KH_P[j]), "^" KIT_HDRE)) continue
-        d = substr(l, KH_P[j], RLENGTH)
-        sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
-        D[++nd] = d
+        if (!kit_hd_delim(substr(l, KH_P[j]))) continue
+        D[++nd] = KHD_DELIM; DDASH[nd] = KHD_DASH
       }
       if (!kw) q = qj
       else {

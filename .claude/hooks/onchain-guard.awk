@@ -184,24 +184,6 @@ function hd_consumer(head, tail,   ns, S, ng, G, g, n, T, Q, ci) {
   }
   return ""
 }
-# hd_subst — the $(…) and `…` an unquoted body line still runs, one statement each.
-function hd_subst(l,   out, i, j, c, d, L) {
-  out = ""; L = length(l)
-  for (i = 1; i <= L; i++) {
-    c = substr(l, i, 1)
-    if (c == "\\") { i++; continue }
-    if (substr(l, i, 2) == "$(") {
-      d = 0
-      for (j = i + 1; j <= L; j++) { c = substr(l, j, 1); if (c == "(") d++; else if (c == ")" && --d == 0) break }
-      out = out "; " substr(l, i, j - i + 1); i = j; continue
-    }
-    if (c == "`") {
-      j = index(substr(l, i + 1), "`"); if (j == 0) j = L - i + 1
-      out = out "; $(" substr(l, i + 1, j - 1) ")"; i += j
-    }
-  }
-  return out
-}
 # hd_open — fills HD_P with the positions on l of each `<<` outside quotes and
 # comments, and returns how many.  HD_Q is the quoting still open from earlier
 # lines, as a stack: s '…', d "…", b `…`, p ( or $( (unquoted again inside "…").
@@ -229,36 +211,32 @@ function hd_open(l,   i, L, c, top, k) {
   }
   return k
 }
-# hd_strip — the raw command with every heredoc body reduced to what runs.
-function hd_strip(raw,   text, delim, mode, who, nl, L, k, l, t, quoted, d, s, np, j, at, HD_DQ, HD_SQ, HD_BARE) {
-  HD_DQ = "<<-?[ \t]*\"[A-Za-z_][A-Za-z0-9_]*\""
-  HD_SQ = "<<-?[ \t]*" SQ "[A-Za-z_][A-Za-z0-9_]*" SQ
-  HD_BARE = "<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*"
+# hd_strip — the raw command with every heredoc body reduced to what runs.  The
+# delimiter is read by the shared kit_hd_delim, so a partly quoted delimiter
+# (`<<E'O'F`) is read whole instead of truncated, and the body end by kit_hd_end.
+# An unquoted body that is data still runs its substitutions across lines
+# (kit_hd_subst), so a multi-line `$( … )` in it is kept, not dropped.
+function hd_strip(raw,   text, delim, dash, mode, who, nl, L, k, l, s, np, j, at) {
   text = ""; delim = ""; HD_Q = ""
   nl = split(raw, L, "\n")
   for (k = 1; k <= nl; k++) {
     l = L[k]
     if (delim != "") {
-      t = l; gsub(/^[ \t]+|[ \t]+$/, "", t)
-      if (t == delim) { delim = ""; continue }
+      if (kit_hd_end(l, delim, dash)) {
+        if (mode == "subst") { s = kit_hd_subst_flush(); if (s != "") text = text s "\n" }
+        delim = ""; continue
+      }
       if (mode == "shell") text = text l "\n"
       else if (mode == "interp") { s = hd_interp_line(who, l); if (s != "") text = text s "\n" }
-      else if (mode == "subst") { s = hd_subst(l); if (s != "") text = text s "\n" }
+      else if (mode == "subst") { s = kit_hd_subst(l); if (s != "") text = text s "\n" }
       continue
     }
-    np = hd_open(l); RSTART = 0
-    for (j = 1; j <= np && RSTART == 0; j++) {
-      at = HD_P[j]; s = substr(l, at); quoted = 0
-      if (match(s, "^" HD_DQ) || match(s, "^" HD_SQ)) quoted = 1
-      else if (!match(s, "^" HD_BARE)) RSTART = 0
-      if (RSTART > 0) RSTART += at - 1
-    }
-    if (RSTART > 0) {
-      d = substr(l, RSTART, RLENGTH)
-      sub(/^<<-?[ \t]*/, "", d); gsub(/"/, "", d); gsub(SQ, "", d)
-      who = hd_consumer(substr(l, 1, RSTART - 1), substr(l, RSTART + RLENGTH))
-      delim = d
-      if (who == "") mode = quoted ? "drop" : "subst"
+    np = hd_open(l); at = 0
+    for (j = 1; j <= np && at == 0; j++) if (kit_hd_delim(substr(l, HD_P[j]))) at = HD_P[j]
+    if (at > 0) {
+      who = hd_consumer(substr(l, 1, at - 1), substr(l, at + KHD_LEN))
+      delim = KHD_DELIM; dash = KHD_DASH
+      if (who == "") { mode = KHD_QUOTED ? "drop" : "subst"; if (mode == "subst") kit_hd_subst_reset() }
       else mode = (hd_shell(who) || who == "eval" || who == "source" || who == ".") ? "shell" : "interp"
     }
     text = text l "\n"
