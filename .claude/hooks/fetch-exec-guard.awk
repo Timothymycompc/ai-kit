@@ -25,7 +25,11 @@
 
 # ---- the library's callbacks.
 function kit_wrapper(c) { return (is_wrapper(c) || is_shell(c)) }
-function kit_heredoc_is_code(c) { return is_shell(c) }
+# An interpreter's heredoc line, the way lib-headless.sh hands this guard a
+# non-shell MCP payload: string delimiters out and brackets kept, so
+# os.system("npx -y x") starts a stage of its own.  The library's hd_strip calls
+# it for every line of a body an interpreter runs.
+function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }
 # reskip=1 so `env NODE_ENV=1 npx -y x` finds npx; operands=1 so `timeout 5 npx
 # -y x` does too — skipping a wrapper's OPTIONS alone leaves "5" in command
 # position, which is the bug that bit twice.
@@ -312,7 +316,8 @@ BEGIN {
 }
 { raw = raw $0 "\n" }
 END {
-  text = split_cmd(strip_heredocs(kit_shell_text(raw, 0)))
+  # A heredoc body is a document unless something runs it (hd_strip).
+  text = split_cmd(hd_strip(kit_shell_text(raw, 0), 0))
   # Regex separators: macOS's awk also splits a one-character string separator
   # on newline, which cut a multi-line quoted argument into statements there.
   # A shell's -c string adds its own statements after them (kit_expand_code).

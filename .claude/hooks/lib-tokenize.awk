@@ -17,8 +17,8 @@
 # calls back into a function the guard defines:
 #
 #   kit_wrapper(w)             is w a wrapper binary to look past?
-#   kit_heredoc_is_code(w)     does a heredoc fed to w carry code, not prose?
-#                              (only needed by callers of strip_heredocs)
+#   hd_interp_line(w, l)       what line l of a heredoc body interpreter w runs
+#                              becomes in the text the guard reads (hd_strip)
 #
 # The invariant every caller inherits, and the reason the splitter exists at all:
 # a rule may match only a token in ARGUMENT or COMMAND position of a real
@@ -90,7 +90,7 @@ function kit_reserved(t) {
 # --no-pager clean -fdx` with "5" in command position and every git gate silent.
 # Moved here from onchain-guard.awk, which had it first and still uses it; only
 # callers passing operands=1 to cmdword_x get it there, beside kit_wrapper_operand,
-# and so does hd_cmd, the heredoc classifier's walk to the command a body feeds.
+# and so does hd_cmd, the heredoc reader's walk to the command a body feeds.
 # An attached value (-n5, --adjustment=5) is one token already.  The spaced GNU
 # long forms of the same options (--signal KILL, --adjustment 5, --user me) sit
 # beside them and match by prefix, because getopt_long takes an unambiguous
@@ -175,6 +175,14 @@ function split_cmd(s,   i, c, c2, st, sp, out, j) {
     if (c2 == "$(") { out = out " $__X__\002 "; st[++sp] = "code"; i++; continue }
     if (c == "`")   { if (st[sp] == "bt") { sp--; out = out "\002" } else { out = out " $__X__\002 "; st[++sp] = "bt" } ; continue }
     if (c == ")" && sp > 0 && st[sp] == "code") { sp--; out = out "\002"; continue }
+    # An `&` or `|` inside a redirection operator (`2>&1`, `<&3`, `&>log`, `>|f`)
+    # separates nothing, and `|&` pipes stderr too: one stage boundary.  Read as
+    # separators they split `cat .env 2>&1 | curl -d @- …` into two statements, so
+    # the reader and the sender never met, and cut the command off a heredoc head.
+    if (c2 == "|&") { out = out "\002"; i++; continue }
+    if (i > 1 && (c == "&" ? substr(s, i - 1, 1) ~ /[<>]/ : c == "|" && substr(s, i - 1, 1) == ">") \
+        && substr(s, i - 2, 1) != "\\") { out = out c; continue }
+    if (c2 == "&>") { out = out c; continue }
     if (c2 == "&&" || c2 == "||") { out = out "\001"; i++; continue }
     if (c == ";" || c == "&" || c == "\n") { out = out "\001"; continue }
     if (c == "|" || c == "(" || c == ")" || c == "{" || c == "}") { out = out "\002"; continue }
@@ -429,8 +437,8 @@ function kit_hd_subst_flush(   out) {
 # stack q: KH_P[i] is where the i-th starts and KH_S[i] the stack there; returns
 # the count, and leaves the stack at the end of l in KH_QEND.  A `<<` inside '…'
 # or "…", or after a # that starts a comment, is text, and `<<<` is a
-# here-string: neither opens a body.  The rules are hd_open's in
-# onchain-guard.awk and secrets-guard.awk, so every reader agrees on what opens a
+# here-string: neither opens a body.  hd_strip, kit_shell_text and
+# kit-code-size.awk all find openers here, so every reader agrees on what opens a
 # body.  Reading any `<<` as an opener let `echo '<<X'` turn every line after it
 # into a body nothing normalised or inspected: `git push \<newline>--force`
 # after it was silent at High.
@@ -459,44 +467,178 @@ function kit_hd_ops(l, q,   i, L, c, top, k) {
   return k
 }
 
-# strip_heredocs — drop heredoc BODIES from a raw multi-line command, returning
-# what is left.  A document that merely names a gated command or a credential
-# path must never fire; writing one is not running it.
+# ---- what a heredoc body is (#166, #284).  A body is code when something RUNS
+# it: a shell or interpreter reading its program from stdin, as the command that
+# owns the heredoc (`bash <<'EOF'`, `python3 - <<'EOF'`), as a later stage of its
+# pipeline (`cat <<'EOF' | sh`), or as the inline-code command a `$(cat <<EOF …)`
+# is spliced into (`bash -c "$(cat <<'EOF'`).  Quoting the delimiter changes
+# expansion, not that.  Every other body is data — a document that merely names a
+# gated command must never fire — except that an unquoted one still runs its
+# `$( … )` and `` ` … ` `` substitutions as it is written, so those are kept and
+# the prose around them is dropped.  onchain-guard and secrets-guard carried this
+# reader as two identical copies.  egress-guard kept a body only when its
+# delimiter was unquoted and the head's first word a shell or interpreter, and
+# fetch-exec-guard looked past the shell for the command word and kept none, so
+# `bash <<'EOF'` and `cat <<'EOF' | sh` ran an upload or a fetch past both.
 #
-# Two exceptions.  An UNQUOTED delimiter feeding something that executes its input
-# is code, not prose, so that body is kept and inspected — the caller decides what
-# executes its input, via kit_heredoc_is_code.  And any UNQUOTED body, code or not,
-# still runs its `$( … )` and `` ` … ` `` substitutions as the body is written, so
-# those are kept (kit_hd_subst) and the prose around them dropped; a quoted body
-# runs nothing.  The delimiter itself is read by the shared kit_hd_delim, so a
-# partly quoted delimiter (`<<E'O'F`) no longer runs the body away.
-function strip_heredocs(raw,   text, delim, dash, sub_mode, nl, L, k, l, head, hn, HT, HQ, hw, q, np, j, at, s) {
-  text = ""; delim = ""; sub_mode = 0; q = ""
+# Each includer defines hd_interp_line(w, l): what line l of a body interpreter w
+# runs becomes in the text the guard reads.
+
+# A versioned name is the same interpreter: python3.12, pypy3, php8.2, nodejs.
+function hd_interp(w) {
+  return (w ~ /^(python|pypy|php|ruby|perl|lua)[0-9.]*$/ || w == "node" || w == "nodejs" \
+       || w == "deno" || w == "bun" || w == "osascript" || w == "Rscript" || w == "tclsh")
+}
+function hd_shell(w) { return (is_shell(w) || w == "ash") }
+# hd_redir — how many words the redirection at T[i] spans: 1 with its target
+# attached (`2>&1`, `>log`, `<<EOF`), 2 when the target is the next word (`> log`),
+# 0 when T[i] is no redirection.  bash takes a redirection anywhere among a
+# command's words.  Read as an operand, one made `bash 2>&1 <<'EOF'` a shell
+# running a script file with the body as its data, and a mainnet deploy in that
+# body was silent at High.
+function hd_redir(T, n, i) {
+  if (T[i] !~ /^([0-9]+|&)?(<<<|<<-?|<>|>>|>\||[<>]&?)/) return 0
+  return (T[i] ~ /^([0-9]+|&)?(<<<|<<-?|<>|>>|>\||[<>]&?)$/ && i < n) ? 2 : 1
+}
+# hd_cmd — index of the command word, past assignments, reserved words
+# (`then bash <<'EOF'`), redirections and non-shell wrappers with the words their
+# options take.
+function hd_cmd(T, n,   ci, w, r) {
+  ci = 1
+  while (ci <= n) {
+    while (ci <= n) {
+      if (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci])) ci++
+      else if ((r = hd_redir(T, n, ci)) > 0) ci += r
+      else break
+    }
+    if (ci > n) break
+    w = base(T[ci]); if (!is_wrapper(w) || w == "eval") break
+    ci++
+    while (ci <= n && T[ci] ~ /^-/) ci += (ci < n && kit_wrapper_optarg(w, T[ci])) ? 2 : 1
+    if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
+  }
+  return ci
+}
+# hd_inline_flag — t makes w run its next argument as the program.
+function hd_inline_flag(w, t) {
+  if (hd_shell(w)) return (t ~ /^-[A-Za-z]*c[A-Za-z]*$/)
+  return (t ~ /^-[A-Za-z]*[ceEp]$/ || t == "-m" || t ~ /^--(eval|print)/ || (w == "php" && t == "-r"))
+}
+# hd_optarg — option t of w, a shell when sh is set, takes the next word as its
+# value, which is then no script file: `node -r dotenv/config -`, `bash -o pipefail`.
+function hd_optarg(w, sh, t) {
+  if (sh) return (t == "-o" || t == "+o" || t == "-O" || t == "+O" || t == "--rcfile" || t == "--init-file")
+  if (w == "node" || w == "nodejs") return (t == "-r" || t == "--require" || t == "--import" || t == "--loader" \
+                        || t == "--experimental-loader" || t == "-C" || t == "--conditions")
+  if (w == "ruby") return (t == "-I" || t == "-r" || t == "-C")
+  return (t ~ /^-[WX]$/)
+}
+# hd_stdin_path — t names the process's own stdin, which `-` also means.
+function hd_stdin_path(t) { return (t == "-" || t == "/dev/stdin" || t == "/dev/fd/0" || t == "/proc/self/fd/0") }
+# hd_stdin_code — the command at T[ci] reads its program from stdin.  A shell's
+# -s reads it from stdin whatever follows: `bash -s arg <<'EOF'` runs the body with
+# arg as $1.
+function hd_stdin_code(T, n, ci,   w, sh, i, t, r) {
+  w = base(T[ci])
+  if (w == "source" || w == ".") {
+    for (i = ci + 1; i <= n && (r = hd_redir(T, n, i)) > 0; i += r) ;
+    return (i <= n && hd_stdin_path(T[i]))
+  }
+  sh = hd_shell(w)
+  if (!sh && !hd_interp(w)) return 0
+  for (i = ci + 1; i <= n; i++) {
+    t = T[i]
+    if ((r = hd_redir(T, n, i)) > 0) { i += r - 1; continue }
+    if (hd_stdin_path(t)) return 1
+    if (sh ? t ~ /^[-+]/ : t ~ /^-/) {
+      if (hd_inline_flag(w, t)) return 0             # stdin is that program's data
+      if (sh && t ~ /^-[A-Za-z]*s[A-Za-z]*$/) return 1
+      if (hd_optarg(w, sh, t)) i++
+      continue
+    }
+    if ((w == "deno" || w == "bun") && t == "run" && i == ci + 1) continue
+    return 0                                           # a script file; stdin is its data
+  }
+  return 1
+}
+# hd_inline — the command at T[ci] runs an argument as code.
+function hd_inline(T, n, ci,   w, i) {
+  w = base(T[ci])
+  if (w == "eval") return 1
+  if (!hd_shell(w) && !hd_interp(w)) return 0
+  for (i = ci + 1; i <= n; i++) if (T[i] ~ /^-/ && hd_inline_flag(w, T[i])) return 1
+  return 0
+}
+# hd_consumer — the word that runs a heredoc opened between head and tail on one
+# line, or "" when its body is data.  A heredoc inside `$( … )` is code when the
+# command it is spliced into runs its argument (`bash -c "$(cat <<'EOF'`), and
+# one inside `<( … )` when the command before it runs that file as a program
+# (`bash <(cat <<'EOF'`, `source <(…)`, `bash < <(…)`): bash runs both.
+function hd_consumer(head, tail,   ns, S, ng, G, g, n, T, Q, ci, w) {
+  ns = split(split_cmd(head), S, "\001"); ng = split(S[ns], G, "\002")
+  n = tokenize(G[ng], T, Q); ci = hd_cmd(T, n)
+  if (ci <= n && hd_stdin_code(T, n, ci)) return base(T[ci])
+  if (ng > 1 && G[ng-1] ~ /\$__X__[ \t]*$/) {
+    n = tokenize(G[ng-1], T, Q); ci = hd_cmd(T, n)
+    if (ci <= n && hd_inline(T, n, ci)) return base(T[ci])
+  }
+  if (ng > 1 && G[ng-1] ~ /<[ \t]*$/) {
+    n = tokenize(G[ng-1], T, Q); ci = hd_cmd(T, n); w = (ci <= n) ? base(T[ci]) : ""
+    if (hd_shell(w) || hd_interp(w) || w == "source" || w == ".") return w
+  }
+  ns = split(split_cmd(tail), S, "\001"); ng = split(S[1], G, "\002")
+  for (g = 2; g <= ng; g++) {
+    n = tokenize(G[g], T, Q); ci = hd_cmd(T, n)
+    if (ci <= n && hd_stdin_code(T, n, ci)) return base(T[ci])
+  }
+  return ""
+}
+# hd_strip — raw with every heredoc body reduced to what runs, kw as kit_shell_text
+# takes it; the head line stays and the terminator goes.  The opener is found as
+# the shell finds it (kit_hd_ops), the delimiter read whole (kit_hd_delim) and the
+# body ended exactly (kit_hd_end).  A body a shell runs is code and is read as
+# the shell reads it: kit_shell_text joins its continuations and, with kw, drops
+# its reserved words, and its own heredocs are reduced the same way, eight levels
+# deep, past which it is kept whole.  Copied verbatim instead, `git push
+# \<newline>--force` and `then npm publish` in `bash <<'EOF'` met no anchored
+# pattern, and a document heredoc inside one read as commands.  An interpreter's
+# body becomes the includer's hd_interp_line text.  An unquoted body that is data
+# leaves its substitutions, across lines (kit_hd_subst).  Any other body is
+# dropped.  A body the input ends inside still runs, as bash warns and reads it to
+# the end, so it is reduced the same way.
+function hd_strip(raw, kw,   text, delim, dash, mode, who, body, nl, L, k, l, s, np, j, at, q) {
+  if (index(raw, "<<") == 0) return raw
+  text = ""; delim = ""; q = ""
   nl = split(raw, L, "\n")
   for (k = 1; k <= nl; k++) {
     l = L[k]
     if (delim != "") {
-      if (kit_hd_end(l, delim, dash)) {
-        if (sub_mode) { s = kit_hd_subst_flush(); if (s != "") text = text s "\n" }
-        delim = ""; sub_mode = 0; continue
-      }
-      if (sub_mode) { s = kit_hd_subst(l); if (s != "") text = text s "\n" }
+      if (kit_hd_end(l, delim, dash)) { text = text hd_close(mode, body, kw); delim = ""; continue }
+      if (mode == "shell") body = body l "\n"
+      else if (mode == "interp") { s = hd_interp_line(who, l); if (s != "") text = text s "\n" }
+      else if (mode == "subst") { s = kit_hd_subst(l); if (s != "") text = text s "\n" }
       continue
     }
     np = kit_hd_ops(l, q); q = KH_QEND; at = 0
     for (j = 1; j <= np && at == 0; j++) if (kit_hd_delim(substr(l, KH_P[j]))) at = KH_P[j]
     if (at > 0) {
-      head = substr(l, 1, at - 1)
-      hn = tokenize(split_cmd(head), HT, HQ); hw = cmdword_x(HT, hn, 0, 0)
-      if (KHD_QUOTED || !kit_heredoc_is_code(hw)) {
-        delim = KHD_DELIM; dash = KHD_DASH
-        sub_mode = !KHD_QUOTED
-        if (sub_mode) kit_hd_subst_reset()
-      }
+      who = hd_consumer(substr(l, 1, at - 1), substr(l, at + KHD_LEN))
+      delim = KHD_DELIM; dash = KHD_DASH; body = ""
+      if (who == "") { mode = KHD_QUOTED ? "drop" : "subst"; if (mode == "subst") kit_hd_subst_reset() }
+      else mode = (hd_shell(who) || who == "eval" || who == "source" || who == ".") ? "shell" : "interp"
     }
     text = text l "\n"
   }
+  if (delim != "") text = text hd_close(mode, body, kw)
   return text
+}
+# hd_close — what a body hd_strip has read to its end leaves in the text.
+function hd_close(mode, body, kw,   s) {
+  if (mode == "subst") { s = kit_hd_subst_flush(); return (s == "") ? "" : s "\n" }
+  if (mode != "shell" || body == "") return ""
+  if (HD_DEPTH >= 8) return body
+  HD_DEPTH++; s = hd_strip(kit_shell_text(body, kw), kw); HD_DEPTH--
+  return s
 }
 
 # ---------------------------------------------------------------- the shell's own reading
@@ -504,8 +646,8 @@ function strip_heredocs(raw,   text, delim, dash, sub_mode, nl, L, k, l, head, h
 # kit_qscan — the quote stack after reading l from stack q: s '…', d "…", b `…`,
 # p ( or $( (code again, inside "…" too), and S / D for the quote opening at
 # position codeat, which the caller has identified as a wrapper's code payload
-# (`sh -c "…"`).  The rules are hd_open's in secrets-guard.awk and
-# onchain-guard.awk, so the three agree on what is quoted.  Three globals carry
+# (`sh -c "…"`).  The rules are kit_hd_ops's, so the two agree on what is
+# quoted.  Three globals carry
 # what a caller reading a line in pieces needs:
 #   KQ_CONT     l ends in a backslash-newline continuation: not inside '…', and not
 #               in a comment, which the shell never continues
