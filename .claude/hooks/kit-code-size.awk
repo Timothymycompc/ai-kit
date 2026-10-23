@@ -26,7 +26,7 @@
 #     unquoted body runs its substitutions and the guards read those as code;
 #   - the delimiter line arrives.  An unterminated body counts.
 function kit_wrapper(c) { return (is_wrapper(c) || is_shell(c)) }
-function kit_heredoc_is_code(c) { return 1 }
+function hd_interp_line(w, l) { return l }
 function code_line(l,   np, hs, HS, hn, HT, HQ, hw, x, wascont, fw) {
   if (delim != "") {
     if (kit_hd_end(l, delim, dash)) { delim = ""; SIZE += length(l) + 1; return }

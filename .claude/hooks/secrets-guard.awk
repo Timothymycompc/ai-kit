@@ -16,9 +16,6 @@
 # the argument scan below finds it.  Both were true of its own copy; keeping them
 # is what makes this extraction verdict-for-verdict identical.
 function kit_wrapper(w) { return is_wrapper(w) }
-# Unused since #166 (hd_strip below replaces strip_heredocs), but the library
-# references it and awk resolves calls lazily, so it stays defined.
-function kit_heredoc_is_code(w) { return (is_shell(w) || is_interp(w)) }
 function cmdword(T, n) { return cmdword_x(T, n, 0, 0) }
 
 function is_benign(c) {
@@ -64,154 +61,6 @@ function is_pattern_flag(f) {
 }
 function hits(a) { a = unmark(a); return (a != "" && a ~ VAULTRE) }
 
-# ---- heredoc classifier (#166).  This block, through hd_strip, is identical in
-# secrets-guard.awk and onchain-guard.awk (tests/test_hooks.sh checks).  It
-# belongs in lib-tokenize.awk once #233, which edits that file, has landed.
-#
-# The library's strip_heredocs keeps a body only when the delimiter is unquoted
-# and the command on the left runs it.  Both halves miss: `python3 - <<'EOF'`
-# runs a quoted body, and `cat <<EOF | sh` runs a body whose head is cat.  What
-# decides is whether something RUNS the body: a shell or interpreter reading its
-# program from stdin, as the command owning the heredoc, as a later stage of the
-# pipeline, or as the inline-code command a `$(cat <<EOF …)` is spliced into
-# (`bash -c "$(cat <<'EOF'`).  Quoting the delimiter changes expansion, not that.
-# Every other body is data, except that an unquoted one still runs its $(…) and
-# `…` substitutions, so those are kept and the prose around them is dropped.
-#
-# Each guard defines hd_interp_line(w, l): what an interpreter's body line
-# becomes in the text the guard matches.
-
-function hd_interp(w) {
-  return (w == "python" || w == "python2" || w == "python3" || w == "node" || w == "deno" \
-       || w == "bun" || w == "perl" || w == "ruby" || w == "php" || w == "osascript" \
-       || w == "Rscript" || w == "lua" || w == "tclsh")
-}
-function hd_shell(w) { return (is_shell(w) || w == "ash") }
-# hd_cmd — index of the command word, past assignments, reserved words
-# (`then bash <<'EOF'`) and non-shell wrappers with the words their options take.
-function hd_cmd(T, n,   ci, w) {
-  ci = 1
-  while (ci <= n) {
-    while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
-    if (ci > n) break
-    w = base(T[ci]); if (!is_wrapper(w) || w == "eval") break
-    ci++
-    while (ci <= n && T[ci] ~ /^-/) { if (ci < n && kit_wrapper_optarg(w, T[ci])) ci++; ci++ }
-    if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
-  }
-  return ci
-}
-# hd_inline_flag — t makes w run its next argument as the program.
-function hd_inline_flag(w, t) {
-  if (hd_shell(w)) return (t ~ /^-[A-Za-z]*c[A-Za-z]*$/)
-  return (t ~ /^-[A-Za-z]*[ceEp]$/ || t == "-m" || t ~ /^--(eval|print)/ || (w == "php" && t == "-r"))
-}
-# hd_stdin_path — t names the process's own stdin, which `-` also means.
-function hd_stdin_path(t) { return (t == "-" || t == "/dev/stdin" || t == "/dev/fd/0" || t == "/proc/self/fd/0") }
-# hd_stdin_code — the command at T[ci] reads its program from stdin.
-function hd_stdin_code(T, n, ci,   w, sh, i, t) {
-  w = base(T[ci])
-  if (w == "source" || w == ".") return (ci < n && hd_stdin_path(T[ci + 1]))
-  sh = hd_shell(w)
-  if (!sh && !hd_interp(w)) return 0
-  for (i = ci + 1; i <= n; i++) {
-    t = T[i]
-    if (hd_stdin_path(t)) return 1
-    if (t ~ /^-/) {
-      if (hd_inline_flag(w, t)) return 0             # stdin is that program's data
-      if (sh ? t == "-o" : t ~ /^-[WX]$/) i++          # options taking a value
-      continue
-    }
-    if ((w == "deno" || w == "bun") && t == "run" && i == ci + 1) continue
-    return 0                                           # a script file; stdin is its data
-  }
-  return 1
-}
-# hd_inline — the command at T[ci] runs an argument as code.
-function hd_inline(T, n, ci,   w, i) {
-  w = base(T[ci])
-  if (w == "eval") return 1
-  if (!hd_shell(w) && !hd_interp(w)) return 0
-  for (i = ci + 1; i <= n; i++) if (T[i] ~ /^-/ && hd_inline_flag(w, T[i])) return 1
-  return 0
-}
-# hd_consumer — the word that runs a heredoc opened between head and tail on one
-# line, or "" when its body is data.
-function hd_consumer(head, tail,   ns, S, ng, G, g, n, T, Q, ci) {
-  ns = split(split_cmd(head), S, "\001"); ng = split(S[ns], G, "\002")
-  n = tokenize(G[ng], T, Q); ci = hd_cmd(T, n)
-  if (ci <= n && hd_stdin_code(T, n, ci)) return base(T[ci])
-  if (ng > 1 && G[ng-1] ~ /\$__X__[ \t]*$/) {
-    n = tokenize(G[ng-1], T, Q); ci = hd_cmd(T, n)
-    if (ci <= n && hd_inline(T, n, ci)) return base(T[ci])
-  }
-  ns = split(split_cmd(tail), S, "\001"); ng = split(S[1], G, "\002")
-  for (g = 2; g <= ng; g++) {
-    n = tokenize(G[g], T, Q); ci = hd_cmd(T, n)
-    if (ci <= n && hd_stdin_code(T, n, ci)) return base(T[ci])
-  }
-  return ""
-}
-# hd_open — fills HD_P with the positions on l of each `<<` outside quotes and
-# comments, and returns how many.  HD_Q is the quoting still open from earlier
-# lines, as a stack: s '…', d "…", b `…`, p ( or $( (unquoted again inside "…").
-# A `<<` inside quotes is text: `echo "<<X"` opens no heredoc.
-function hd_open(l,   i, L, c, top, k) {
-  k = 0; L = length(l)
-  for (i = 1; i <= L; i++) {
-    c = substr(l, i, 1); top = substr(HD_Q, length(HD_Q))
-    if (top == "s") { if (c == SQ) HD_Q = substr(HD_Q, 1, length(HD_Q) - 1); continue }
-    if (c == "\\") { i++; continue }
-    if (top == "d") {
-      if (c == "\"") HD_Q = substr(HD_Q, 1, length(HD_Q) - 1)
-      else if (substr(l, i, 2) == "$(") { HD_Q = HD_Q "p"; i++ }
-      else if (c == "`") HD_Q = HD_Q "b"
-      continue
-    }
-    if (c == SQ) HD_Q = HD_Q "s"
-    else if (c == "\"") HD_Q = HD_Q "d"
-    else if (c == "`") HD_Q = (top == "b") ? substr(HD_Q, 1, length(HD_Q) - 1) : HD_Q "b"
-    else if (c == "(") HD_Q = HD_Q "p"
-    else if (c == ")") { if (top == "p") HD_Q = substr(HD_Q, 1, length(HD_Q) - 1) }
-    else if (c == "#" && (i == 1 || substr(l, i - 1, 1) ~ /[ \t;&|(]/)) break
-    else if (substr(l, i, 3) == "<<<") i += 2                   # a here-string
-    else if (substr(l, i, 2) == "<<") { HD_P[++k] = i; i++ }
-  }
-  return k
-}
-# hd_strip — the raw command with every heredoc body reduced to what runs.  The
-# delimiter is read by the shared kit_hd_delim, so a partly quoted delimiter
-# (`<<E'O'F`) is read whole instead of truncated, and the body end by kit_hd_end.
-# An unquoted body that is data still runs its substitutions across lines
-# (kit_hd_subst), so a multi-line `$( … )` in it is kept, not dropped.
-function hd_strip(raw,   text, delim, dash, mode, who, nl, L, k, l, s, np, j, at) {
-  text = ""; delim = ""; HD_Q = ""
-  nl = split(raw, L, "\n")
-  for (k = 1; k <= nl; k++) {
-    l = L[k]
-    if (delim != "") {
-      if (kit_hd_end(l, delim, dash)) {
-        if (mode == "subst") { s = kit_hd_subst_flush(); if (s != "") text = text s "\n" }
-        delim = ""; continue
-      }
-      if (mode == "shell") text = text l "\n"
-      else if (mode == "interp") { s = hd_interp_line(who, l); if (s != "") text = text s "\n" }
-      else if (mode == "subst") { s = kit_hd_subst(l); if (s != "") text = text s "\n" }
-      continue
-    }
-    np = hd_open(l); at = 0
-    for (j = 1; j <= np && at == 0; j++) if (kit_hd_delim(substr(l, HD_P[j]))) at = HD_P[j]
-    if (at > 0) {
-      who = hd_consumer(substr(l, 1, at - 1), substr(l, at + KHD_LEN))
-      delim = KHD_DELIM; dash = KHD_DASH
-      if (who == "") { mode = KHD_QUOTED ? "drop" : "subst"; if (mode == "subst") kit_hd_subst_reset() }
-      else mode = (hd_shell(who) || who == "eval" || who == "source" || who == ".") ? "shell" : "interp"
-    }
-    text = text l "\n"
-  }
-  return text
-}
-
 # An interpreter's heredoc is a program in a foreign syntax: scanned the way
 # `python3 -c '…'` is, and kept out of the shell text.
 function hd_interp_line(w, l,   t) {
@@ -232,10 +81,11 @@ END {
   if (VAULTRE == "") exit 0
 
   # Heredoc BODIES go first: a document that merely names a credential path must
-  # never fire.  A body that something runs is code and is inspected (hd_strip).
+  # never fire.  A body that something runs is code and is inspected (the
+  # library's hd_strip, which calls hd_interp_line above for an interpreter's).
   # Continuations are joined before that, so a head split over two lines
   # (`bash \<newline><<'EOF'`) is still read as one.
-  text = split_cmd(hd_strip(kit_shell_text(raw, 0)))
+  text = split_cmd(hd_strip(kit_shell_text(raw, 0), 0))
   if (HD_HIT != "") { print "DENY a heredoc fed to " HD_WHO " reads a credential path: " unmark(HD_HIT); exit }
   # Regex separators: macOS's awk also splits a one-character string separator
   # on newline, which cut a multi-line quoted argument into statements there.
