@@ -57,7 +57,10 @@ BEGIN {
   # `curl -d @.env …` in one `sh -c`, or 4,100 `eval x;` ahead of `eval 'npm
   # publish'`, left the command at the end unread.  Past the cap the command is
   # refused, as past the depth; no command a person or agent writes comes near it.
-  KIT_MAXCODE = 4096
+  # 2048, not the 4096 it was: 4,070 one-word `sh -c x;` strings in 32 KB cost
+  # egress-guard 5.2 CPU-seconds on a loaded machine, half its 10 s timeout, and a
+  # timeout does not block (#294).  Refused at 2,048, the same command costs 2.1.
+  KIT_MAXCODE = 2048
 }
 
 # ---------------------------------------------------------------- small predicates

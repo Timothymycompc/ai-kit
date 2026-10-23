@@ -1692,7 +1692,7 @@ same "$M_SECRETS" deny deny deny "gh auth token" "sh -c '${PAD}gh auth token'" "
 same "$M_FETCH" silent silent deny "npx -y x" "sh -c '${PAD}npx -y x'" "$MUT_CAPQUIET"
 EVALS="$(printf 'eval x;%.0s' $(seq 4100))eval 'npm publish'"
 for t in relaxed medium high; do
-  run_bash "$M_EGRESS" "$t" "$EVALS"; assert_eq deny "$DECISION" "[$t] egress refuses 4,100 code strings rather than read past 4,096"
+  run_bash "$M_EGRESS" "$t" "$EVALS"; assert_eq deny "$DECISION" "[$t] egress refuses 4,100 code strings rather than read past KIT_MAXCODE"
 done
 control "$M_EGRESS" "$MUT_CAPQUIET" "$EVALS" deny
 # Under the cap nothing is refused.

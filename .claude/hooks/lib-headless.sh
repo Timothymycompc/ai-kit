@@ -384,7 +384,7 @@ kit_deny() {
 # KIT_MAXCODE of them or of their statements, or past the byte budget.  One copy,
 # so the numbers it quotes move with the limits.
 kit_deny_deep() {
-  kit_deny "this command carries more shell code than the firewall hooks can read within their timeout: code strings (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec) nested more than 3 levels deep, or more than 4096 of them or of the statements inside them. It is refused at every tier rather than run with part of it unchecked. Run the inner commands directly, or put a long script in a file and run that."
+  kit_deny "this command carries more shell code than the firewall hooks can read within their timeout: code strings (sh -c, eval, watch, flock -c, env -S, git submodule foreach or git rebase --exec) nested more than 3 levels deep, or more than 2048 of them or of the statements inside them. It is refused at every tier rather than run with part of it unchecked. Run the inner commands directly, or put a long script in a file and run that."
 }
 
 # kit_gate <mainnet|publish|irreversible> <reason> — the irreversible set.
