@@ -11,8 +11,8 @@
 # what the user confirms.
 #
 # A subagent is told apart by its payload: Claude Code adds agent_id to a hook that
-# fires inside a subagent or an in-process teammate, never to the main session's, so
-# the main session passes before anything else is read. Reading the record, and the
+# fires inside a subagent (a workflow's agents included) or an in-process teammate,
+# never to the main session's, so the main session passes before anything else is read. Reading the record, and the
 # helper's readers (in-force, hash, export, path), stay open to every agent. Active at
 # every tier, Off included: who may speak for the user does not vary with the firewall.
 #

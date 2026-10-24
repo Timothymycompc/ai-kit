@@ -106,7 +106,7 @@ Three pushes from two hooks, each reading `in-force.md` straight from the record
 | Event | Hook | Fires | What the agent gets |
 |-------|------|-------|---------------------|
 | `SessionStart` | `decisions-inject.sh` | At start, resume, `/clear`, compaction and a fork | Your main session gets the list |
-| `SubagentStart` | `decisions-inject.sh` | At every spawn, resume and teammate message | The subagent gets the list, Explore and Plan included, which load no `CLAUDE.md` |
+| `SubagentStart` | `decisions-inject.sh` | At every spawn, resume and teammate message | The subagent gets the list: a workflow's agents too, and Explore and Plan, which load no `CLAUDE.md` |
 | `PreToolUse`, every tool | `decisions-push.sh` | Before each tool call | The list again, once, when it changed since that agent last saw it |
 
 Every copy opens with the same line:
@@ -143,12 +143,12 @@ It holds no other agent to the contract: not general-purpose, Explore, Plan or a
 
 Whatever the record holds reaches every agent as your decision, so only your main session writes it. `decisions-guard.sh` runs before Bash, `Write`, `Edit`, `MultiEdit`, `NotebookEdit` and context-mode's tools, and refuses the call (exit 2) when it comes from a subagent and either:
 
-- **runs `decisions.sh add` or `supersede`**, from whatever path and however wrapped: behind `env` or `timeout`, inside `sh -c` or `eval`, or fed a heredoc; or
-- **points a file tool inside the record directory**, at an entry, `in-force.md` or the hooks' `seen/` markers, after resolving `..`, linked directories and letter case, so another spelling of the path is the same path.
+- **runs `decisions.sh add` or `supersede`**, from whatever path and however wrapped: behind `env` or `timeout`, inside `sh -c` or `eval`, or in a heredoc that a shell or an interpreter runs; or
+- **points a file tool inside the record directory**, at an entry, `in-force.md` or the hooks' `seen/` markers, after resolving `..`, links and letter case, so another spelling of the path is the same path, and a link into the record is the record whatever the link is named.
 
-Claude Code adds an `agent_id` to the payload of a hook that fires inside a subagent or an in-process teammate, and never to your main session's, so your session passes before anything else is read. Every agent can still read the record and run the helper's readers (`in-force`, `hash`, `export`, `path`), and a command that only names the helper, such as a grep, an echo or a commit message, is not a call. The refusal tells the agent to list the decision in its report under Decisions made or Decisions needed, which your main session records once you confirm it.
+Claude Code adds an `agent_id` to the payload of a hook that fires inside a subagent, a workflow's agents included, or an in-process teammate, and never to your main session's, so your session passes before anything else is read. Every agent can still read the record and run the helper's readers (`in-force`, `hash`, `export`, `path`), and a command that only names the helper, such as a grep, an echo or a commit message, is not a call. The refusal tells the agent to list the decision in its report under Decisions made or Decisions needed, which your main session records once you confirm it.
 
-It runs at every firewall tier, Off included: who may speak for you does not vary with the firewall. A call that never names the helper, and a file path that never names the record's directory, pass on the payload alone, with no `jq` or `awk` spent.
+It runs at every firewall tier, Off included: who may speak for you does not vary with the firewall. A call that never names the helper passes on the payload alone, and a file path that does not resolve into a directory named like the record's passes on the shell's own builtins, with no `jq` or `awk` spent.
 
 ## Firewall tiers
 
@@ -173,8 +173,7 @@ The write guard refuses a subagent's write at every tier.
 ## Limits
 
 - **The write guard covers the expected routes, not every route.** It reads the helper's two write commands and the file tools' target paths. It is not a sandbox, and a write that reaches the directory by other means is outside what it reads.
-- **It knows a subagent by its `agent_id`.** An agent whose hook payload carries none passes as a main session: a separate session, such as another pane or a headless `claude -p` run, is one, and whether a workflow's agents carry an `agent_id` is not yet confirmed.
+- **It knows a subagent by its `agent_id`.** An agent whose hook payload carries none passes as a main session: a separate session, such as another pane or a headless `claude -p` run, is one. A workflow's agents carry one. In Claude Code 2.1.304's source, a tool call's hook payload takes `agent_id` from the id of the agent making the call, and each workflow agent is started under an id of its own. A workflow agent's transcript carries that id and records its `PreToolUse` and `SubagentStart` hooks running. No payload has been captured live.
 - **Recording is a choice the session makes.** An answer you give in chat reaches the record only when the session records it.
 - **A subagent's compaction drops the list it was handed.** Auto-compaction discards the copy injected at spawn, and Claude Code injects the hook's list again only at that agent's next resume or teammate message. The push stays quiet meanwhile, since the agent has already seen this version, so until the list changes it works from whatever its summary kept. Your main session is unaffected: its compaction fires `SessionStart`, which hands it the list again.
-- **Whether `SubagentStart` fires for a workflow's agents** is not yet confirmed.
 - **In a session started as `claude --agent <kit agent>`,** Claude Code's internal agents carry that agent's name, so the report check can send one back once.
