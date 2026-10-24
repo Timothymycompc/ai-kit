@@ -269,6 +269,7 @@ print("wired:", sum(has(e, s) for e, s in want), "of", len(want))
 print("missing:", ", ".join("%s/%s" % (e, s) for e, s in want if not has(e, s)) or "none")
 print("guards:", sum(has("PreToolUse", g) for g in ("secrets-guard", "onchain-guard", "egress-guard", "fetch-exec-guard")))
 print("scripts:", all(pathlib.Path(".claude/hooks", s).is_file() for _, s in want))
+print("guard_files:", all(pathlib.Path(".claude/hooks", f).is_file() for f in ("decisions-guard.awk", "lib-tokenize.awk", "lib-headless.sh")))
 print("hook_set:", load(".claude/security.json").get("hookSetVersion") or 0)
 print("full_install:", pathlib.Path(".claude/VERSION").is_file())
 print("config_dir:", pathlib.Path(".claude/VERSION").parent.name)
@@ -279,6 +280,7 @@ Read these in order; stop at the first that matches.
 - `n/a` `full_install: False`: the plugin path. The plugin's own `hooks/hooks.json` carries all four, so there is nothing to register in the project.
 - WARN `wired: 0` and `guards: 0`: no kit hook is registered at all, so the `hooks` array was emptied or rewritten by hand — **removed on purpose**. Report it and offer no fix.
 - WARN `scripts: False`: a decision hook's script is missing, and a registration whose script is gone runs nothing, silently. Usually **this install predates the decision hooks**; `/update` copies the scripts in and registers the ones the project lacks.
+- WARN `guard_files: False`: a file `decisions-guard.sh` reads is missing (`decisions-guard.awk`, `lib-tokenize.awk` or `lib-headless.sh`), so the guard lets every call through, silently, as the firewall guards do without their libraries. `/update` copies `hooks/` wholesale; run it.
 - OK `wired: 5 of 5`: the hooks are live. Report check 13's state beside it.
 - WARN `wired: 0` and `hook_set` below 4: the scripts are on disk, but `/update`'s registration has not run since they shipped, or it skipped this project. Run `/update`; it prints `[registered]`, or `[skipped]` with the reason.
 - WARN `wired: 0`: `/update` registered them and they were removed since — **removed on purpose**. Report it and offer no fix; the kit re-registers them only when a later version changes its hook set.

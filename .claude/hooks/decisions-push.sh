@@ -29,7 +29,7 @@ case ${CLAUDE_PLUGIN_ROOT-} in
 esac
 
 # ---- decision record: lookup and output (identical in decisions-inject.sh and decisions-push.sh)
-LEAD="The user's decisions in force: never contradict one; report a conflict instead"
+LEAD="The user's decisions in force, from this clone's decision record: never contradict one; report a conflict instead"
 
 # common_dir — the clone's git common directory, in G.
 #

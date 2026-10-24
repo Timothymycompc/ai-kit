@@ -111,7 +111,7 @@ Three pushes from two hooks, each reading `in-force.md` straight from the record
 
 Every copy opens with the same line:
 
-> The user's decisions in force: never contradict one; report a conflict instead
+> The user's decisions in force, from this clone's decision record: never contradict one; report a conflict instead
 
 **The tool-call push is what makes the list live.** A subagent gets the list when it is spawned, but a decision made while it works, in this session or in another worktree, reaches it only at its next tool call. The push is keyed on the agent's `agent_id`, or the session's id for your main session, and on the list's version, with an empty marker directory for each pair under `<record>/seen/`. The marker is claimed before anything is printed, so parallel tool calls push once between them. Injection marks the agent too, so its first tool call does not repeat the list, and markers untouched for a week are removed.
 
@@ -173,7 +173,7 @@ The write guard refuses a subagent's write at every tier.
 ## Limits
 
 - **The write guard covers the expected routes, not every route.** It reads the helper's two write commands and the file tools' target paths. It is not a sandbox, and a write that reaches the directory by other means is outside what it reads.
-- **It knows a subagent by its `agent_id`.** An agent whose hook payload carries none passes as a main session: a separate session, such as another pane or a headless `claude -p` run, is one. A workflow's agents carry one. In Claude Code 2.1.304's source, a tool call's hook payload takes `agent_id` from the id of the agent making the call, and each workflow agent is started under an id of its own. A workflow agent's transcript carries that id and records its `PreToolUse` and `SubagentStart` hooks running. No payload has been captured live.
+- **It knows a subagent by its `agent_id`.** An agent whose hook payload carries none passes as a main session: a separate session, such as another pane or a headless `claude -p` run, is one, and so is an agent under a harness whose hook payloads name no agent. The guard reads Claude Code's `agent_id` and Grok's `agentId`, and an `--agents` install registers no hooks at all. A workflow's agents carry one. In Claude Code 2.1.304's source, a tool call's hook payload takes `agent_id` from the id of the agent making the call, and each workflow agent is started under an id of its own. A workflow agent's transcript carries that id and records its `PreToolUse` and `SubagentStart` hooks running. No payload has been captured live.
 - **Recording is a choice the session makes.** An answer you give in chat reaches the record only when the session records it.
 - **A subagent's compaction drops the list it was handed.** Auto-compaction discards the copy injected at spawn, and Claude Code injects the hook's list again only at that agent's next resume or teammate message. The push stays quiet meanwhile, since the agent has already seen this version, so until the list changes it works from whatever its summary kept. Your main session is unaffected: its compaction fires `SessionStart`, which hands it the list again.
 - **In a session started as `claude --agent <kit agent>`,** Claude Code's internal agents carry that agent's name, so the report check can send one back once.

@@ -130,7 +130,7 @@ except ValueError:
     print("INVALID")'
 }
 
-HEAD_LINE="The user's decisions in force: never contradict one; report a conflict instead"
+HEAD_LINE="The user's decisions in force, from this clone's decision record: never contradict one; report a conflict instead"
 
 # set_record <sha> <text> — write the in-force list and its version, as decisions.sh does.
 set_record() {
@@ -202,6 +202,13 @@ for ev in resume compact clear; do
   run "$INJECT_SS" "$REPO" "$(payload SessionStart source=$ev)"
   assert_contains "$(ctx "$OUT")" "D-3 relaxed stays smooth" "SessionStart source=$ev re-adds the list"
 done
+# Session start sweeps markers older than a week (decisions-inject.sh does it after marking),
+# so a record that never changes, and so triggers no push, still drops them. A fresh one stays.
+mkdir -p "$REC/seen/stale-agent.aaaa0000" "$REC/seen/fresh-agent.aaaa0000"
+touch -t 202001010000 "$REC/seen/stale-agent.aaaa0000"
+run "$INJECT_SS" "$REPO" "$(payload SessionStart source=startup)"
+assert_dir_not_exists "$REC/seen/stale-agent.aaaa0000" "session start sweeps a marker older than a week"
+assert_dir_exists "$REC/seen/fresh-agent.aaaa0000" "and keeps a fresh one"
 mkdir -p "$REPO/sub/dir"
 run "$INJECT_SS" "$REPO/sub/dir" "$(payload SessionStart source=startup)"
 assert_eq "0|" "$RC|$OUT$ERR" "fixture: a subdirectory without the hooks runs nothing"
