@@ -83,7 +83,7 @@ An install copies the named `.claude/` subdirectories (`agents`, `skills`, `comm
 |--------|---------|
 | `install.sh` | One-liner installer: copies config to your project (`--agents` for non-Claude tools, `--with <ids>` for skill extensions) |
 | `validate.sh` | Validates all config integrity (agents, commands, skills, settings, versioning) |
-| `tests/run_all.sh` | Runs full test suite for config validation |
+| `tests/run_all.sh` | Runs full test suite for config validation, one suite per CPU at a time (`-j N` or `SAK_TEST_JOBS=N` to change it, `-j 1` for serial) |
 
 ## GitHub Action for Team Collaboration
 
