@@ -74,8 +74,43 @@ assert_contains "$OUT" "$EXP_PASS passed, 2 failed (of $EXP_TOTAL)" "the runner 
 # simply failing everything.
 rm "$FAKE/tests/test_bb_dies_early.sh" "$FAKE/tests/test_cc_silent_pass.sh"
 CLEAN_RC=0
-CLEAN="$(bash "$FAKE/tests/run_all.sh" 2>&1)" || CLEAN_RC=$?
+CLEAN="$(env -u SAK_TEST_JOBS bash "$FAKE/tests/run_all.sh" 2>&1)" || CLEAN_RC=$?
 assert_eq "0" "$CLEAN_RC" "run_all.sh is green when every suite reports"
 assert_contains "$CLEAN" "All test suites passed!" "the clean run reports success"
+
+# --- The job count: a given count that is missing, empty or not a positive integer is
+# refused before any suite runs. An empty one in particular must not mean "the default":
+# `-j "$N"` with N unset would otherwise run at full width without a word.
+echo "[job count]"
+refused() {  # refused <label> <env-or-empty> <args...> — run_all.sh exits 64 and runs nothing
+  local label="$1" envset="$2" out rc=0; shift 2
+  if [ "$envset" = unset ]; then
+    out="$(env -u SAK_TEST_JOBS bash "$FAKE/tests/run_all.sh" "$@" 2>&1)" || rc=$?
+  else
+    out="$(env SAK_TEST_JOBS="$envset" bash "$FAKE/tests/run_all.sh" "$@" 2>&1)" || rc=$?
+  fi
+  assert_eq "64" "$rc" "run_all.sh refuses $label (exit 64)"
+  assert_eq "0" "$(printf '%s\n' "$out" | grep -c '^--- test_' || true)" "...and runs no suite"
+}
+refused "a bare -j"            unset -j
+refused "a bare --jobs"        unset --jobs
+refused "-j with an empty value" unset -j ""
+refused "--jobs= with no value" unset --jobs=
+refused "-j 0"                 unset -j 0
+refused "-j x"                 unset -j x
+refused "an empty SAK_TEST_JOBS" ""
+refused "SAK_TEST_JOBS=0"      0
+# Controls: the same fixture runs green serially, at a given width, and from the env
+# var, so the refusals above are about the count and nothing else.
+for spec in "-j 1" "-j2" "--jobs=3"; do
+  RC2=0
+  OUT2="$(env -u SAK_TEST_JOBS bash "$FAKE/tests/run_all.sh" $spec 2>&1)" || RC2=$?
+  assert_eq "0" "$RC2" "run_all.sh $spec is green on the clean fixture"
+  assert_contains "$OUT2" "$EXP_PASS passed, 0 failed (of $EXP_PASS)" "...and counts every suite"
+done
+RC2=0
+OUT2="$(env SAK_TEST_JOBS=2 bash "$FAKE/tests/run_all.sh" 2>&1)" || RC2=$?
+assert_eq "0" "$RC2" "SAK_TEST_JOBS=2 is green on the clean fixture"
+assert_contains "$OUT2" "2 at a time" "...and runs two at a time"
 
 print_summary
