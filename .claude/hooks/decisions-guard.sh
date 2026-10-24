@@ -18,9 +18,9 @@
 #
 # It reads the helper's command line the way the firewall guards read theirs, through
 # lib-tokenize.awk, so prose that names the helper (a grep, a commit message, a heredoc
-# document) is not a call. A file tool's path is resolved first, `..` and linked
-# directories included, and compared without case, since a filesystem that folds case
-# opens the same directory either way. It guards the expected routes, not every route:
+# document) is not a call. A file tool's path is resolved first, `..`, linked
+# directories and a link in its last place included, and compared without case, since
+# a filesystem that folds case opens the same directory either way. It guards the expected routes, not every route:
 # it is not a sandbox.
 #
 # stdin: PreToolUse JSON.  Exit 0 = silent, exit 2 = blocked.
@@ -141,11 +141,27 @@ physical() {
   Q=${_r:-/}
 }
 
+# target <path> — what a file tool given <path> opens, in Q: physical, then, while the
+# last component is itself a link, that link's target, at most eight times. readlink
+# runs only for such a link; any other path is resolved by the shell's builtins alone.
+target() {
+  physical "$1"
+  _n=0
+  while [ -L "$Q" ] && [ "$_n" -lt 8 ]; do
+    _t=$(readlink "$Q" 2>/dev/null) && [ -n "$_t" ] || return 0
+    case $_t in /*) ;; *) _t=${Q%/*}/$_t ;; esac
+    physical "$_t"
+    _n=$((_n + 1))
+  done
+}
+
 # edit_target — Write, Edit, MultiEdit, NotebookEdit: refuse a path inside the record.
 # The path is read where the payload first names its key, which for these tools is
 # their input: text inside a string carries its quotes escaped, so "<key>" with its
 # own quotes only ever stands for a key. A path holding an escape is decoded by
-# lib-headless.sh instead. Paths that never name the directory pass at once.
+# lib-headless.sh instead. The path is resolved before it is looked at, links
+# included, so a link into the record is the record whatever the link is named; a
+# path that resolves nowhere near a directory of that name passes with no awk spent.
 edit_target() {
   P=
   for _k in file_path notebook_path filePath notebookPath; do
@@ -161,12 +177,14 @@ edit_target() {
     esac
     [ -z "$P" ] || break
   done
-  case $P in *[Dd][Ee][Cc][Ii][Ss][Ii][Oo][Nn][Ss]*) ;; *) return 0 ;; esac
+  [ -n "$P" ] || return 0
+  target "$P"
+  TGT=$Q
+  case $TGT in *[Dd][Ee][Cc][Ii][Ss][Ii][Oo][Nn][Ss]*) ;; *) return 0 ;; esac
   common_dir || return 0
   physical "$G"
   REC=$Q/decisions
-  physical "$P"
-  KIT_A=$Q KIT_B=$REC LC_ALL=C awk 'BEGIN {
+  KIT_A=$TGT KIT_B=$REC LC_ALL=C awk 'BEGIN {
     a = tolower(ENVIRON["KIT_A"]); b = tolower(ENVIRON["KIT_B"])
     exit !(a == b || index(a, b "/") == 1) }' || return 0
   deny "$P is in the decision record, which only the user's main session writes. $REPORT"

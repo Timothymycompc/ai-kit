@@ -220,6 +220,19 @@ assert_eq "deny" "$(edit_as agent-1 Write "$REPO/.git/worktrees/wt/../../decisio
 assert_eq "deny" "$(edit_as agent-1 Write "$REPO/./.git//decisions/D-x.md")" "so are . and doubled slashes"
 ln -s "$REPO" "$WORK/alias"
 assert_eq "deny" "$(edit_as agent-1 Write "$WORK/alias/.git/decisions/D-x.md")" "a path through a linked directory is resolved first"
+# Resolved before the path is looked at, so a link into the record is the record
+# whatever the link is named: to the directory, to a file inside it, or a chain.
+mkdir -p "$WORK/links" "$REPO/src"
+ln -s "$REC" "$WORK/links/rec"
+ln -s "../a repo/.git/decisions" "$WORK/links/rel"
+ln -s "$REC/in-force.md" "$WORK/links/list"
+ln -s "$WORK/links/list" "$WORK/links/list2"
+ln -s "$REPO/src" "$WORK/links/code"
+assert_eq "deny" "$(edit_as agent-1 Write "$WORK/links/rec/D-x.md")" "a link to the record named without 'decisions' is the record"
+assert_eq "deny" "$(edit_as agent-1 Write "$WORK/links/rel/D-x.md")" "so is a relative one"
+assert_eq "deny" "$(edit_as agent-1 Edit "$WORK/links/list")" "a link to a file inside the record is that file"
+assert_eq "deny" "$(edit_as agent-1 Write "$WORK/links/list2")" "a chain of links is followed to its end"
+assert_eq "silent" "$(edit_as agent-1 Write "$WORK/links/code/lib.rs")" "a link that leads elsewhere passes"
 assert_eq "deny" "$(edit_as agent-1 Write "$REPO/.git/DECISIONS/D-x.md")" "case is folded: a filesystem that folds it opens the record either way"
 assert_eq "deny" "$(edit_as agent-1 Write ".git/decisions/D-x.md")" "a relative path is taken from the session's directory"
 rmdir "$REC"
@@ -356,6 +369,13 @@ control "the case fold" deny "$GOT"
 MUT="$(mutant resolve decisions-guard.sh 'if cd -P -- "$_d" 2>/dev/null; then' 'if false; then')" || MUT=
 GOT=; [ -z "$MUT" ] || GOT="$(edit_as agent-1 Write "$WORK/alias/.git/decisions/D-x.md" "$MUT")"
 control "resolving linked directories" deny "$GOT"
+MUT="$(mutant name-first decisions-guard.sh '  target "$P"' \
+  '  case $P in *[Dd][Ee][Cc][Ii][Ss][Ii][Oo][Nn][Ss]*) ;; *) return 0 ;; esac; target "$P"')" || MUT=
+GOT=; [ -z "$MUT" ] || GOT="$(edit_as agent-1 Write "$WORK/links/rec/D-x.md" "$MUT")"
+control "resolving before the name is read" deny "$GOT"
+MUT="$(mutant last-link decisions-guard.sh 'while [ -L "$Q" ]' 'while false')" || MUT=
+GOT=; [ -z "$MUT" ] || GOT="$(edit_as agent-1 Edit "$WORK/links/list" "$MUT")"
+control "following a link in the last place" deny "$GOT"
 MUT="$(mutant interp decisions-guard.awk 'function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }' '')" || MUT=
 GOT=; [ -z "$MUT" ] || GOT="$(bash_as agent-1 "python3 - <<'PY'${NL}import os${NL}os.system(\"$ADD\")${NL}PY" "$MUT")"
 control "the interpreter-heredoc callback" deny "$GOT"
