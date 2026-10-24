@@ -280,6 +280,15 @@ for TIER in off relaxed medium high; do
   want_tool "$TIER" silent "Grep of a path that does not exist" Grep "$(gp "$FH/no/such/dir")"
 done
 
+# A jq that is installed but fails must not let a Read through: the guard falls back
+# to its text scan, as it does when jq is absent.
+mkdir -p "$FH/brokenjq"; printf '#!/bin/sh\nexit 1\n' > "$FH/brokenjq/jq"; chmod +x "$FH/brokenjq/jq"
+for TIER in relaxed high; do
+  want_tool "$TIER" deny "Read, with a jq that fails" Read "$(rd "$GHF")" "$FH/proj" PATH="$FH/brokenjq:$PATH"
+  want_tool "$TIER" deny "Grep on ~/.config/gh, with a jq that fails" Grep "$(gp "$FH/.config/gh")" "$FH/proj" PATH="$FH/brokenjq:$PATH"
+  want_tool "$TIER" silent "Read of an ordinary file, with a jq that fails" Read "$(rd "$FH/proj/src/app.ts")" "$FH/proj" PATH="$FH/brokenjq:$PATH"
+done
+
 # The payload's cwd, not the directory the hook happens to run in, anchors a relative
 # path: the two differ whenever Claude Code starts the hook from elsewhere.
 for TIER in relaxed high; do
