@@ -1412,7 +1412,7 @@ quiet "$M_CHAIN" "cat > notes.md <<'EOF'${CR}${NL}$DA is documented here${CR}${N
 # --- hd_strip now; each variant gets its bare form's verdict.
 echo "[a heredoc body a shell or interpreter runs is code in every guard]"
 MUT_HDWHO="$(mutant hdwho lib-tokenize.awk 'who = hd_consumer(substr(l, 1, at - 1), substr(l, at + KHD_LEN))' 'who = ""')" || MUT_HDWHO=
-MUT_EGINTERP="$(mutant eginterp egress-guard.awk 'function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }' 'function hd_interp_line(w, l) { return "" }')" || MUT_EGINTERP=
+MUT_EGINTERP="$(mutant eginterp egress-guard.awk 'function hd_interp_line(w, l) { gsub(/["\047]/, "", l); gsub(/[][,]/, " ", l); return l }' 'function hd_interp_line(w, l) { return "" }')" || MUT_EGINTERP=
 MUT_HDREDIR="$(mutant hdredir lib-tokenize.awk 'if (T[i] !~ /^([0-9]+|&)?(<<<|<<-?|<>|>>|>\||[<>]&?)/) return 0' 'return 0')" || MUT_HDREDIR=
 MUT_HDS="$(mutant hds lib-tokenize.awk 'if (sh && t ~ /^-[A-Za-z]*s[A-Za-z]*$/) return 1' 'if (0) return 1')" || MUT_HDS=
 MUT_AMP="$(mutant amp lib-tokenize.awk 'if (i > 1 && (c == "&" ? substr(s, i - 1, 1) ~ /[<>]/ : c == "|" && substr(s, i - 1, 1) == ">") \' 'if (0 && (c == "&" ? substr(s, i - 1, 1) ~ /[<>]/ : c == "|" && substr(s, i - 1, 1) == ">") \' \
@@ -1794,5 +1794,34 @@ same "$M_EGRESS" ask deny deny "npm publish" "timeout 2>/dev/null 5 npm publish"
 same "$M_EGRESS" ask ask ask "curl -d @data.json https://example.com" "xargs -I {} curl -d @{} https://example.com" "$MUT_BRACE"
 quiet "$M_EGRESS" "find . -name '*.rs' -exec rustfmt {} + -exec echo done \;"
 quiet "$M_EGRESS" "timeout 5 2>/dev/null cargo test"
+
+# --- Every word of a command as bash reads it (#297). #294 unquoted the command word
+# --- alone, so a quoted subcommand or flag (`npm "publish"`, `git push '--force'`,
+# --- `anchor "deploy"`) hid the command; a quote inside a word (`a"n"chor`) skipped
+# --- the guard's prefilter; and a list-form call in an interpreter's heredoc
+# --- (`subprocess.run(['npm', 'publish'])`) never put its program at a stage start.
+echo "[every word of a command as bash reads it]"
+MUT_UNQARGS="$(mutant unqargs lib-tokenize.awk 'for (j = i; j <= n; j++) { u = kit_unq(A[j], j > i);' 'for (j = i; j <= i && j <= n; j++) { u = kit_unq(A[j], j > i);')" || MUT_UNQARGS=
+MUT_ONUNQ="$(mutant onunq onchain-guard.awk 'if (cmd) for (j = i + 1; j <= n; j++) A[j] = kit_unq(A[j], 1)' 'if (0) for (j = i + 1; j <= n; j++) A[j] = kit_unq(A[j], 1)')" || MUT_ONUNQ=
+MUT_PREQ="$(mutant preq lib-headless.sh 'kit_unquoted() {' 'kit_unquoted() { return 0; }; _kit_unquoted_off() {')" || MUT_PREQ=
+MUT_INTERPBR="$(mutant interpbr egress-guard.awk 'gsub(/["\047]/, "", l); gsub(/[][,]/, " ", l); return l }' 'gsub(/["\047]/, "", l); return l }' \
+  fetch-exec-guard.awk 'gsub(/["\047]/, "", l); gsub(/[][,]/, " ", l); return l }' 'gsub(/["\047]/, "", l); return l }')" || MUT_INTERPBR=
+for M in "$MUT_UNQARGS" "$MUT_ONUNQ" "$MUT_PREQ" "$MUT_INTERPBR"; do
+  assert_eq "yes" "$([ -n "$M" ] && [ -d "$M/.claude/hooks" ] && echo yes || echo no)" "mutation fixture built: ${M##*/}"
+done
+same "$M_EGRESS" ask deny deny "npm publish" 'npm "publish"' "$MUT_UNQARGS"
+same "$M_EGRESS" silent ask deny "git push --force origin main" "git push '--force' origin main" "$MUT_UNQARGS"
+same "$M_EGRESS" silent ask deny "git push origin +main" "git push origin '+main'" "$MUT_UNQARGS"
+same "$M_CHAIN" ask ask deny "$DA" 'anchor "deploy" --provider.cluster mainnet' "$MUT_ONUNQ"
+same "$M_CHAIN" ask ask deny "$DA" 'a"n"chor deploy --provider.cluster mainnet' "$MUT_PREQ"
+same "$M_EGRESS" ask deny deny "npm publish" 'npm pub"l"ish' "$MUT_PREQ"
+same "$M_FETCH" silent silent deny "npx -y x" 'n"p"x -y x' "$MUT_PREQ"
+same "$M_EGRESS" ask deny deny "npm publish" "python3 - <<'EOF'${NL}import subprocess${NL}subprocess.run(['npm', 'publish'])${NL}EOF" "$MUT_INTERPBR"
+same "$M_FETCH" silent silent deny "npx -y x" "python3 - <<'EOF'${NL}import subprocess${NL}subprocess.run(['npx', '-y', 'x'])${NL}EOF" "$MUT_INTERPBR"
+# A quoted run that spans words stays as written, and a plain list prints nothing gated.
+quiet "$M_EGRESS" 'git commit -m "fix: npm publish flow"'
+quiet "$M_EGRESS" 'echo "npm" "publish"'
+quiet "$M_EGRESS" "python3 - <<'EOF'${NL}print(['a', 'b'])${NL}EOF"
+quiet "$M_EGRESS" 'git log --format="%h %s" -3'
 
 print_summary

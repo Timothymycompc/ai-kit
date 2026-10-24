@@ -81,6 +81,8 @@ function strip(st, cmd,   n, A, i, j, w, b, cur, hadw, keep, out, r) {
   # The command word as the shell looks it up (#293), unless a shell or eval took
   # it as the payload whose opening quote is read below.
   if (cmd && i <= n && !(hadw && (is_shell(cur) || cur == "ash" || cur == "eval") && A[i] ~ /^["\047]/)) A[i] = kit_unq(A[i])
+  # And every word after it (#297): `anchor "deploy" …` is anchor deploy.
+  if (cmd) for (j = i + 1; j <= n; j++) A[j] = kit_unq(A[j], 1)
   out = ""
   for (j = i; j <= n; j++) out = out (out == "" ? "" : " ") A[j]
   # A wrapper was consumed, so a quote here opens its payload (sh -c "solana
@@ -103,7 +105,7 @@ function field_pos(s, i,   p, f) {
 # An interpreter's heredoc keeps its brackets and loses its string delimiters,
 # the shape lib-headless.sh gives a non-shell MCP payload for this gate:
 # os.system("solana program deploy …") then anchors on its `(`.
-function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }
+function hd_interp_line(w, l) { gsub(/["\047]/, "", l); gsub(/[][,]/, " ", l); return l }
 
 # norm — print text a line at a time, each statement through strip().  qs is the
 # quote stack carried from statement to statement and line to line: a statement

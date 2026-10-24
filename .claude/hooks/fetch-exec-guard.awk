@@ -29,7 +29,7 @@ function kit_wrapper(c) { return (is_wrapper(c) || is_shell(c)) }
 # non-shell MCP payload: string delimiters out and brackets kept, so
 # os.system("npx -y x") starts a stage of its own.  The library's hd_strip calls
 # it for every line of a body an interpreter runs.
-function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }
+function hd_interp_line(w, l) { gsub(/["\047]/, "", l); gsub(/[][,]/, " ", l); return l }
 # reskip=1 so `env NODE_ENV=1 npx -y x` finds npx; operands=1 so `timeout 5 npx
 # -y x` does too — skipping a wrapper's OPTIONS alone leaves "5" in command
 # position, which is the bug that bit twice.
