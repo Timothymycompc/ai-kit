@@ -138,7 +138,8 @@ assert_eq "3" "$(python3 -c "
 import json
 hooks = (json.load(open('$FW_SETTINGS')).get('hooks') or {}).get('PreToolUse') or []
 print(len([e for e in hooks
-           if any(g in ' '.join(h.get('command','') for h in e.get('hooks') or [])
+           if e.get('matcher') == 'Bash|mcp__context-mode__.*'
+           and any(g in ' '.join(h.get('command','') for h in e.get('hooks') or [])
                   for g in ('secrets-guard','onchain-guard','egress-guard'))]))" 2>/dev/null)" \
   "the fixture really has three kit guard registrations to migrate"
 python3 -c 'import json, sys
@@ -149,7 +150,10 @@ d["tier"] = "high"
 json.dump(d, open(sys.argv[1], "w"), indent=2)' "$FW_SECURITY"
 python3 -c 'import json, sys
 d = json.load(open(sys.argv[1]))
-for e in (d.get("hooks") or {}).get("PreToolUse", []):
+pre = (d.get("hooks") or {}).get("PreToolUse", [])
+# That install predates the Read|Grep entry too.
+pre[:] = [e for e in pre if e.get("matcher") != "Read|Grep"]
+for e in pre:
     e["matcher"] = "Bash"
 json.dump(d, open(sys.argv[1], "w"), indent=2)' "$FW_SETTINGS"
 
@@ -172,9 +176,15 @@ hooks = (json.load(open('$FW_SETTINGS')).get('hooks') or {}).get('PreToolUse') o
 bad = [e for e in hooks
        if any(g in ' '.join(h.get('command','') for h in e.get('hooks') or [])
               for g in ('secrets-guard','onchain-guard','egress-guard'))
-       and e.get('matcher') != 'Bash|mcp__context-mode__.*']
+       and e.get('matcher') not in ('Bash|mcp__context-mode__.*', 'Read|Grep')]
 print(len(bad))" 2>/dev/null)" \
   "every kit guard now matches Bash and context-mode's MCP tools"
+assert_eq "1" "$(python3 -c "
+import json
+hooks = (json.load(open('$FW_SETTINGS')).get('hooks') or {}).get('PreToolUse') or []
+print(len([e for e in hooks if e.get('matcher') == 'Read|Grep'
+           and 'secrets-guard' in ' '.join(h.get('command','') for h in e.get('hooks') or [])]))" 2>/dev/null)" \
+  "the same update registers secrets-guard on Read and Grep (hook set 3)"
 # The rule-set catch-up has to have re-applied High, which is what adds the tool denies:
 # context-mode's five and Playwright's two, plus mcp__cloudflare__execute and
 # mcp__playwright__browser_evaluate, which only High carries.

@@ -124,12 +124,22 @@ assert_contains "$OUT" "declares the maintainer tier" "the failure names the mai
 cp "$TEMP_DIR/security.json.orig" "$TEMP_DIR/.claude/security.json"
 python3 -c 'import json, sys
 d = json.load(open(sys.argv[1]))
-d["permissions"]["deny"] = [r for r in d["permissions"]["deny"] if r not in ("Bash(claude *)", "Bash(claude)")]
+d["permissions"]["deny"] = [r for r in d["permissions"]["deny"] if r not in ("Edit(/.claude/hooks/**)", "Bash(claude mcp add*)", "Edit(/.safe-ai-skill/**)")]
 d["sandbox"]["excludedCommands"].append("git submodule *")
 json.dump(d, open(sys.argv[1], "w"), indent=2)' "$TEMP_DIR/.claude/settings.json"
 OUT="$(cd "$TEMP_DIR" && bash validate.sh 2>&1)" && RC=0 || RC=$?
 assert_eq "1" "$RC" "validate.sh fails when settings.json carries the maintainer rules under another tier name"
 assert_contains "$OUT" "committed firewall carries the maintainer tier" "the failure says the committed block is the maintainer one"
+cp "$TEMP_DIR/settings.json.orig" "$TEMP_DIR/.claude/settings.json"
+# The deny list alone gives it away too: every user tier denies Edit on the guard hooks,
+# and only the maintainer tier omits it.
+python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+d["permissions"]["deny"] = [r for r in d["permissions"]["deny"] if r != "Edit(/.claude/hooks/**)"]
+json.dump(d, open(sys.argv[1], "w"), indent=2)' "$TEMP_DIR/.claude/settings.json"
+OUT="$(cd "$TEMP_DIR" && bash validate.sh 2>&1)" && RC=0 || RC=$?
+assert_eq "1" "$RC" "validate.sh fails when settings.json leaves the guard hooks editable"
+assert_contains "$OUT" "does not deny Edit(/.claude/hooks/**)" "the failure names the missing guard-hooks deny"
 cp "$TEMP_DIR/settings.json.orig" "$TEMP_DIR/.claude/settings.json"
 
 # A default MCP server on @latest (or any unpinned npx package) fails validation
