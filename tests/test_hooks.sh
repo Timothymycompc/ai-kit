@@ -1099,7 +1099,8 @@ done
 # continuation where the shell does and nowhere else.
 shell_text() { printf '%s\n' "$1" | KIT_SHELL_TEXT=1 awk -f "$REPO_ROOT/.claude/hooks/lib-tokenize.awk" -f "$REPO_ROOT/.claude/hooks/egress-guard.awk"; }
 assert_eq "git push --force" "$(shell_text "git push $BS${NL}--force")" "a continuation outside quotes is joined"
-assert_eq "echo \"ab\"" "$(shell_text "echo \"a$BS${NL}b\"")" "a continuation inside double quotes is joined, as the shell joins it"
+assert_eq "echo \"a bc\"" "$(shell_text "echo \"a b$BS${NL}c\"")" "a continuation inside double quotes is joined, as the shell joins it"
+assert_eq "echo ab" "$(shell_text 'echo "ab"')" "a quoted word that holds no blank is read unquoted, as the shell reads it (#297)"
 assert_eq "echo 'a$BS${NL}b'" "$(shell_text "echo 'a$BS${NL}b'")" "a backslash-newline inside single quotes is kept: it is not a continuation"
 assert_eq "echo foo$BS$BS${NL}b" "$(shell_text "echo foo$BS$BS${NL}b")" "an escaped backslash at the end of a line is not a continuation"
 assert_eq "true; npm publish; fi" "$(shell_text "if true; then npm publish; fi")" "the reserved words leading a command are dropped"
