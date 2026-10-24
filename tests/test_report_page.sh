@@ -191,7 +191,7 @@ cat > "$T/report.json" <<'EOF'
          {"href": "https://other.example/", "label": "https://github.com/solanabr/solana-ai-kit/pull/259"},
          {"href": "docs/a.md", "label": "solanabr/solana-ai-kit#259"}, "https://github.com/o/r/pull/12abc"]},
       {"text": "The CRLF check appends twice", "status": "NEEDS-FIX",
-       "links": [{"href": "tests/test_update.sh:500", "label": "the CRLF test"}]},
+       "links": [{"href": "tests/test_update_migrations.sh:125", "label": "the CRLF test"}]},
       {"text": "A planted json.py runs", "status": "REFUTED"},
       {"text": "A plain object item"},
       "A bare string item",
@@ -576,7 +576,7 @@ function report(file) {
     ['https://other.example/', 'other.example'],
     ['../../docs/a.md', 'docs/a.md'],
     ['https://github.com/o/r/pull/12abc', 'github.com/o/r/pull/12abc'],
-    ['../../tests/test_update.sh', 'the CRLF test'],
+    ['../../tests/test_update_migrations.sh', 'the CRLF test'],
     ['https://github.com/o/r/commit/0123456789abcdef', 'o/r@0123456'],
     ['../../src/app/%5Bslug%5D/page.tsx', 'src/app/[slug]/page.tsx'],
     ['../../docs/', 'docs/'],
@@ -585,7 +585,7 @@ function report(file) {
     ['https://github.com/o/r/actions/runs/1', 'github.com/o/r/actions/runs/1'],
   ]), 'https URLs and repo-relative paths become links: a PR, issue or commit by the name its own URL gives, a path from the project root with its line kept in the label, and a label naming another target replaced by the link\'s own', links);
   const labelled = anchors(app).filter((l) => text(l) === 'the CRLF test')[0];
-  say(labelled && labelled.getAttribute('title') === 'tests/test_update.sh:500', 'a labelled link keeps what it points at as its tooltip');
+  say(labelled && labelled.getAttribute('title') === 'tests/test_update_migrations.sh:125', 'a labelled link keeps what it points at as its tooltip');
   say(anchors(app).every((l) => l.getAttribute('target') === '_blank' && l.getAttribute('rel') === 'noopener noreferrer'),
     'every link opens in a new tab, with no opener and no referrer');
   say(same(nolinks(app), ['javascript:alert(1)', 'data:text/html,<b>x</b>', 'http://example.com/x', '//evil.example/x',
