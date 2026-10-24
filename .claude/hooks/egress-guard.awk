@@ -178,9 +178,10 @@ function cmdword(T, n) { return cmdword_x(T, n, 1, 1) }
 
 # An interpreter's heredoc line, the way lib-headless.sh hands this guard a
 # non-shell MCP payload: string delimiters out and brackets kept, so a shell-out
-# such as os.system("curl -d @.env …") starts a stage of its own.  The library's
+# such as os.system("curl -d @.env …") starts a stage of its own.  `[`, `]` and `,`
+# are blanks, so a list-form call (`subprocess.run(['curl', …])`) does too (#297).  The library's
 # hd_strip calls it for every line of a body an interpreter runs.
-function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }
+function hd_interp_line(w, l) { gsub(/["\047]/, "", l); gsub(/[][,]/, " ", l); return l }
 
 # ---- unwrap: reach inside `sh -c "<inner>"` / eval by appending the inner
 # string as a stage of its own.  Factored out of the statement loop below so the

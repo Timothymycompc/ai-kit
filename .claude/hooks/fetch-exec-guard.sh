@@ -51,11 +51,15 @@ KIT_INPUT=$(cat)
 # test alone, find no "install", and bail — a miss.  Its last arm is a
 # backslash-newline as JSON spells it, since the shell deletes that pair before
 # it reads words: `np\<newline>x -y evil` names no runner here and runs one.
-case $KIT_INPUT in
+# A quote or backslash inside a word does not hide it from bash (`n"p"x -y x`), so
+# the words are looked for in a copy without them as well (#297).
+KIT_PRE="$KIT_INPUT
+$(kit_unquoted "$KIT_INPUT")"
+case $KIT_PRE in
   *npx* | *dlx* | *bunx* | *uvx* | *pipx* | *npm* | *bun* | *yarn* | *pnpm* | *'\\\n'*) ;;
-  *cargo*) case $KIT_INPUT in *install*) ;; *) exit 0 ;; esac ;;
-  *uv*) case $KIT_INPUT in *run* | *tool*) ;; *) exit 0 ;; esac ;;
-  *go*) case $KIT_INPUT in *install* | *run*) ;; *) exit 0 ;; esac ;;
+  *cargo*) case $KIT_PRE in *install*) ;; *) exit 0 ;; esac ;;
+  *uv*) case $KIT_PRE in *run* | *tool*) ;; *) exit 0 ;; esac ;;
+  *go*) case $KIT_PRE in *install* | *run*) ;; *) exit 0 ;; esac ;;
   *) exit 0 ;;
 esac
 

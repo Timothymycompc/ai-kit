@@ -146,7 +146,10 @@ finish() { [ -z "$ASK_LATER" ] || kit_ask "$ASK_LATER"; exit 0; }
 # `eval`, `watch`, `flock -c`, `env -S`, `git submodule foreach`, `git rebase
 # --exec` — follows on lines of its own, so a statement starts at its head.
 KIT_CMDJ=$KIT_CMD
-case $KIT_CMD in
+# The words are looked for with quotes and backslashes removed as well: bash runs
+# `npm pub"l"ish` as npm publish (#297).
+case "$KIT_CMD
+$(kit_unquoted "$KIT_CMD")" in
   # Neither pattern can match a text naming none of these, and only a
   # continuation could assemble one, so the awk pass is skipped there.
   *publish* | *git* | *gh* | *"\\$KIT_NL"*)

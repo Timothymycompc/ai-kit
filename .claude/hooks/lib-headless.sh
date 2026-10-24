@@ -174,7 +174,7 @@ kit_mcp_normalize() {
     else
       # \042 " \047 ' \140 ` — string delimiters in every language in the enum.
       _acc="$_acc kit_mcp_code $(printf '%s' "$_v" | tr '\042\047\140()[]{},' '           ')
-$(printf '%s' "$_v" | tr '\042\047\140' '   ')
+$(printf '%s' "$_v" | tr '\042\047\140\133\135\054' '      ')
 "
     fi
   fi
@@ -369,6 +369,11 @@ kit_ask() {
   _kit_emit ask "$1"
   exit 0
 }
+
+# kit_unquoted <text> — text without quotes or backslashes, for a prefilter that
+# looks for a word: bash runs `a"n"chor deploy` and `npm pub"l"ish` as the words
+# without them, which a glob on the raw text never saw (#297).
+kit_unquoted() { printf '%s' "$1" | tr -d "\"'\\\\"; }
 
 # kit_deny <reason> — hard block.  Both shapes: the JSON decision for harnesses
 # that read stdout, stderr + exit 2 for Claude Code (and for Grok Build, which

@@ -295,8 +295,10 @@ function kit_sep(s,   off, p, c, q) {
 # `'anchor' deploy` run npm and anchor, and the anchored patterns, which read the
 # word as written, met nothing (#293).  w comes back unchanged when its quotes do
 # not close inside it (a quoted run that spans words) or the result is no plain
-# command name, so a quoted `;` or blank never becomes a separator.
-function kit_unq(w,   o, i, c, q, L) {
+# command name, so a quoted `;` or blank never becomes a separator.  With arg set
+# it reads any other word of the command, where `=` and `,` are plain too:
+# `npm "publish"` and `git push '--force'` hid the publish and the push (#297).
+function kit_unq(w, arg,   o, i, c, q, L) {
   if (w !~ /["\047\\]/) return w
   o = ""; q = ""; L = length(w)
   for (i = 1; i <= L; i++) {
@@ -311,7 +313,9 @@ function kit_unq(w,   o, i, c, q, L) {
     if (c == SQ || c == "\"") { q = c; continue }
     o = o c
   }
-  return (q == "" && o ~ /^[A-Za-z0-9_.\/+${}~:@%-]+$/) ? o : w
+  if (q != "") return w
+  if (arg) return (o ~ /^[A-Za-z0-9_.\/+${}~:@%=,-]+$/) ? o : w
+  return (o ~ /^[A-Za-z0-9_.\/+${}~:@%-]+$/) ? o : w
 }
 
 # kit_lead_redir — kit_redir for the normalisers that rewrite a statement's text,
@@ -1016,7 +1020,7 @@ function kit_unreserve(st,   lead) {
 # publish` met `Bash(npm *)` in permissions.allow and nothing else; read here as
 # it was, the publish pattern never saw npm in command position.  A text with
 # nothing to drop comes back unchanged.
-function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j, r, u) {
+function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j, r, u, ch) {
   lead = st; sub(/[^ \t].*$/, "", lead)
   n = split(substr(st, length(lead) + 1), A, /[ \t]+/)
   i = 1; keep = ""
@@ -1043,9 +1047,10 @@ function kit_unwrap(st,   lead, n, A, i, w, cur, keep, out, j, r, u) {
     while (i <= n && (r = kit_lead_redir(A, n, i)) > 0) i += r
     if (i <= n && kit_wrapper_operand(cur, A[i])) i++
   }
-  u = (i <= n) ? kit_unq(A[i]) : ""
-  if (i == 1 && u == A[i]) return st
-  if (i <= n) A[i] = u
+  # Every word as the shell reads it (#293, #297): `npm "publish"` is npm publish.
+  ch = 0
+  for (j = i; j <= n; j++) { u = kit_unq(A[j], j > i); if (u != A[j]) { A[j] = u; ch = 1 } }
+  if (i == 1 && !ch) return st
   out = ""
   for (j = i; j <= n; j++) if (A[j] != "") out = out (out == "" ? "" : " ") A[j]
   return lead keep out
