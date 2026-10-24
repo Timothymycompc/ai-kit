@@ -135,7 +135,7 @@ Assumptions: the devnet program id is unchanged since the last deploy
 Next owner: solana-qa-engineer, for the fuzz pass
 ```
 
-`none` is a fine answer. Decoration doesn't matter (bold, headings, bullets, numbering), and common variants count, such as "What I verified", "Open questions", "Premises" or "Next steps". The project's `CLAUDE.md` asks every subagent for these five lines, so a kit agent that follows it passes first time; one that doesn't costs one extra turn.
+`none` is a fine answer. Decoration doesn't matter (bold, headings, bullets, numbering), and common variants count, such as "What I verified", "Open questions", "Premises" or "Next steps". So do up to eight words between a label and its colon, as in "Assumptions made:", "Decisions needed from you:" or "Verified by running anchor test:", and a heading or a line wholly in bold needs no colon. A sentence that merely opens with one of the words, such as "Verified the build works.", is not a label. The project's `CLAUDE.md` asks every subagent for these five lines, so a kit agent that follows it passes first time; one that doesn't costs one extra turn.
 
 It holds no other agent to the contract: not general-purpose, Explore, Plan or agents you wrote, nor Claude Code's internal ones. It reads the report as delivered, including one handed back through the `SubagentHandback` tool, skips a report that is JSON (a workflow agent's structured output) or empty, and sends an agent back at most once: the stop that follows goes through whatever it holds. It checks that the labels are there, not that what follows them is true, and it reads English labels only. It runs in every project, with a record or without one.
 

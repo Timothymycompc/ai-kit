@@ -431,6 +431,26 @@ assert_contains "$D" "write none where there is nothing to say" "the reason says
 run "$CHECK" "$REPO" "$(stop anchor-engineer "All done.${NL}Next, I ran the tests and they pass.")"
 assert_contains "$(decision "$OUT")" "missing: Verified, Decisions made, Decisions needed, Assumptions, Next owner." \
   "prose that starts with a label word is not a label"
+# A few words between a label and its colon, dash or bar still make the label: the
+# phrasings agents reach for. A heading or a wholly bold line needs no colon.
+NATURAL="Done.${NL}Verified by running anchor test: 14 passing${NL}Decisions I made: none${NL}Decisions needed from you: none${NL}Assumptions made: devnet is reachable${NL}Hand off to: solana-qa-engineer"
+run "$CHECK" "$REPO" "$(stop anchor-engineer "$NATURAL")"
+assert_eq "0|silent" "$RC|$(decision "$OUT")" "natural phrasings pass: Verified by running ...:, Decisions needed from you:, Assumptions made:, Hand off to:"
+NATURAL2="Done.${NL}Verified that the tests pass: cargo test, 3 passing${NL}Decisions made so far: none${NL}Decisions needed from the user - none${NL}Assumptions I made: none${NL}Next owner after review | the lead"
+run "$CHECK" "$REPO" "$(stop anchor-engineer "$NATURAL2")"
+assert_eq "0|silent" "$RC|$(decision "$OUT")" "and with a dash or a table bar after the words"
+HEADINGS="Done.${NL}## Verified by running the suite${NL}cargo test, 3 passing${NL}**Decisions made so far**${NL}none${NL}## Decisions needed from you${NL}none${NL}### Assumptions made${NL}none${NL}## Next owner${NL}the lead"
+run "$CHECK" "$REPO" "$(stop anchor-engineer "$HEADINGS")"
+assert_eq "0|silent" "$RC|$(decision "$OUT")" "a heading, or a line wholly in bold, is a label without a colon"
+# Strict where it matters: a sentence is not a label, however it opens.
+PROSE="Verified the build works and the tests pass.${NL}Decided to keep the existing seeds.${NL}Decisions needed none really.${NL}Assumed devnet is reachable.${NL}Next the QA engineer should run the fuzz pass."
+run "$CHECK" "$REPO" "$(stop anchor-engineer "$PROSE")"
+assert_contains "$(decision "$OUT")" "missing: Verified, Decisions made, Decisions needed, Assumptions, Next owner." \
+  "sentences that open with a label word, with no colon, dash or bar after it, are prose"
+CLOSE="Verified the build, then ran: cargo test${NL}Decisions made: none${NL}Decisions needed: none${NL}Assumptions about the network that I could not check in time: none${NL}Nextjs upgrade: done"
+run "$CHECK" "$REPO" "$(stop anchor-engineer "$CLOSE")"
+assert_contains "$(decision "$OUT")" "missing: Verified, Assumptions, Next owner." \
+  "a comma before the colon, more than eight words, or a longer word is not a label"
 run "$CHECK" "$REPO" "$(stop anchor-engineer "All done." stop_hook_active=true)"
 assert_eq "0|silent" "$RC|$(decision "$OUT")" "once only: stop_hook_active lets the agent stop"
 run "$CHECK" "$REPO" "$(stop solana-ai-kit:solana-qa-engineer "All done.")"

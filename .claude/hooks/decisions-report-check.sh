@@ -124,14 +124,29 @@ MISSING=$(printf '%s\n' "$INPUT" | LC_ALL=C awk '
   }
   # lab <line> <label> — the line opens with the label and then a colon, a dash, a
   # table bar or nothing, optionally after a parenthesis: "verified (cmd): ran it",
-  # "next owner", "decisions made - none". Prose that merely starts with the word does
-  # not count: "next, I ran the tests" is not a Next owner line.
-  function lab(l, re,   t) {
+  # "next owner", "decisions made - none". Up to eight words may come between the
+  # label and its colon, bar or spaced dash, the way people write labels: "assumptions
+  # made:", "decisions needed from you:", "verified by running anchor test:". On a
+  # heading or a line wholly in bold (FORM) the end of the line closes it too. Prose
+  # that merely starts with the word does not count: "next, I ran the tests",
+  # "verified the build works" and "verified the build, then ran: x" are not labels.
+  function lab(l, re,   t, p, q, k, n, W) {
     if (!match(l, re)) return 0
     t = substr(l, RLENGTH + 1)
     sub(/^[ \t]*(\([^)]*\))?[ \t]*/, "", t)
-    return t == "" || t ~ /^[:|]/ || t == "-" || t ~ /^-[ \t]/ || index(t, "—") == 1 || index(t, "–") == 1
+    if (t == "" || t ~ /^[:|]/ || t == "-" || t ~ /^-[ \t]/ || index(t, "—") == 1 || index(t, "–") == 1) return 1
+    if (substr(l, RLENGTH + 1, 1) !~ /[ \t]/) return 0
+    p = 0
+    for (k = 1; k <= 5; k++) { q = index(t " ", TERM[k]); if (q && (!p || q < p)) p = q }
+    if (!p && FORM) p = length(t) + 1
+    if (p < 2) return 0
+    q = substr(t, 1, p - 1)
+    if (length(q) > 80 || q ~ /[,;!?]/ || q ~ /\.[ \t]/) return 0
+    n = 0; k = split(q, W, /[ \t]+/)
+    while (k > 0) { if (W[k] != "") n++; k-- }
+    return n >= 1 && n <= 8
   }
+  BEGIN { TERM[1] = ":"; TERM[2] = "|"; TERM[3] = " - "; TERM[4] = "—"; TERM[5] = "–" }
   FNR == 1 { f++ }
   f == 1 { payload = payload $0 "\n"; next }
   /"name": ?"SubagentHandback"/ { hb = $0 }
@@ -146,6 +161,9 @@ MISSING=$(printf '%s\n' "$INPUT" | LC_ALL=C awk '
     n = split(r, L, "\n")
     for (i = 1; i <= n; i++) {
       # Markdown around a label is decoration: emphasis, headings, bullets, numbering.
+      # A heading, or a line wholly in bold, is a label by its form.
+      o = L[i]; sub(/^[ \t>]*([-*+][ \t]+|[0-9]+[.)][ \t]+)?/, "", o); sub(/[ \t\r]+$/, "", o)
+      FORM = (o ~ /^#/ || (o ~ /^(\*\*|__)/ && o ~ /(\*\*|__):?$/))
       l = tolower(L[i]); gsub(/[*_`]/, "", l)
       sub(/^[^a-z0-9]+/, "", l)
       if (sub(/^[0-9]+[.)]/, "", l)) sub(/^[^a-z0-9]+/, "", l)
@@ -155,7 +173,7 @@ MISSING=$(printf '%s\n' "$INPUT" | LC_ALL=C awk '
           || lab(l, "^open (decisions?|questions?)") || lab(l, "^(decisions?|questions?) for (you|the user|the lead)")) dn = 1
       if (lab(l, "^assum(ptions?|ed)") || lab(l, "^premises?")) a = 1
       if (lab(l, "^next( owner| steps?| up)?") || lab(l, "^who should (take|pick up|own)") \
-          || lab(l, "^hand-?(off|over)")) nx = 1
+          || lab(l, "^hand[- ]?(off|over)")) nx = 1
     }
     m = ""
     if (!v) m = m ", Verified"
