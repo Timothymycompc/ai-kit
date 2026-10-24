@@ -15,6 +15,7 @@ echo "[test_skills_helpers] skills.sh list helpers under pipefail"
 
 DEFS="$(awk '/^has_line\(\)/ || /^valid_name\(\)/' "$SKILLS")"
 assert_eq "2" "$(printf '%s\n' "$DEFS" | grep -c '()')" "fixture: both helpers found in skills.sh"
+assert_eq "0" "$(printf '%s\n' "$DEFS" | grep -vc '}$' || true)" "fixture: each is a whole one-line definition, so none is cut short"
 eval "$DEFS"
 
 BIG="$(seq 1 300000 | sed 's/^/pack-/')"

@@ -133,7 +133,8 @@ gitlink() {
 
 # Pipe-free on purpose: under pipefail, `printf … | grep -q` fails whenever grep exits on
 # its first match before printf has written the rest, which a long list makes routine on
-# Linux and which read as "line absent".
+# Linux and which read as "line absent". A needle spanning several lines must match them
+# consecutively, where grep -F took each as its own pattern; no caller passes one.
 has_line() { [[ $'\n'"$1"$'\n' == *$'\n'"$2"$'\n'* ]]; }
 
 has_word() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }

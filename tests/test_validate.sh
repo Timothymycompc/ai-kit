@@ -29,8 +29,13 @@ cp "$REPO_ROOT/validate.sh" "$REPO_ROOT/.env.example" "$REPO_ROOT/.mcp.json" "$T
 cp -RP "$REPO_ROOT/plugin" "$TEMP_DIR/"
 
 # why_failed — after a run that should have passed, print the lines validate.sh failed
-# on, so a failure in CI says what it was rather than only that it happened.
-why_failed() { [ "$RC" = 0 ] || awk '/FAIL|ERROR|Error|error:/ && n++ < 20 { print "    validate.sh: " $0 }' <<<"$OUT"; }
+# on, or its last ten lines when none says FAIL or ERROR, so a failure in CI says what it
+# was rather than only that it happened.
+why_failed() {
+  [ "$RC" = 0 ] || awk '/FAIL|ERROR|Error|error:/ && n++ < 20 { print "    validate.sh: " $0 }
+    { last[NR % 10] = $0 }
+    END { if (!n) for (i = NR - 9; i <= NR; i++) if (i > 0) print "    validate.sh (tail): " last[i % 10] }' <<<"$OUT"
+}
 
 OUT="$(cd "$TEMP_DIR" && bash validate.sh 2>&1)" && RC=0 || RC=$?
 assert_eq "0" "$RC" "validate.sh exits 0 when the ext/ submodules are not checked out"
