@@ -928,8 +928,14 @@ function rmkill_assign(ST, nst,   q, ng, G, g, n, T, i, nm) {
 }
 function rmkill_main(   rtx, rnst, RST, q, ng, G, g, n, T, c0, why) {
   RMK_HOME = ENVIRON["HOME"]; RMK_CWD = ENVIRON["KIT_CWD"]; RMK_PROJ = ENVIRON["CLAUDE_PROJECT_DIR"]
-  rtx = split_cmd(kit_shell_text(raw, 0))
+  # Heredoc bodies and code strings are read the way every other pass reads them: a
+  # body is a command only when something runs it (hd_strip), so a document that
+  # names `rm -rf ~` stays silent while `bash <<'EOF'` around it does not, and the
+  # statements of an `eval` or `sh -c` string are statements too (kit_expand_code).
+  # A command nested too deep to read is refused by the other guards (KIT_DEEP).
+  rtx = split_cmd(hd_strip(kit_shell_text(raw, 0), 0))
   rnst = split(rtx, RST, /\001/)
+  rnst = kit_expand_code(RST, rnst)
   rmkill_assign(RST, rnst)
   for (q = 1; q <= rnst; q++) {
     ng = split(RST[q], G, /\002/)
