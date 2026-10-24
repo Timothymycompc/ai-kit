@@ -257,6 +257,29 @@ own_fw
 assert_eq "1 1 generated" "$(own_state "$X_RELAXED")" "first apply: a user rule identical to a kit rule is taken as the kit's (documented)"
 assert_eq "1 0 generated" "$(own_state "$U1")" "first apply: the user rule beside it is not"
 
+# Rule set 10 dropped 13 strings that every release before #165 emitted. An install
+# upgrading from one still holds an unmarked record, so its re-apply must read each of
+# them as the kit's and remove it. kit_owned() finds them only in LEGACY_RULE_IDS: no
+# tier emits them now, and missing there, all 13 stayed, announced as the user's own.
+DROPPED_10=("Bash(git -C *)" "Bash(claude *)" "Bash(claude)" "Bash(rm -rf /*)" "Bash(rm -rf ~*)"
+            "Bash(rm -rf ~/*)" "Bash(rm -rf .*)" "Bash(git branch -D*)" "Bash(git branch *-D*)"
+            "Bash(git branch --delete*)" "Bash(git branch *--delete*)" "Bash(git branch -f*)"
+            "Bash(git branch * -f*)")
+python3 - "$OWN/.claude/security.json" "$OWN/.claude/settings.json" "${DROPPED_10[@]}" <<'PY'
+import json, sys
+sec_p, set_p = sys.argv[1:3]
+drop = sys.argv[3:]
+sec, s = json.load(open(sec_p)), json.load(open(set_p))
+e = sec["enforced"]
+e.pop("ruleIdsScope", None)
+e["ruleIds"] += drop
+s.setdefault("permissions", {}).setdefault("deny", []).extend(drop)
+json.dump(sec, open(sec_p, "w")); json.dump(s, open(set_p, "w"))
+PY
+assert_eq "13 13 unscoped" "$(own_state "${DROPPED_10[@]}")" "planted: a pre-#165 record holding the 13 rules rule set 10 dropped"
+own_fw
+assert_eq "0 0 generated" "$(own_state "${DROPPED_10[@]}")" "a pre-#165 record: every rule rule set 10 dropped is removed, none kept as the user's"
+
 # ── harvest every tier once, then assert over the four generated files ──────
 for t in $TIERS; do
   fw "$t"

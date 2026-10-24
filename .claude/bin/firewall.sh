@@ -1936,9 +1936,11 @@ ORDER = {
 }
 
 # Rules the kit once wrote that no tier re-emits: the pre-firewall set, and what rule
-# sets 1-9 dropped. Read through kit_owned(), which decides removal for a first apply
+# sets 1-10 dropped. Read through kit_owned(), which decides removal for a first apply
 # and for a record written before #165. A record written since lists exactly what was
-# generated, so a rule a later rule set drops needs no entry here.
+# generated, so a rule a later rule set drops needs an entry here only if a release
+# from before #165 could have recorded it — such an install upgrades straight to the
+# newest rule set, and without the entry its re-apply keeps the rule as the user's.
 LEGACY_RULE_IDS = [
     # superseded deny rules, each replaced by a form its evasion cannot walk around
     "Bash(mkfs *)",
@@ -2032,6 +2034,25 @@ LEGACY_RULE_IDS = [
     "Read(~/Library/Group Containers/2BUA8C4S2C.com.1password/**)",
     "Read(~/Library/Keychains)",
     "Read(~/Library/Keychains/**)",
+    # Dropped by rule set 10, each emitted by every release before #165. Measured by
+    # generating every tier, maintainer included, at rule set 9 and at 10: these 13 are
+    # the whole set that no tier emits any more. Without them a pre-#165 install's
+    # /update kept all 13 as its own rules, so the blanket `git -C`, nested `claude`,
+    # rm-glob and `git branch -D` denies stayed in place after the rule set that lifts
+    # them, with a note calling them the user's.
+    "Bash(git -C *)",
+    "Bash(claude *)",
+    "Bash(claude)",
+    "Bash(rm -rf /*)",
+    "Bash(rm -rf ~*)",
+    "Bash(rm -rf ~/*)",
+    "Bash(rm -rf .*)",
+    "Bash(git branch -D*)",
+    "Bash(git branch *-D*)",
+    "Bash(git branch --delete*)",
+    "Bash(git branch *--delete*)",
+    "Bash(git branch -f*)",
+    "Bash(git branch * -f*)",
 ]
 
 
