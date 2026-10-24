@@ -100,12 +100,12 @@ run() {
 }
 # verdict — deny (exit 2 with a deny decision), silent (exit 0, no output), or what it did.
 verdict() {
-  if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep -q '"permissionDecision":"deny"'; then
+  if [ "$RC" = 2 ] && grep -q '"permissionDecision":"deny"' <<<"$OUT"; then
     echo deny
   elif [ "$RC" = 0 ] && [ -z "$OUT$ERR" ]; then
     echo silent
   else
-    echo "rc=$RC out=$(printf '%s' "$OUT" | head -c 80) err=$(printf '%s' "$ERR" | head -c 80)"
+    echo "rc=$RC out=${OUT:0:80} err=${ERR:0:80}"
   fi
 }
 # bash_as <agent or ""> <command> [project] / edit_as <agent or ""> <tool> <path> [project] [key]
@@ -311,7 +311,7 @@ for shx in sh dash bash; do
     IFS='|' read -r want tool tin agent <<< "$c"
     who="the main session"; [ -z "$agent" ] || who="a subagent"
     run "$shx \"\$CLAUDE_PROJECT_DIR/.claude/hooks/decisions-guard.sh\"" "$REPO" "$(payload "$tool" "$tin" "$agent")"
-    assert_eq "$want" "$(verdict)" "$shx: $tool from $who -> $want ($(printf '%s' "$tin" | head -c 48))"
+    assert_eq "$want" "$(verdict)" "$shx: $tool from $who -> $want (${tin:0:48})"
   done
 done
 

@@ -62,7 +62,7 @@ run() {
 dec() { local dir="$1"; shift; (cd "$dir" && bash .claude/bin/decisions.sh "$@"); }
 
 # key <id> <front-matter key>: the raw value as written
-key() { sed -n "s/^$2: //p" "$REC/$1.md" | head -1; }
+key() { sed -n "/^$2: /{s/^$2: //p;q;}" "$REC/$1.md"; }
 
 # rep <text> <n>: <text> n times. Credential-shaped samples are assembled from pieces at
 # run time, so this file holds no literal token for a secret scanner to flag.
@@ -198,7 +198,7 @@ assert_eq "" "$(cd "$WT" && git status --porcelain)" "nor in the worktree's git 
 echo "[in-force]"
 run "$MAIN" in-force
 assert_eq "0" "$RC" "in-force: exit 0"
-FIRST="$(printf '%s\n' "$OUT" | head -1)"
+FIRST="${OUT%%$'\n'*}"
 assert_contains "$FIRST" "D-2026-10-20-firewall-now" "oldest first: the earliest date leads though it was recorded last"
 assert_eq "$(cat "$REC/in-force.md")" "$OUT" "in-force prints in-force.md"
 assert_eq "5" "$(printf '%s\n' "$OUT" | grep -c '^- ')" "one line per entry in force (the proposal is left out)"
@@ -289,7 +289,7 @@ run "$MAIN" export
 assert_eq "0" "$RC" "export: exit 0"
 IDS="$(printf '%s\n' "$OUT" | sed -n 's/^id: //p' | tr '\n' ' ')"
 assert_contains "$IDS" "D-2026-10-22-commands-live D-2026-10-22-commands-live-2" "export prints every entry, superseded and proposed included"
-assert_eq "D-2026-10-20-firewall-now" "$(printf '%s\n' "$OUT" | sed -n 's/^id: //p' | head -1)" "export is oldest first"
+assert_eq "D-2026-10-20-firewall-now" "$(sed -n '/^id: /{s/^id: //p;q;}' <<<"$OUT")" "export is oldest first"
 assert_eq "$(ls "$REC" | grep -c '^[DPS]-')" "$(printf '%s\n' "$OUT" | grep -c '^id: ')" "export prints each entry once"
 run "$MAIN" export --handoff
 assert_eq "0" "$RC" "export --handoff: exit 0"
@@ -407,7 +407,7 @@ refuse() {
   run "$MAIN" "${args[@]}"
   case "$OUT$ERR" in *"$val"*) echoed=yes ;; esac
   TOTAL=$((TOTAL + 1))
-  if [ "$RC" -eq 1 ] && printf '%s' "$ERR" | grep -qF -- "refusing $opt: it looks like $label" \
+  if [ "$RC" -eq 1 ] && grep -qF -- "refusing $opt: it looks like $label" <<<"$ERR" \
     && [ "$echoed" = no ] && [ "$(entries)" = "$n" ]; then
     echo "  PASS: refuses $label in $opt, without echoing it"
     PASS=$((PASS + 1))

@@ -213,7 +213,7 @@ OUT_NOREPO="$OUT"
 set +e
 OUT="$(cd "$WORK/norepo" && payload SessionStart source=startup | GIT_DIR="$REPO/.git" CLAUDE_PROJECT_DIR="$WORK/norepo" sh -c "$INJECT_SS" 2>/dev/null)"
 set -e
-assert_eq "|D-1" "$OUT_NOREPO|$(ctx "$OUT" | grep -o 'D-1' | head -1)" "GIT_DIR is honoured, through git"
+assert_eq "|D-1" "$OUT_NOREPO|$(ctx "$OUT" | grep -o 'D-1' | sort -u)" "GIT_DIR is honoured, through git"
 # Grok Build spells the keys in camelCase.
 run "$INJECT_SA" "$WT" "$(payload SubagentStart hook_event_name=- session_id=- hookEventName=SubagentStart agentId=agent-camel sessionId=sess-camel)"
 assert_eq "SubagentStart" "$(event_of "$OUT")" "camelCase payload: the event is read"
@@ -300,7 +300,7 @@ echo "[ids]"
 set_record dddd4444 "# In force${NL}${NL}- D-6 ids"
 run "$PUSH" "$WT" "$(payload PreToolUse agent_id=../../escape)"
 assert_eq "0|" "$RC|$OUT" "an id that is not a plain name is not used: no push"
-assert_cmd_fails "ls -d '$REPO/.git/escape'* '$REC/escape'* 2>/dev/null | grep -q ." "and no marker is made anywhere for it"
+assert_cmd_fails "[ -n \"\$(ls -d '$REPO/.git/escape'* '$REC/escape'* 2>/dev/null)\" ]" "and no marker is made anywhere for it"
 run "$PUSH" "$WT" "$(payload PreToolUse agent_id=.hidden)"
 assert_eq "0|" "$RC|$OUT" "an id starting with a dot is not used"
 # A word in a tool's input is not the id. Named once as a value, it is no key at all.
