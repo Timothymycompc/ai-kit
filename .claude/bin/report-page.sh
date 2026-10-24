@@ -1493,9 +1493,14 @@ render() {
       FS = "\t"; w = ENVIRON["W"]; dir = ENVIRON["DIR"]; nonce = ENVIRON["NONCE"]; od = ENVIRON["OUTDIR"]
       pre = slurp(w "/pre"); css = slurp(w "/css"); js = slurp(w "/js")
       body["decisions"] = slurp(w "/body-decisions"); body["report"] = slurp(w "/body-report")
-      nn = 0
-      while ((getline l < (w "/index.json")) > 0) nav[++nn] = l
-      close(w "/index.json")
+      # Every page carries the whole index: escape it once, into a file a piece at a time,
+      # then read that back whole, RS being a byte clean() never leaves in the index.
+      nf = w "/nav-escaped"
+      while ((getline l < (w "/index.json")) > 0) put(l, nf)
+      close(w "/index.json"); close(nf)
+      nav = ""; RS = "\001"
+      if ((getline nav < nf) <= 0) nav = ""
+      close(nf); RS = "\n"
     }
     $3 != "render" { next }
     {
@@ -1507,7 +1512,7 @@ render() {
       while ((getline l < f) > 0) put(l, out)
       close(f)
       printf("</script>\n<script type=\"application/json\" id=\"nav-data\">\n") > out
-      for (i = 1; i <= nn; i++) put(nav[i], out)
+      printf("%s", nav) > out
       printf("</script>\n<script nonce=\"%s\">\n%s</script>\n</body>\n</html>\n", nonce, js) > out
       if (close(out) != 0) bad = 1
     }
