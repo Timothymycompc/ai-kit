@@ -71,7 +71,7 @@ expires: —
 - D-2026-10-21-test-cluster: Surfpool's mainnet fork locally; devnet in the nightly job — "keep the fork for local runs, but the nightly can hit devnet" (2026-10-21)
 ```
 
-The helper keeps that list near 1.5K tokens. It cuts the decision, the words and a standing order's bounds at 200, 240 and 80 bytes, tighter once the list passes 6,000 bytes, always at a character boundary and marked `…`, and adds a closing line saying `decisions.sh export` has the full entries. `add`, `supersede` and `in-force` warn on stderr once the list passes 6,000 bytes, and more sharply past 9,000, near the cap a hook's context collapses at. `in-force.sha` holds the list's git blob id, which is the version the hooks compare.
+The helper keeps that list near 1.5K tokens. It cuts the decision, the words and a standing order's bounds at 200, 240 and 80 bytes, tighter once the list passes 6,000 bytes, always at a character boundary and marked `…`, and adds a closing line saying `decisions.sh export` has the full entries. `add`, `supersede` and `in-force` warn on stderr once the list passes 6,000 bytes, and more sharply past 9,000, near the cap a hook's context collapses at. `in-force.sha` holds the list's git blob id, which is the version the hooks compare. A list without a usable one, after a hand edit or a deletion, is still handed to each agent once, under a single fixed version, since working one out would read the whole list on every tool call; a change to it reaches agents already at work once the helper writes the version again, as `decisions.sh in-force` does.
 
 ## The helper: decisions.sh
 

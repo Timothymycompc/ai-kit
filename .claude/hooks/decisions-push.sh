@@ -74,8 +74,11 @@ common_dir() {
 # record — the record's directory in R and the version of its in-force list in S, or
 # false when this project keeps no record. A link in place of the directory or the
 # list is refused: it would let a tracked file speak as the user. The version is the
-# first word of in-force.sha, which decisions.sh rewrites with the list; a list without
-# a usable one is still read, keyed on its checksum instead.
+# first word of in-force.sha, which decisions.sh rewrites with the list. A list without
+# a usable one is still read, under the fixed version "unversioned" rather than a
+# checksum, which would read the whole list on every tool call: each agent gets such a
+# list once, and a change to it reaches running agents when the helper next writes
+# the version (decisions.sh in-force).
 record() {
   common_dir || return 1
   R=$G/decisions
@@ -86,10 +89,8 @@ record() {
     IFS= read -r S < "$R/in-force.sha" || :
     S=${S%% *}
   fi
-  case $S in
-    '' | *[!0-9A-Fa-f]*) S=$(cksum < "$R/in-force.md" 2>/dev/null) || return 1; S=${S%% *} ;;
-  esac
-  [ -n "$S" ] && [ ${#S} -le 128 ]
+  case $S in '' | *[!0-9A-Fa-f]*) S=unversioned ;; esac
+  [ ${#S} -le 128 ]
 }
 
 # json_str <key> — the string value of a top-level "<key>" in the payload, in V.
