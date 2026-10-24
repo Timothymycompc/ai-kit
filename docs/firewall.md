@@ -83,14 +83,14 @@ Four groups of `Bash` rules vary. `Bash(gh api *)` arrived in rule set 5 because
 
 ### The maintainer tier
 
-`maintainer` is a fifth value for `security.json`'s `tier`, and it is **only for working on the solana-ai-kit repository itself — never a user project** ([#162](https://github.com/solanabr/ai-kit/issues/162)). The firewall is right for a project and obstructs work on the kit: it denies editing the guard hooks the kit is made of, and running `claude` for fixture probes and `claude plugin validate`. No local settings file can lift either, because a `deny` from any scope wins.
+`maintainer` is a fifth value for `security.json`'s `tier`, and it is **only for working on the solana-ai-kit repository itself — never a user project** ([#162](https://github.com/solanabr/ai-kit/issues/162)). The firewall is right for a project and obstructs work on the kit: it denies editing the guard hooks the kit is made of, and `claude mcp add`. No local settings file can lift either, because a `deny` from any scope wins.
 
-It is Relaxed — the default, so maintainers keep dogfooding what users run — minus exactly four denies, plus one sandbox exclusion:
+It is Relaxed — the default, so maintainers keep dogfooding what users run — minus exactly three denies, plus one sandbox exclusion:
 
 | Change from Relaxed | Why |
 |---|---|
 | no `Edit(/.claude/hooks/**)` | the project's guard scripts are the kit's source. `~/.claude/hooks/**` stays denied |
-| no `Bash(claude *)`, `Bash(claude)` | fixture probes (`claude -p`), `claude plugin validate`, `claude --version`, `claude mcp add`. The cost: an agent can start a nested `claude --dangerously-skip-permissions` with no policy at all |
+| no `Bash(claude mcp add*)` | `/setup-mcp`'s flow, run against the kit itself. Fixture probes (`claude -p`), `claude plugin validate` and `claude --version` need no omission: since rule set 10 every tier denies only a nested `claude` carrying a policy-weakening flag, and those denies stay here, beside fetch-exec-guard's. Through rule set 9 this tier dropped the blanket `Bash(claude *)` and `Bash(claude)` instead, which let an agent start a nested `claude --dangerously-skip-permissions` with no policy at all |
 | no `Edit(/.safe-ai-skill/**)` | the kit repo holds the `policy.yaml` `install.sh` ships |
 | `git submodule *` in `excludedCommands` | Claude Code's own sandbox refuses shell writes under the project's `.claude/` (measured for `skills/`, `hooks/` and `commands/`, which no kit rule names), so `git submodule update --init` cannot write the packs under `.claude/skills/ext/`. Excluding the command runs it unsandboxed; like every exclusion, that lifts the sandbox for the whole command line |
 

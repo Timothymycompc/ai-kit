@@ -1455,13 +1455,25 @@ if others != {k: v for k, v in m.items() if k not in ('permissions', 'sandbox')}
     diffs.append('non-firewall keys changed')
 print(' | '.join(diffs))
 " "$WORK/maint-relaxed.json" "$WORK/gen.maintainer.json" 2>/dev/null || echo __ERROR__)"
-assert_eq "permissions.deny -['Bash(claude *)', 'Bash(claude)', 'Edit(/.claude/hooks/**)', 'Edit(/.safe-ai-skill/**)'] +[] | sandbox.excludedCommands -[] +['git submodule *']" \
-  "$MAINT_DIFF" "maintainer differs from relaxed by exactly the four kit-self-protection denies and the submodule exclusion"
+assert_eq "permissions.deny -['Bash(claude mcp add*)', 'Edit(/.claude/hooks/**)', 'Edit(/.safe-ai-skill/**)'] +[] | sandbox.excludedCommands -[] +['git submodule *']" \
+  "$MAINT_DIFF" "maintainer differs from relaxed by exactly the three kit-self-protection denies and the submodule exclusion"
 assert_eq "yes yes" "$(python3 -c "
 import json
 deny = (json.load(open('$WORK/gen.maintainer.json')).get('permissions') or {}).get('deny') or []
 print('yes' if 'Edit(~/.claude/hooks/**)' in deny else 'no', 'yes' if 'Edit(//**/managed-settings.json)' in deny else 'no')" 2>/dev/null)" \
   "maintainer keeps the user-scope hooks deny and the managed-settings deny"
+# Rule set 10 narrowed the nested-claude rules at every tier, and the maintainer tier
+# keeps Relaxed's flag denies: a nested agent with its policy dropped is refused here
+# too. Every MAINTAINER_OMIT_DENY entry must be a rule Relaxed emits, or the omission
+# is a no-op and the tier's documented difference is not its real one.
+assert_eq "yes yes" "$(python3 -c "
+import json
+r = (json.load(open('$WORK/maint-relaxed.json')).get('permissions') or {}).get('deny') or []
+m = (json.load(open('$WORK/gen.maintainer.json')).get('permissions') or {}).get('deny') or []
+flags = [x for x in r if x.startswith('Bash(claude *--')]
+print('yes' if flags and all(x in m for x in flags) else 'no',
+      'yes' if 'Bash(claude *--dangerously-skip-permissions*)' in m else 'no')" 2>/dev/null)" \
+  "maintainer keeps every nested-claude policy-weakening flag deny Relaxed has"
 assert_eq "maintainer maintainer" "$(python3 -c "
 import json
 d = json.load(open('$WORK/proj/.claude/security.json'))

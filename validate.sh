@@ -480,8 +480,8 @@ if (sec.get("enforced") or {}).get("tier") == "maintainer":
     bad.append("enforced.tier is maintainer")
 if "git submodule *" in excl:
     bad.append("settings.json excludes git submodule from the sandbox")
-if "Bash(claude *)" not in deny:
-    bad.append("settings.json does not deny Bash(claude *)")
+if "Edit(/.claude/hooks/**)" not in deny:
+    bad.append("settings.json does not deny Edit(/.claude/hooks/**)")
 print("; ".join(bad))' 2>/dev/null || echo "unreadable")"
   if [ -z "$fw_maint" ]; then
     check "committed firewall is not the maintainer tier (security.json enforced + settings.json)" 0

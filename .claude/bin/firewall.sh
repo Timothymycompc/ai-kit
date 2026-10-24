@@ -1412,17 +1412,20 @@ EXCLUDED_COMMANDS = [
 # which in the kit's repository is the work itself:
 #   * Edit(/.claude/hooks/**) — the project's guard scripts are the kit's source.
 #     ~/.claude/hooks/** stays denied: the user's own hooks are not kit source.
-#   * Bash(claude *) and Bash(claude) — fixture probes (`claude -p` against a throwaway
-#     project), `claude plugin validate`, `claude --version`, `claude mcp add`. This is
-#     the large one: a nested `claude --dangerously-skip-permissions` starts an agent
-#     with no policy at all, and at this tier nothing refuses it.
+#   * Bash(claude mcp add*) — `/setup-mcp`'s flow, run against the kit itself. The
+#     other nested-claude work this tier was made for — fixture probes (`claude -p`
+#     against a throwaway project), `claude plugin validate`, `claude --version` — needs
+#     no omission since rule set 10, which replaced the blanket Bash(claude *) and
+#     Bash(claude) at every tier with one deny per policy-weakening flag. Those flag
+#     denies stay here, as at Relaxed, and so does fetch-exec-guard's launcher deny,
+#     which reads this tier as relaxed: a nested `claude --dangerously-skip-permissions`
+#     is refused at this tier too, where through rule set 9 nothing refused it.
 #   * Edit(/.safe-ai-skill/**) — the kit repo holds the policy.yaml that install.sh
 #     ships, so editing it is a kit change.
 # Managed settings stay denied: they belong to an administrator, not to the kit.
 MAINTAINER_OMIT_DENY = frozenset([
     "Edit(/.claude/hooks/**)",
-    "Bash(claude *)",
-    "Bash(claude)",
+    "Bash(claude mcp add*)",
     "Edit(/.safe-ai-skill/**)",
 ])
 
@@ -2261,7 +2264,7 @@ if MODE == "show":
     if recorded - live:
         print("drift         : settings.json lost rules the last apply wrote; re-apply")
     if "maintainer" in (declared, enforced_before.get("tier")):
-        print("WARNING       : maintainer tier — guard hooks editable and nested `claude` "
+        print("WARNING       : maintainer tier — guard hooks editable and `claude mcp add` "
               "allowed. Only for working on the kit itself; never commit it as the default.")
     raise SystemExit(0)
 
@@ -2275,8 +2278,9 @@ if tier == "maintainer" and not is_kit_checkout():
     # and leaves settings.json untouched.
     die("tier 'maintainer' is only for a checkout of the solana-ai-kit repository "
         "(CLAUDE-solana.md and install.sh at its root), and %s is not one. It drops "
-        "the denies that stop an agent rewriting its own guard hooks or starting a "
-        "nested `claude`. For a project, use relaxed: firewall.sh apply relaxed" % TARGET)
+        "the denies that stop an agent rewriting its own guard hooks or the safe-ai-skill "
+        "policy, or running `claude mcp add`. For a project, use relaxed: firewall.sh "
+        "apply relaxed" % TARGET)
 
 machine_common = git_common_outside()
 would_refuse = False
@@ -2444,7 +2448,7 @@ write_atomic(SECURITY, security_text)
 print("  wrote %s (%d rules) and %s" % (SETTINGS_REL, len(rule_ids), SECURITY_REL))
 print("  takes effect in the next session: permission rules are read once, at session start")
 if tier == "maintainer":
-    print("  WARNING: maintainer tier. The guard hooks are editable and a nested `claude` is "
+    print("  WARNING: maintainer tier. The guard hooks are editable and `claude mcp add` is "
           "allowed. Do not commit this security.json or settings.json — validate.sh refuses "
           "them. Back to the default when done: firewall.sh apply relaxed")
 PY
