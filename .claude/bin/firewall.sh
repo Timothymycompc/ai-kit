@@ -168,7 +168,26 @@ SECURITY = os.path.join(TARGET, SECURITY_REL)
 #           `git submodule update --init` in a linked worktree, which shippability gate 4
 #           keeps working, and High already has it, since its Edit deny reaches the
 #           sandbox (git_common_edit_deny).
-RULE_SET_VERSION = 9
+#   9 -> 10: Relaxed stops getting in the way of day-to-day work, with no loss the red
+#           team could route a denied command through. Numbered 10, not 9: #282 took 9
+#           first, for `git --exec-path=`, and /update compares only the number.
+#           `Bash(git -C *)` becomes DENY_GIT_DASH_C, a `-C`-prefixed twin of each
+#           destructive git rule, `--exec-path=` included, so `git -C <dir> status`
+#           runs while `git -C <dir> clean` does not. The `rm -rf /*`/`~/*`/`.*` globs
+#           (which matched any expanded path) become exact catastrophic literals plus
+#           `\*`-escaped globs; the recursive-target classifier is egress-guard.awk's.
+#           `git branch -D`/`-f`/`--delete` leaves the deny set (reflog-recoverable; a
+#           High-only ask in egress-guard.sh). `Bash(claude *)`/`Bash(claude)` become one
+#           deny per policy-weakening flag and subcommand, so `claude --version` and
+#           `claude plugin validate .` run. kill -9/killall/pkill (DENY_PROCESS_KILL) and
+#           docker container/image/volume removal (DENY_DOCKER_DESTRUCTIVE) move to Medium
+#           and High. `~/.config/gh/hosts.yml` opens at Relaxed (DENY_GH_HOSTS_READ at
+#           Medium and High), so `gh` can start inside the sandbox. `Bash(bash -c *)`
+#           leaves DENY_WRAPPERS for DENY_BASH_C, Medium and High only, so memsearch's
+#           recall set-up line runs at Off and Relaxed; `sh -c`, `bash -lc` and `zsh -c`
+#           keep their every-tier denies. `Bash(bash .claude/bin/decisions.sh *)` and
+#           `Bash(bash .claude/bin/report-page.sh *)` join the allow list.
+RULE_SET_VERSION = 10
 # enforced.ruleIdsScope: this record lists the generated block and nothing else. Records
 # without it predate #165, when a first apply recorded the user's own rules as well.
 RULEIDS_SCOPE = "generated"
@@ -367,6 +386,21 @@ ALLOW = [
         # outside skills/ext/, which is narrower than the curl and npm rules above.
         "Bash(bash .claude/bin/skills.sh list)",
         "Bash(bash .claude/bin/skills.sh add *)",
+        # Kit-owned helper for the agent-flow decision record. It resolves the git
+        # common dir internally and writes under <common>/decisions/ via a temp file,
+        # never with git -C, a heredoc-as-program or a typed rm -rf (probed: those
+        # prompt or are denied). Listed so Off and the non-fast-path cases do not prompt,
+        # beside skills.sh for the same reason; it writes nothing outside that directory.
+        "Bash(bash .claude/bin/decisions.sh *)",
+        # Kit-owned renderer for the local HTML pages /decide and /report produce: it
+        # reads one JSON file of the shape it expects, at most 1 MiB, and writes only
+        # page-named files (each page and a copy of its JSON), index.json, a create-only
+        # .gitignore and temp files inside <root>/.claude/reports/, or $TMPDIR/kit-reports/
+        # when that folder cannot be written, re-rendering the earlier pages there; no
+        # network request. Listed beside decisions.sh so a page renders without a prompt;
+        # its own input checks are what keep it from copying an arbitrary file somewhere
+        # readable.
+        "Bash(bash .claude/bin/report-page.sh *)",
     ],
     [
         "Read(*)",
@@ -383,25 +417,30 @@ ALLOW = [
 # ===========================================================================
 # permissions.deny — the never-allowed set
 # ===========================================================================
-# Every Bash rule below is byte-identical at every tier, and that is deliberate: deny
+# Most Bash rules below are byte-identical at every tier, and that is deliberate: deny
 # is merge-monotonic, so if a rule reaches a user or managed settings file, descending
 # a tier cannot take it back out. Most tier variation therefore lives in a
 # sandbox.filesystem path or a hook decision.
 #
-# Eight groups are exceptions, and they are safe for the same reason: firewall.sh owns
-# one file and subtracts exactly the strings recorded in enforced.ruleIds, so a descent
-# does remove them. The relaxed -> high -> relaxed and high -> medium byte-identity
-# tests are the proof. The groups are DENY_SELF_PROTECTION and DENY_GIT_CONFIG_AND_HOOKS
-# (High only), DENY_MCP_ARBITRARY_EXECUTION and DENY_MCP_PLAYWRIGHT_EXECUTION (Medium
-# and High), DENY_MCP_CLOUDFLARE_EXECUTION and DENY_MCP_PLAYWRIGHT_EVALUATE (High
-# only), and DENY_ENV_WRITE (Medium only) and DENY_ENV_READ (High only). The residual
-# is unchanged: a block hand-copied into user or managed scope stops tracking the tier,
-# and those denies then cannot be lifted.
+# The tier-varying groups are the exceptions, and they are safe for the same reason:
+# firewall.sh owns one file and subtracts exactly the strings recorded in
+# enforced.ruleIds, so a descent does remove them. The relaxed -> high -> relaxed and
+# high -> medium byte-identity tests are the proof. The groups are DENY_SELF_PROTECTION
+# and DENY_GIT_CONFIG_AND_HOOKS (High only), DENY_MCP_ARBITRARY_EXECUTION and
+# DENY_MCP_PLAYWRIGHT_EXECUTION (Medium and High), DENY_MCP_CLOUDFLARE_EXECUTION and
+# DENY_MCP_PLAYWRIGHT_EVALUATE (High only), DENY_ENV_WRITE (Medium only), DENY_ENV_READ
+# and DENY_GH_HOSTS_READ (one High-only, one Medium and High, both Read denies), and the
+# four Bash deny groups at Medium and High: DENY_GH_API, DENY_PROCESS_KILL (kill -9,
+# killall, pkill), DENY_DOCKER_DESTRUCTIVE (container/image/volume removal) and
+# DENY_BASH_C. Those four are the only Bash denies in the corpus that vary by tier; every
+# other Bash deny is identical at all four. The residual is unchanged: a block
+# hand-copied into user or managed scope stops tracking the tier, and those denies then
+# cannot be lifted.
 #
 # Two matcher facts the patterns below are built around:
 #   * A `*` with a space on BOTH sides cannot be empty, because runs of spaces collapse
 #     before matching: Bash(anchor * --final*) did NOT stop `anchor --final`. A `*` that
-#     touches a non-space can be (`git branch *-D*` matches `git branch -D x`). Every
+#     touches a non-space can be (`git reset *--ha*` matches `git reset --hard`). Every
 #     two-wildcard rule ships its zero-gap twin anyway: needed for the first kind,
 #     belt-and-braces for the second, free either way.
 #   * A trailing ` *` DOES match the bare command, but only when it is the rule's only
@@ -426,13 +465,33 @@ DENY_POLICY_ESCAPE = [
     "Edit(/.claude/hooks/**)",
     "Edit(~/.claude/hooks/**)",
     #
-    # A nested `claude -p --dangerously-skip-permissions` re-rolls the whole policy in
-    # a child process, and npm/npx/node are allowed. That is not editing a config file,
-    # it is starting a second agent with no policy at all, so no tier hands it back.
-    # Residuals that cannot be closed from here: --settings, --permission-mode,
-    # --setting-sources, CLAUDE_CONFIG_DIR.
-    "Bash(claude *)",
-    "Bash(claude)",
+    # A nested `claude` that drops the policy is a second agent with no policy at all,
+    # not editing a config file, so no tier hands it back. The blanket `Bash(claude *)`
+    # that used to sit here denied the harmless forms too -- `claude --version` and
+    # `claude plugin validate .`, which the maintainer CLAUDE.md tells agents to run --
+    # while a path-named binary or an npx/bunx launch walked past it (documented: deny
+    # rules do not match a path-named binary). So the glob is replaced by one deny per
+    # policy-weakening flag and subcommand; `claude --version`, `claude plugin validate .`
+    # and a plain `claude -p` in the project (which inherits these same rules and whose
+    # asks become refusals) are left to run. Each `*` touches the flag, so it may be empty
+    # and the bare `claude --flag` is covered without a twin.
+    # Still open from here, by design, and closed in a hook instead (fetch-exec-guard):
+    # the package-runner launchers (npx, bunx, npm exec/x, bun x, pnpm/yarn dlx or exec
+    # of @anthropic-ai/claude-code or the claude bin), a path-named claude, and a
+    # `CLAUDE_CONFIG_DIR=...` assignment, which the matcher strips as a leading VAR=.
+    "Bash(claude *--dangerously-skip-permissions*)",
+    "Bash(claude *--permission-mode*)",
+    "Bash(claude *--permission-prompt-tool*)",
+    "Bash(claude *--settings*)",
+    "Bash(claude *--setting-sources*)",
+    "Bash(claude *--allowedTools*)",
+    "Bash(claude *--allowed-tools*)",
+    "Bash(claude *--add-dir*)",
+    "Bash(claude *--mcp-config*)",
+    "Bash(claude *--plugin-dir*)",
+    "Bash(claude *--plugin-url*)",
+    "Bash(claude mcp add*)",
+    "Bash(claude setup-token*)",
     # An organization's managed settings belong to the administrator, not to the user
     # whose installation the tiers are about, and they are the one tier an agent cannot
     # talk its way out of. Editing them needs root anyway; the rule costs nothing.
@@ -570,6 +629,21 @@ ENV_FILES = [
 DENY_ENV_WRITE = [f"Edit({p})" for p in ENV_FILES]
 DENY_ENV_READ = [f"Read({p})" for p in ENV_FILES]
 
+# Medium and High only. The gh host file carries the GitHub token, so the two stricter
+# tiers keep it unreadable; Relaxed opens it (DENY_CREDENTIALS above no longer names it)
+# because the every-tier Read() deny projected into the sandbox's denyRead and stopped
+# `gh` starting inside the sandbox at all. A Read() deny blocks the Read/Grep/Glob file
+# tools and, via that projection, the Bash sandbox and its children; at Medium and High
+# `~/.config/gh/hosts.yml` is also in SB_HOST_CREDENTIALS' denyRead, so this rule and the
+# sandbox list fence it from both the model and subprocesses there. At Relaxed the file
+# is readable inside the sandbox, by `gh` and by any process the agent runs. The token
+# stays out of the transcript another way: secrets-guard.sh refuses the Read and Grep
+# tools on the file at every tier, `cat ~/.config/gh/hosts.yml` stays denied
+# (DENY_SECRET_READS_VIA_BASH), and the egress gates still refuse to send it. Only this
+# one credential moves; the wallet and every other host/registry token stay denied at
+# every tier.
+DENY_GH_HOSTS_READ = ["Read(~/.config/gh/hosts.yml)"]
+
 DENY_CREDENTIALS = [
     # Both the bare and the /** form for every directory: a /** pattern does not match
     # the directory entry itself.
@@ -583,7 +657,17 @@ DENY_CREDENTIALS = [
     "Read(~/.npmrc)",
     "Read(~/.git-credentials)",
     "Read(~/.netrc)",
-    "Read(~/.config/gh/hosts.yml)",
+    # ~/.config/gh/hosts.yml is deliberately NOT here: it is the one credential file
+    # Relaxed opens, in DENY_GH_HOSTS_READ below (Medium and High only). Every Read()
+    # deny projects into the sandbox's denyRead at every tier, which is what made `gh`
+    # die at Relaxed reading its own host file (it could not start inside the sandbox);
+    # a Read() deny only at Medium and High keeps `gh` working at Relaxed while the two
+    # stricter tiers still fence it. The gh token stays out of the transcript regardless:
+    # secrets-guard.sh refuses the Read and Grep tools on the file, DENY_SECRET_READS_VIA_BASH
+    # still refuses `cat ~/.config/gh/hosts.yml`, and the secrets and egress guards still
+    # refuse to send it, at every tier. Every OTHER
+    # credential here -- the wallet and the registry/host tokens -- stays denied at every
+    # tier; only the gh host file moves.
     "Read(~/.kube/config)",
     "Read(~/.cargo/credentials)",
     "Read(~/.cargo/credentials.toml)",
@@ -749,23 +833,25 @@ DENY_WRAPPERS = [
     # (`command -v`, `xargs grep|rg|wc|ls`) rather than as blanket globs, because
     # `Bash(xargs *)` pre-approved `xargs -I{} solana program deploy …` outright.
     #
-    # `git -c` and `git -C` are both here, and the reason for the second one is not the
-    # obvious one. `-c` is arbitrary code execution (`git -c core.fsmonitor=/tmp/x.sh
-    # status`). `-C` merely changes directory first -- but every destructive git rule
-    # below is a glob anchored on the literal subcommand, so a `git -C <dir>` prefix sits
-    # in front of it and NONE of them match: measured against the generated set,
-    # `git -C . clean -xdf`, `git -C . reset --hard HEAD~5`, `git -C . restore .`,
-    # `git -C . gc --prune=all`, `git -C . reflog expire --expire=now --all`,
-    # `git -C . push --mirror` and `git -C . fetch --upload-pack=/tmp/x.sh .` all walk
-    # straight through. The `-C .` spelling needs no second repository, so no sandbox
-    # write fence is behind it either. It looks like lazy breadth and is not: lowering
-    # this one rule to High would make the whole destructive-git deny set advisory at the
-    # default tier, `reflog expire` included (FIREWALL-SPEC.md section 3.4 singles that
-    # one out as deny-at-every-tier because it is what makes history unrecoverable).
-    # `-C` was never the only door of its kind, only the only one shut — see the note on
-    # DENY_UNRECOVERABLE_GIT below for the rest and the hook pass that covers them.
-    # Both rules stay regardless: they decide at the permission layer, ahead of the hook,
-    # and a hook miss is a silent open door where a glob is a loud closed one.
+    # `git -c` stays here: it is arbitrary code execution (`git -c
+    # core.fsmonitor=/tmp/x.sh status`) whatever subcommand follows, so the whole form is
+    # denied at every tier.
+    #
+    # `git -C` is NOT here any more. The blanket `Bash(git -C *)` was the single largest
+    # source of false denials -- every `git -C <dir> status/log/diff` on a scratch or
+    # sibling repo -- because `-C` only changes directory, so it is safe wherever
+    # `cd <dir> && git X` is safe (which is already allowed). It was a blanket deny for a
+    # narrow reason: every destructive git rule below is a glob anchored on the literal
+    # subcommand, so a `git -C <dir>` prefix sits where the glob expects `git` and none of
+    # them match. DENY_GIT_DASH_C below restores exactly that coverage with a `-C`-prefixed
+    # twin of each destructive rule, so `git -C . clean -xdf` and
+    # `git -C . fetch --upload-pack=/tmp/x.sh .` are denied while `git -C . log` and
+    # `git -C . status` run -- the red team verified 26/26 destructive `-C` spellings
+    # denied and 0 false denials on 17 ordinary ones. The twins stay at every tier for the
+    # same reason the originals do (FIREWALL-SPEC.md section 3.4: `reflog expire` and the
+    # rest are deny-at-every-tier because they make history unrecoverable), and they decide
+    # at the permission layer ahead of egress-guard.awk's GITDESTRUCT pass, which mirrors
+    # them behind other git-level options (`git --no-pager -C . clean`).
     #
     # `git --config-env` is `git -c` reading its value from an environment variable, so
     # `X=/tmp/x.sh git --config-env=core.fsmonitor=X status` runs /tmp/x.sh exactly as the
@@ -816,9 +902,17 @@ DENY_WRAPPERS = [
     # Off, which has no sandbox; a command line led by an excludedCommands entry, which
     # lifts the sandbox for the whole line; and the file tools below High, where those
     # paths only prompt as protected paths and bypassPermissions writes them unasked.
+    # The shell `-c` rules here stay at every tier: a `-c` string is a program the matcher
+    # cannot read. `Bash(bash -c *)` is the exception and lives in DENY_BASH_C below,
+    # Medium and High only, because memsearch's recall skill runs its set-up line as
+    # `bash -c '<derive-collection>'`. Claude Code checks a skill's set-up line against
+    # the permission rules only, so no hook sees it and none can exempt it: an every-tier
+    # rule stopped recall everywhere. secrets-guard.sh blocks every bash/sh/zsh/dash/ksh
+    # `-c` the agent runs, at every tier, with memsearch's exact line as its one
+    # exception. Behind the rules that is a second layer; for the agent's own `bash -c`
+    # at Off and Relaxed, and in a plugin install, it is the only one.
     "Bash(env *)",
     "Bash(sh -c *)",
-    "Bash(bash -c *)",
     "Bash(bash -lc *)",
     "Bash(zsh -c *)",
     "Bash(git -c *)",
@@ -827,11 +921,11 @@ DENY_WRAPPERS = [
     # and its own subcommands, so the directory decides what runs: `git
     # --exec-path=$d ls-remote https://…` ran $d/git-remote-https. The `=` is in the
     # rule because the bare `git --exec-path` only prints the path, and git reads the
-    # spaced form the same way, printing and ignoring the rest. No twin is needed: a
-    # deny rule matches past a leading assignment, and egress-guard.awk's gxp_scan
-    # covers the option behind another git-level option.
+    # spaced form the same way, printing and ignoring the rest. No assignment twin is
+    # needed: a deny rule matches past a leading assignment. Its `-C` twin sits in
+    # DENY_GIT_DASH_C with the other git-level ones, and egress-guard.awk's gxp_scan
+    # covers the option behind any other git-level option.
     "Bash(git --exec-path=*)",
-    "Bash(git -C *)",
     "Bash(git config *alias.*)",
     "Bash(git config alias.*)",
     "Bash(flock *)",
@@ -855,13 +949,29 @@ DENY_WHOLE_BINARY = [
 
 DENY_DESTRUCTIVE_SYSTEM = [
     "Bash(sudo *)",
-    "Bash(rm -rf /*)",
+    # rm: exact catastrophic literals plus backslash-escaped globs, not the old
+    # `rm -rf /*`/`~/*`/`.*` family. Those were globs, so `*` became `.*` and matched
+    # ANY absolute path (`rm -rf /tmp/claude/x`) and any dot-relative one (`.next`,
+    # `./target`) once Claude Code expanded an in-command assignment -- 36 false denials
+    # of honest cleanup -- while missing `rm -fr /`, `rm -r -f ~` and `rm -rf "$HOME"`.
+    # The literals below match only themselves (no wildcard, so no expansion hazard), and
+    # the `\*`-escaped globs match the catastrophic shell glob AS TYPED (the matcher reads
+    # `\*` as a literal star, so `rm -rf /\* *` denies `rm -rf /*` but not `rm -rf /tmp/x`;
+    # the trailing ` *` makes the rule wildcard-type and also catches `rm -rf /* <more>`).
+    # The real coverage -- any recursive rm whose target resolves to a system dir, a home
+    # or project root or an empty variable -- is egress-guard.awk's target classifier,
+    # which expands `~`, `$HOME` and assignments the way the glob could not.
+    "Bash(rm -rf /)",
     "Bash(rm -rf ~)",
-    "Bash(rm -rf ~*)",
-    "Bash(rm -rf ~/*)",
-    "Bash(rm -rf .*)",
+    "Bash(rm -rf ~/)",
+    "Bash(rm -rf .)",
+    "Bash(rm -rf ..)",
     "Bash(rm -rf .git)",
     "Bash(rm -rf .git/*)",
+    "Bash(rm -rf /\\* *)",
+    "Bash(rm -rf ~/\\* *)",
+    "Bash(rm -rf \\* *)",
+    "Bash(rm -rf .\\* *)",
     "Bash(chmod 777 *)",
     "Bash(chmod -R 777 *)",
     "Bash(chown *)",
@@ -869,12 +979,56 @@ DENY_DESTRUCTIVE_SYSTEM = [
     "Bash(dd *)",
     "Bash(shutdown *)",
     "Bash(reboot *)",
+    # kill -9/killall/pkill and docker container/image/volume removal moved to Medium and
+    # High (DENY_PROCESS_KILL, DENY_DOCKER_DESTRUCTIVE below). At Relaxed, killing a stuck
+    # validator or dev server and pruning containers is everyday work the maintainer did
+    # by hand, and `kill <pid>`/`kill -KILL` already pass, so the `kill -9` rule protected
+    # almost nothing. The every-tier hook deny for `kill -1`/`kill -9 -1` and for killing
+    # a peer claude/codex/orca process is in the guards (fw-hooks), not here.
+]
+
+# Medium and High. See DENY_DESTRUCTIVE_SYSTEM's note: process control is day-to-day work
+# at Relaxed, and SIGTERM (`kill <pid>`, `kill -KILL`) is not gated at all, so these three
+# bought almost nothing at the default tier. They are a second tier-varying Bash deny group
+# beside DENY_GH_API; the kill-a-peer-agent and `kill -1` guards are hooks, which can read
+# the name a glob cannot.
+DENY_PROCESS_KILL = [
     "Bash(kill -9 *)",
     "Bash(killall *)",
     "Bash(pkill *)",
+]
+
+# Medium and High. Container and image removal was denied at every tier while
+# `docker volume rm` and `docker compose down -v` -- the genuinely unrecoverable data
+# loss -- passed, which was incoherent. At Relaxed all of it is now allowed (removing a
+# container is ordinary dev work); the two stricter tiers deny removal AND the volume
+# commands that outrank it, so the gate finally matches the risk. `down *-v*` catches
+# both `-v` and `--volumes` (which contains `-v`); the twins cover the flag in first
+# position.
+DENY_DOCKER_DESTRUCTIVE = [
     "Bash(docker rm *)",
     "Bash(docker rmi *)",
     "Bash(docker system prune *)",
+    "Bash(docker volume rm *)",
+    "Bash(docker compose down *-v*)",
+    "Bash(docker compose down -v*)",
+    "Bash(docker compose down *--volumes*)",
+    "Bash(docker compose down --volumes*)",
+]
+
+# Medium and High. `bash -c` is a wrapper the matcher cannot see past, like the rest of
+# DENY_WRAPPERS, and it left that every-tier group in rule set 10 for one reason: a skill's
+# set-up line. memsearch's memory-recall skill derives its collection with one
+# `bash -c` line, and Claude Code checks a skill's set-up line against the permission
+# rules only and aborts the skill on a deny, so an every-tier rule stopped recall at
+# every tier. At Off and Relaxed it now runs. The cost is the same for every skill: at
+# those two tiers any installed skill's set-up line may run `bash -c` with no rule and
+# no hook in front of it. The agent's own `bash -c` is still refused at every tier by
+# secrets-guard.sh, which lets only memsearch's exact line through; at Medium and High
+# this rule stands in front of it, and recall stops there again. `sh -c`, `bash -lc`
+# and `zsh -c` stay in DENY_WRAPPERS: memsearch needs `bash -c` alone.
+DENY_BASH_C = [
+    "Bash(bash -c *)",
 ]
 
 DENY_UNRECOVERABLE_GIT = [
@@ -883,10 +1037,11 @@ DENY_UNRECOVERABLE_GIT = [
     # `git reset --ha HEAD` walked straight past `git reset --hard *`.
     #
     # Every rule here is anchored on the literal subcommand, so a git-LEVEL option in
-    # front of it sits where the glob expects `git` and none of them match. `git -C`,
-    # `git -c` and `git --config-env` in DENY_WRAPPERS are three of the many option forms
-    # `git --help` lists before <command>, and the only three shut;
-    # measured live, `git --no-pager clean --dry-run`, `git --git-dir=.git clean
+    # front of it sits where the glob expects `git` and none of them match. `git -c` and
+    # `git --config-env` in DENY_WRAPPERS are two of the many option forms `git --help`
+    # lists before <command>; `-C` is the third, and it is handled by DENY_GIT_DASH_C's
+    # per-subcommand twins rather than a blanket deny (it only changes directory).
+    # Measured live, `git --no-pager clean --dry-run`, `git --git-dir=.git clean
     # --dry-run`, `git -P clean --dry-run` and `git --literal-pathspecs clean --dry-run`
     # all ran. The rest is closed by egress-guard.awk's GITDESTRUCT pass, which walks the
     # global options and classifies the subcommand; it mirrors these rules rather than
@@ -894,20 +1049,20 @@ DENY_UNRECOVERABLE_GIT = [
     # `restore`, `checkout -- <path>`, `reset --ha*`, `reflog expire|delete|drop`,
     # `prune`, `gc --prune`, `push --mirror` and the transport overrides below — each in
     # its bare form too, because a trailing ` *` that is a rule's only wildcard matches
-    # the bare command. `branch -D`/`-f` is out of that pass on purpose
-    # (reflog-recoverable), so for it the rules here are the only layer and the prefixed
-    # form stays open.
+    # the bare command.
+    #
+    # `git branch -D`/`-f`/`--delete` is NOT here any more. Deleting a branch is
+    # reflog-recoverable (the tip lives on in the HEAD reflog and `git fsck` until gc), so
+    # the kit's own docs call it "friction without safety"; it was 10 false denials of
+    # cleaning up squash-merged branches. egress-guard.sh now carries it as a High-only
+    # ask beside the other recoverable history rewrites (fw-hooks), so Off, Relaxed and
+    # Medium allow it and only the diligent tier prompts. No `-C` twin either, for the
+    # same reason the GITDESTRUCT pass leaves branch out.
     "Bash(git clean *)",            # git clean is never non-destructive; -xdf, -dfx, --f -d
     "Bash(git restore *)",          # the modern spelling of `git checkout -- .`
     "Bash(git checkout -- *)",
     "Bash(git reset *--ha*)",
     "Bash(git reset --ha*)",
-    "Bash(git branch *-D*)",
-    "Bash(git branch -D*)",
-    "Bash(git branch *--delete*)",
-    "Bash(git branch --delete*)",
-    "Bash(git branch * -f*)",
-    "Bash(git branch -f*)",
     # These are what make history truly unrecoverable; the rest is reflog-recoverable.
     # A dropped commit lives on only in a reflog, so anything that removes reflog
     # entries removes the record it is recovered from — `reflog expire` by age,
@@ -924,6 +1079,61 @@ DENY_UNRECOVERABLE_GIT = [
     "Bash(git reflog drop *)",
     "Bash(git push *--mirror*)",
     "Bash(git push --mirror*)",
+]
+
+# Every tier. The `-C`-prefixed twin of each destructive git rule, which is what replaced
+# the blanket `Bash(git -C *)` (see DENY_WRAPPERS). `git -C <dir> X` runs X in <dir>, so it
+# is exactly as dangerous as `cd <dir> && git X` and no more: every rule here mirrors a
+# rule above (or a transport/config rule below) with `-C *` inserted after `git`, so the
+# destructive subcommand is denied behind the prefix and nothing else is. The first `*` is
+# the `-C` operand and cannot be empty (git requires the path), which gap_probe is taught;
+# a single-word subcommand with a base `git X *` rule needs both `git -C * X *` and the
+# bare `git -C * X` twin, because inserting `-C *` adds a second wildcard and the trailing
+# ` *` is no longer optional. Ordinary reads (`git -C . log`, `git -C . status`,
+# `git -C . diff`) match none of these. egress-guard.awk's GITDESTRUCT pass mirrors the
+# same set behind OTHER git-level options (`git --no-pager -C . clean`); branch -D/-f is
+# left out of both, as above.
+DENY_GIT_DASH_C = [
+    "Bash(git -C * clean *)",
+    "Bash(git -C * clean)",
+    "Bash(git -C * restore *)",
+    "Bash(git -C * restore)",
+    "Bash(git -C * checkout -- *)",
+    "Bash(git -C * checkout --)",
+    "Bash(git -C * reset *--ha*)",
+    "Bash(git -C * reset --ha*)",
+    "Bash(git -C * gc *--prune*)",
+    "Bash(git -C * gc --prune*)",
+    "Bash(git -C * prune *)",
+    "Bash(git -C * prune)",
+    "Bash(git -C * reflog expire *)",
+    "Bash(git -C * reflog expire)",
+    "Bash(git -C * reflog delete *)",
+    "Bash(git -C * reflog delete)",
+    "Bash(git -C * reflog drop *)",
+    "Bash(git -C * reflog drop)",
+    "Bash(git -C * push *--mirror*)",
+    "Bash(git -C * push --mirror*)",
+    # transport overrides (mirror DENY_UNRECOVERABLE_REMOTE's git half)
+    "Bash(git -C * push *--receive-pack*)",
+    "Bash(git -C * push --receive-pack*)",
+    "Bash(git -C * push *--exec*)",
+    "Bash(git -C * push --exec*)",
+    "Bash(git -C * pull *--upload-pack*)",
+    "Bash(git -C * pull --upload-pack*)",
+    "Bash(git -C * fetch *--upload-pack*)",
+    "Bash(git -C * fetch --upload-pack*)",
+    "Bash(git -C * clone *--upload-pack*)",
+    "Bash(git -C * clone --upload-pack*)",
+    "Bash(git -C * ls-remote *--upload-pack*)",
+    "Bash(git -C * ls-remote --upload-pack*)",
+    # config-execution twins (mirror DENY_WRAPPERS' git -c / --config-env / alias)
+    "Bash(git -C * -c *)",
+    "Bash(git -C * -c)",
+    "Bash(git -C * --config-env*)",
+    "Bash(git -C * --exec-path=*)",
+    "Bash(git -C * config *alias.*)",
+    "Bash(git -C * config alias.*)",
 ]
 
 # Every tier. Two halves, both flag- or subcommand-shaped, both with nothing to vary.
@@ -946,9 +1156,9 @@ DENY_UNRECOVERABLE_GIT = [
 #    a merge can be reverted and the PR reopened. `gh repo delete` was the one gap the
 #    rule set named in its own comment and left open: `Bash(gh api *)` closed the
 #    `gh api -X DELETE /repos/O/R` spelling at Medium and High, and nothing covered the
-#    subcommand itself at any tier. It carries its zero-gap twin for the same reason
-#    `Bash(claude)` sits next to `Bash(claude *)` — the trailing-space form does match
-#    the bare command when it is a rule's only wildcard, and the twin costs nothing.
+#    subcommand itself at any tier. It carries its zero-gap twin (`Bash(gh repo delete)`
+#    beside `Bash(gh repo delete *)`) because a trailing ` *` matches the bare command
+#    only when it is a rule's only wildcard, and the twin costs nothing.
 DENY_UNRECOVERABLE_REMOTE = [
     "Bash(git push *--receive-pack*)",
     "Bash(git push --receive-pack*)",
@@ -1150,6 +1360,7 @@ DENY = [
     DENY_WHOLE_BINARY,
     DENY_DESTRUCTIVE_SYSTEM,
     DENY_UNRECOVERABLE_GIT,
+    DENY_GIT_DASH_C,
     DENY_UNRECOVERABLE_REMOTE,
     DENY_IRREVERSIBLE_ONCHAIN,
     DENY_SUPPLY_CHAIN,
@@ -1206,17 +1417,20 @@ EXCLUDED_COMMANDS = [
 # which in the kit's repository is the work itself:
 #   * Edit(/.claude/hooks/**) — the project's guard scripts are the kit's source.
 #     ~/.claude/hooks/** stays denied: the user's own hooks are not kit source.
-#   * Bash(claude *) and Bash(claude) — fixture probes (`claude -p` against a throwaway
-#     project), `claude plugin validate`, `claude --version`, `claude mcp add`. This is
-#     the large one: a nested `claude --dangerously-skip-permissions` starts an agent
-#     with no policy at all, and at this tier nothing refuses it.
+#   * Bash(claude mcp add*) — `/setup-mcp`'s flow, run against the kit itself. The
+#     other nested-claude work this tier was made for — fixture probes (`claude -p`
+#     against a throwaway project), `claude plugin validate`, `claude --version` — needs
+#     no omission since rule set 10, which replaced the blanket Bash(claude *) and
+#     Bash(claude) at every tier with one deny per policy-weakening flag. Those flag
+#     denies stay here, as at Relaxed, and so does fetch-exec-guard's launcher deny,
+#     which reads this tier as relaxed: a nested `claude --dangerously-skip-permissions`
+#     is refused at this tier too, where through rule set 9 nothing refused it.
 #   * Edit(/.safe-ai-skill/**) — the kit repo holds the policy.yaml that install.sh
 #     ships, so editing it is a kit change.
 # Managed settings stay denied: they belong to an administrator, not to the kit.
 MAINTAINER_OMIT_DENY = frozenset([
     "Edit(/.claude/hooks/**)",
-    "Bash(claude *)",
-    "Bash(claude)",
+    "Bash(claude mcp add*)",
     "Edit(/.safe-ai-skill/**)",
 ])
 
@@ -1516,7 +1730,7 @@ def plan(tier):
     high = tier == "high"
 
     # Tier-varying permissions.deny groups, assembled in one place so the order the
-    # generator writes them in is fixed. One of these is a Bash rule, which every other
+    # generator writes them in is fixed. Four of these are Bash rules, which every other
     # Bash deny deliberately is not — see the note on permissions.deny below.
     deny_extra = []
     if high:
@@ -1525,6 +1739,10 @@ def plan(tier):
         deny_extra.append(DENY_ENV_READ)
     if medium_up:
         deny_extra.append(DENY_GH_API)
+        deny_extra.append(DENY_GH_HOSTS_READ)
+        deny_extra.append(DENY_PROCESS_KILL)
+        deny_extra.append(DENY_DOCKER_DESTRUCTIVE)
+        deny_extra.append(DENY_BASH_C)
     if tier == "medium":
         deny_extra.append(DENY_ENV_WRITE)
 
@@ -1540,14 +1758,19 @@ def plan(tier):
         "permissions.ask": [],
         # Tier-varying deny groups, all of them: DENY_SELF_PROTECTION,
         # DENY_GIT_CONFIG_AND_HOOKS and DENY_ENV_READ at High, DENY_ENV_WRITE at Medium
-        # alone, DENY_GH_API at Medium and High, and the four MCP groups appended after
-        # the Off early-return below.
+        # alone, DENY_GH_API, DENY_GH_HOSTS_READ, DENY_PROCESS_KILL,
+        # DENY_DOCKER_DESTRUCTIVE and DENY_BASH_C at Medium and High, and the four MCP
+        # groups appended after the Off early-return below.
         #
-        # DENY_GH_API is the ONLY Bash rule in the whole corpus that varies by tier, and
-        # it carries the residual the other tier-varying groups carry: /firewall subtracts
-        # exactly enforced.ruleIds from the one file it owns, so a descent really does
-        # lift it, but a generated block hand-copied into user or managed scope stops
-        # tracking the tier and then nothing can.
+        # DENY_GH_API, DENY_PROCESS_KILL, DENY_DOCKER_DESTRUCTIVE and DENY_BASH_C are the
+        # four Bash deny groups that vary by tier (process control and container/volume
+        # removal are day-to-day work at Relaxed and SIGTERM is never gated, and a skill's
+        # `bash -c` set-up line — memsearch's recall — has to run at the default tier, so
+        # the diligent tiers carry them and Relaxed does not). They carry the residual
+        # every tier-varying group carries: /firewall subtracts exactly enforced.ruleIds
+        # from the one file it owns, so a descent really does lift them, but a generated
+        # block hand-copied into user or managed scope stops tracking the tier and then
+        # nothing can.
         "permissions.deny": DENY + deny_extra,
         "sandbox.excludedCommands": [] if off else [EXCLUDED_COMMANDS],
         "sandbox.network.deniedDomains": [],
@@ -1716,9 +1939,11 @@ ORDER = {
 }
 
 # Rules the kit once wrote that no tier re-emits: the pre-firewall set, and what rule
-# sets 1-9 dropped. Read through kit_owned(), which decides removal for a first apply
+# sets 1-10 dropped. Read through kit_owned(), which decides removal for a first apply
 # and for a record written before #165. A record written since lists exactly what was
-# generated, so a rule a later rule set drops needs no entry here.
+# generated, so a rule a later rule set drops needs an entry here only if a release
+# from before #165 could have recorded it — such an install upgrades straight to the
+# newest rule set, and without the entry its re-apply keeps the rule as the user's.
 LEGACY_RULE_IDS = [
     # superseded deny rules, each replaced by a form its evasion cannot walk around
     "Bash(mkfs *)",
@@ -1812,6 +2037,25 @@ LEGACY_RULE_IDS = [
     "Read(~/Library/Group Containers/2BUA8C4S2C.com.1password/**)",
     "Read(~/Library/Keychains)",
     "Read(~/Library/Keychains/**)",
+    # Dropped by rule set 10, each emitted by every release before #165. Measured by
+    # generating every tier, maintainer included, at rule set 9 and at 10: these 13 are
+    # the whole set that no tier emits any more. Without them a pre-#165 install's
+    # /update kept all 13 as its own rules, so the blanket `git -C`, nested `claude`,
+    # rm-glob and `git branch -D` denies stayed in place after the rule set that lifts
+    # them, with a note calling them the user's.
+    "Bash(git -C *)",
+    "Bash(claude *)",
+    "Bash(claude)",
+    "Bash(rm -rf /*)",
+    "Bash(rm -rf ~*)",
+    "Bash(rm -rf ~/*)",
+    "Bash(rm -rf .*)",
+    "Bash(git branch -D*)",
+    "Bash(git branch *-D*)",
+    "Bash(git branch --delete*)",
+    "Bash(git branch *--delete*)",
+    "Bash(git branch -f*)",
+    "Bash(git branch * -f*)",
 ]
 
 
@@ -2046,7 +2290,7 @@ if MODE == "show":
     if recorded - live:
         print("drift         : settings.json lost rules the last apply wrote; re-apply")
     if "maintainer" in (declared, enforced_before.get("tier")):
-        print("WARNING       : maintainer tier — guard hooks editable and nested `claude` "
+        print("WARNING       : maintainer tier — guard hooks editable and `claude mcp add` "
               "allowed. Only for working on the kit itself; never commit it as the default.")
     raise SystemExit(0)
 
@@ -2060,8 +2304,9 @@ if tier == "maintainer" and not is_kit_checkout():
     # and leaves settings.json untouched.
     die("tier 'maintainer' is only for a checkout of the solana-ai-kit repository "
         "(CLAUDE-solana.md and install.sh at its root), and %s is not one. It drops "
-        "the denies that stop an agent rewriting its own guard hooks or starting a "
-        "nested `claude`. For a project, use relaxed: firewall.sh apply relaxed" % TARGET)
+        "the denies that stop an agent rewriting its own guard hooks or the safe-ai-skill "
+        "policy, or running `claude mcp add`. For a project, use relaxed: firewall.sh "
+        "apply relaxed" % TARGET)
 
 machine_common = git_common_outside()
 would_refuse = False
@@ -2229,7 +2474,7 @@ write_atomic(SECURITY, security_text)
 print("  wrote %s (%d rules) and %s" % (SETTINGS_REL, len(rule_ids), SECURITY_REL))
 print("  takes effect in the next session: permission rules are read once, at session start")
 if tier == "maintainer":
-    print("  WARNING: maintainer tier. The guard hooks are editable and a nested `claude` is "
+    print("  WARNING: maintainer tier. The guard hooks are editable and `claude mcp add` is "
           "allowed. Do not commit this security.json or settings.json — validate.sh refuses "
           "them. Back to the default when done: firewall.sh apply relaxed")
 PY

@@ -164,7 +164,7 @@ The write guard refuses a subagent's write at every tier.
 | Install | The helper | The pushes, the report check and the write guard |
 |---------|------------|--------------------------------------------------|
 | Full install | `.claude/bin/decisions.sh` | All four hooks, registered in `.claude/settings.json` |
-| Existing install, after `/update` | Copied in | Registered by `/update`'s hook migration (`HOOK_SET_VERSION` 3), which appends a kit hook a project lacks and never rewrites an entry you edited |
+| Existing install, after `/update` | Copied in | Registered by `/update`'s hook migration (`HOOK_SET_VERSION` 4), which appends a kit hook a project lacks and never rewrites an entry you edited |
 | Plugin | None: a plugin carries no `bin/` | All four, from the plugin's `hooks/hooks.json`. Next to a full install, the plugin's copies of the three context hooks step aside; both copies of the guard run, to the same verdict |
 | `--agents` (Codex, opencode and other tools) | `.agents/bin/decisions.sh` | None: an `--agents` install writes no settings file, so the scripts sit in `.agents/hooks/` unregistered, and nothing hands agents the list, checks their reports or refuses their writes |
 

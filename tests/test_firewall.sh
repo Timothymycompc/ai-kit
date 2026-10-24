@@ -257,6 +257,29 @@ own_fw
 assert_eq "1 1 generated" "$(own_state "$X_RELAXED")" "first apply: a user rule identical to a kit rule is taken as the kit's (documented)"
 assert_eq "1 0 generated" "$(own_state "$U1")" "first apply: the user rule beside it is not"
 
+# Rule set 10 dropped 13 strings that every release before #165 emitted. An install
+# upgrading from one still holds an unmarked record, so its re-apply must read each of
+# them as the kit's and remove it. kit_owned() finds them only in LEGACY_RULE_IDS: no
+# tier emits them now, and missing there, all 13 stayed, announced as the user's own.
+DROPPED_10=("Bash(git -C *)" "Bash(claude *)" "Bash(claude)" "Bash(rm -rf /*)" "Bash(rm -rf ~*)"
+            "Bash(rm -rf ~/*)" "Bash(rm -rf .*)" "Bash(git branch -D*)" "Bash(git branch *-D*)"
+            "Bash(git branch --delete*)" "Bash(git branch *--delete*)" "Bash(git branch -f*)"
+            "Bash(git branch * -f*)")
+python3 - "$OWN/.claude/security.json" "$OWN/.claude/settings.json" "${DROPPED_10[@]}" <<'PY'
+import json, sys
+sec_p, set_p = sys.argv[1:3]
+drop = sys.argv[3:]
+sec, s = json.load(open(sec_p)), json.load(open(set_p))
+e = sec["enforced"]
+e.pop("ruleIdsScope", None)
+e["ruleIds"] += drop
+s.setdefault("permissions", {}).setdefault("deny", []).extend(drop)
+json.dump(sec, open(sec_p, "w")); json.dump(s, open(set_p, "w"))
+PY
+assert_eq "13 13 unscoped" "$(own_state "${DROPPED_10[@]}")" "planted: a pre-#165 record holding the 13 rules rule set 10 dropped"
+own_fw
+assert_eq "0 0 generated" "$(own_state "${DROPPED_10[@]}")" "a pre-#165 record: every rule rule set 10 dropped is removed, none kept as the user's"
+
 # ── harvest every tier once, then assert over the four generated files ──────
 for t in $TIERS; do
   fw "$t"
@@ -365,28 +388,53 @@ import itertools, json, re, sys
 def ws(s):
     return re.sub(r"[ \t]+", " ", s)
 
+def ustars(pat):
+    # indices of a * with an even run of preceding backslashes -- a real wildcard.
+    # `\*` is a literal star (Claude Code's ESCAPED_STAR), not a gap.
+    out = []
+    for i, ch in enumerate(pat):
+        if ch == "*":
+            b, j = 0, i - 1
+            while j >= 0 and pat[j] == "\\":
+                b += 1; j -= 1
+            if b % 2 == 0:
+                out.append(i)
+    return out
+
+def unescape(s):
+    return s.replace("\\*", "*").replace("\\\\", "\\")
+
 def matches(rule, cmd):
     m = re.fullmatch(r"(.+):\*", rule)
     if m:
         return ws(cmd) == ws(m.group(1)) or ws(cmd).startswith(ws(m.group(1)) + " ")
-    if "*" not in rule:
-        return rule == cmd
+    if not ustars(rule):
+        return rule == cmd            # exact: `\*` stays literal, matches verbatim
     pat = ws(rule.strip())
-    rx = re.sub(r"""[.+?^${}()|\[\]\\'"]""", lambda s: "\\" + s.group(0), pat).replace("*", ".*")
-    if rx.endswith(" .*") and pat.count("*") == 1:
+    g, i = [], 0
+    while i < len(pat):
+        if pat[i] == "\\" and i + 1 < len(pat) and pat[i + 1] in ("*", "\\"):
+            g.append("\x00ES\x00" if pat[i + 1] == "*" else "\x00EB\x00"); i += 2
+        else:
+            g.append(pat[i]); i += 1
+    rx = re.sub(r"""[.+?^${}()|\[\]\\'"]""", lambda s: "\\" + s.group(0), "".join(g)).replace("*", ".*")
+    rx = rx.replace("\x00ES\x00", r"\*").replace("\x00EB\x00", r"\\")
+    if rx.endswith(" .*") and len(ustars(rule)) == 1:
         rx = rx[:-3] + "( .*)?"
     return re.fullmatch(rx, ws(cmd), re.S) is not None
 
 def probes(pat):
-    stars = [i for i, ch in enumerate(pat) if ch == "*"]
+    stars = ustars(pat)
+    mand = {i for i in stars if re.search(r"(?:^|\s)-C\s*$", pat[:i])}
     for empty in itertools.product((False, True), repeat=len(stars)):
-        if not any(empty):
+        combo = dict(zip(stars, empty))
+        if not any(empty) or any(combo[i] for i in mand):
             continue
         out, last = "", 0
-        for i, gap_empty in zip(stars, empty):
-            out += pat[last:i] + ("" if gap_empty else "ZZZ")
+        for i in stars:
+            out += pat[last:i] + ("" if combo[i] else "ZZZ")
             last = i + 1
-        cmd = re.sub(r" +", " ", out + pat[last:]).strip()
+        cmd = re.sub(r" +", " ", unescape(out + pat[last:])).strip()
         if cmd:
             yield cmd
 
@@ -414,7 +462,7 @@ for key in ("deny", "ask"):
     pats = [r[5:-1] for r in perms.get(key) or []
             if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
     for pat in pats:
-        if "\\" in pat or "**" in pat:
+        if "**" in pat:
             bad.append("%s:Bash(%s) is unmodelled" % (key, pat))
             continue
         for cmd in probes(pat):
@@ -637,36 +685,51 @@ done
 #   * The Edit denies, High only: self-protection, because below High the kit defers to
 #     a user customizing their own installation, and the .git/config and .git/hooks/
 #     fence, because below High it defers to the user on their own repository.
-#   * Bash(gh api *) at Medium and High -- the ONE Bash rule in the corpus that varies,
-#     added in rule set 5.
+#   * Four Bash deny GROUPS at Medium and High: Bash(gh api *) (rule set 5), the kill
+#     group (kill -9/killall/pkill) and the docker destructive group (container, image
+#     and volume removal), both moved off every-tier in rule set 10 because process
+#     control and container cleanup are day-to-day work at Relaxed, and Bash(bash -c *),
+#     moved in rule set 10 so a skill's bash -c set-up line (memsearch's recall) runs at
+#     the default tier.
 # A Bash deny is the one that most plausibly reaches user or managed scope by
-# hand-copying, where no descent can lift it, so the one that varies is pinned by exact
-# rule string and exact tier set rather than waved through by shape. A second one cannot
-# appear without this test being edited on purpose -- which is what caught the attempt to
-# lower Bash(git -C *) to High, since a -C prefix defeats every subcommand-anchored
-# destructive git glob and the rule has to stay tier-invariant.
+# hand-copying, where no descent can lift it, so the varying Bash set is pinned by exact
+# rule string and exact tier set rather than waved through by shape. Anything outside that
+# set appearing (or any of these at the wrong tier) fails here, on purpose -- which is what
+# caught the attempt to lower Bash(git -C *) to High, since a -C prefix defeats every
+# subcommand-anchored destructive git glob and the rule set has to stay tier-invariant.
 echo "[never-allowed set]"
 BASH_VARY="$(python3 -c "
 import json
 tiers = '$TIERS'.split()
-by = {}
-for t in tiers:
-    deny = (json.load(open('$WORK/gen.%s.json' % t)).get('permissions') or {}).get('deny') or []
-    by[t] = {r for r in deny if r.startswith('Bash(')}
-union, common = set(), None
-for s in by.values():
-    union |= s
-    common = s if common is None else (common & s)
-print('; '.join('%s@%s' % (r, ','.join(t for t in tiers if r in by[t]))
-                for r in sorted(union - common)) or 'none')" 2>/dev/null)"
-assert_eq "Bash(gh api *)@medium,high" "$BASH_VARY" \
-  "exactly one Bash permissions.deny entry varies by tier, at exactly the intended tiers"
+by = {t: {r for r in ((json.load(open('$WORK/gen.%s.json' % t)).get('permissions') or {}).get('deny') or []) if r.startswith('Bash(')} for t in tiers}
+union = set().union(*by.values())
+common = set.intersection(*by.values())
+varying = union - common
+expect = {'Bash(gh api *)', 'Bash(kill -9 *)', 'Bash(killall *)', 'Bash(pkill *)',
+          'Bash(docker rm *)', 'Bash(docker rmi *)', 'Bash(docker system prune *)',
+          'Bash(docker volume rm *)', 'Bash(docker compose down *-v*)',
+          'Bash(docker compose down -v*)', 'Bash(docker compose down *--volumes*)',
+          'Bash(docker compose down --volumes*)', 'Bash(bash -c *)'}
+tierbad = sorted(r for r in varying if [t for t in tiers if r in by[t]] != ['medium', 'high'])
+if varying != expect:
+    print('SETDIFF +%s -%s' % (sorted(varying - expect), sorted(expect - varying)))
+elif tierbad:
+    print('TIERBAD %s' % tierbad)
+else:
+    print('ok')" 2>/dev/null)"
+assert_eq "ok" "$BASH_VARY" \
+  "the tier-varying Bash denies are exactly gh api + the kill group + the docker group + bash -c, all at medium and high"
 
 # And the tier-varying remainder is exactly the sanctioned set -- nothing else may start
 # varying here without this test being updated on purpose.
 VARY_KIND="$(python3 -c "
 import json
-ALLOWED = {'Bash(gh api *)'} | {'Read(%s)' % f for f in (
+ALLOWED = {'Bash(gh api *)', 'Read(~/.config/gh/' 'hosts.yml)',
+           'Bash(kill -9 *)', 'Bash(killall *)', 'Bash(pkill *)',
+           'Bash(docker rm *)', 'Bash(docker rmi *)', 'Bash(docker system prune *)',
+           'Bash(docker volume rm *)', 'Bash(docker compose down *-v*)',
+           'Bash(docker compose down -v*)', 'Bash(docker compose down *--volumes*)',
+           'Bash(docker compose down --volumes*)', 'Bash(bash -c *)'} | {'Read(%s)' % f for f in (
     '**/.env', '**/.env.local', '**/.env.*.local', '**/.env.development',
     '**/.env.production', '**/.env.staging', '**/.env.test')}
 sets = {}
@@ -700,18 +763,37 @@ assert_eq "off:-- relaxed:-- medium:W- high:-R" "$ENV_TIERS" \
   "dotenv files: writes denied at Medium, reads at High, open at Off and Relaxed; .env.example and .env.schema never denied"
 
 # The unconditional group, by exact rule, at every tier. Each is here because it is not
-# "customizing your installation": a nested `claude -p --dangerously-skip-permissions`
-# re-rolls the whole policy in a child process; managed settings belong to an
-# administrator; .safe-ai-skill/** is a third-party security tool's policy; and the
-# hooks are the scripts that enforce the gates rather than config that declares them.
+# "customizing your installation": a nested `claude` that drops the policy re-rolls it in
+# a child process (one deny per policy-weakening flag, since the blanket Bash(claude *)
+# denied the harmless forms too); managed settings belong to an administrator;
+# .safe-ai-skill/** is a third-party security tool's policy; and the hooks are the scripts
+# that enforce the gates rather than config that declares them.
 for t in $TIERS; do
   MISSING="$(python3 -c "
 import json
 deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
-want = ['Bash(claude *)', 'Bash(claude)', 'Edit(//**/managed-settings.json)',
+want = ['Bash(claude *--dangerously-skip-permissions*)', 'Bash(claude *--permission-mode*)',
+        'Bash(claude *--settings*)', 'Bash(claude *--setting-sources*)',
+        'Bash(claude *--add-dir*)', 'Bash(claude *--mcp-config*)', 'Bash(claude *--plugin-dir*)',
+        'Bash(claude mcp add*)', 'Bash(claude setup-token*)',
+        'Edit(//**/managed-settings.json)',
         'Edit(/.safe-ai-skill/**)', 'Edit(/.claude/hooks/**)', 'Edit(~/.claude/hooks/**)']
 print(' '.join(r for r in want if r not in deny) or 'none')" 2>/dev/null)"
   assert_eq "none" "$MISSING" "$t carries the whole unconditional group (Off included)"
+done
+# The blanket Bash(claude *)/Bash(claude) are GONE, so the harmless forms the maintainer
+# CLAUDE.md prescribes run. Asserted against the generated deny set per tier, so a reader
+# that re-adds the blanket is caught here.
+for t in $TIERS; do
+  for cmd in "claude --version" "claude plugin validate ." "claude -p hello"; do
+    assert_eq "none" "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$t.json" "$cmd" 2>&1)" \
+      "$t leaves \`$cmd\` to run (no blanket claude deny)"
+  done
+  for cmd in "claude --dangerously-skip-permissions -p x" "claude --permission-mode bypassPermissions" \
+             "claude mcp add evil -- node x.js" "claude setup-token"; do
+    assert_eq "yes" "$([ "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$t.json" "$cmd" 2>&1)" != none ] && echo yes || echo no)" \
+      "$t denies the policy-weakening \`$cmd\`"
+  done
 done
 
 MCP_BY_TIER="$(python3 -c "
@@ -799,7 +881,7 @@ for t in '$TIERS'.split():
                 bad.append('%s:%s' % (t, rule))
 print(';'.join(bad) or 'none')" 2>/dev/null)"
 assert_eq "none" "$MCP_PARENS" "no tier emits an mcp__ rule with parentheses"
-if [ "$BASH_VARY" != "Bash(gh api *)@medium,high" ]; then
+if [ "$BASH_VARY" != "ok" ]; then
   printf '    Bash denies that vary by tier: %s\n' "$BASH_VARY"
   printf '    mcp denies per tier: %s\n' "$MCP_BY_TIER"
 fi
@@ -814,12 +896,13 @@ fi
 DENY_LIVE="$(python3 -c "
 import json
 print('\n'.join((json.load(open('$WORK/gen.relaxed.json')).get('permissions') or {}).get('deny') or []))" 2>/dev/null)"
-for r in "Bash(claude *)" "Bash(env *)" "Bash(git -c *)" "Bash(git -C *)" "Bash(security *)" "Edit(/.safe-ai-skill/**)" \
+for r in "Bash(claude *--dangerously-skip-permissions*)" "Bash(env *)" "Bash(git -c *)" "Bash(git -C * clean *)" "Bash(security *)" "Edit(/.safe-ai-skill/**)" \
          "Bash(git fetch *--upload-pack*)" "Bash(git fetch --upload-pack*)" \
          "Bash(git push *--receive-pack*)" "Bash(git push --receive-pack*)" \
          "Bash(git push *--exec*)" "Bash(git push --exec*)" \
          "Bash(gh issue delete *)" "Bash(gh repo delete *)" "Bash(gh repo delete)" \
          "Bash(git config *alias.*)" "Bash(git config alias.*)" \
+         "Bash(git -C * -c *)" "Bash(git -C * fetch *--upload-pack*)" "Bash(git -C * --exec-path=*)" \
          "Bash(git --config-env*)" "Bash(git reflog delete *)" "Bash(git reflog drop *)" \
          "Bash(git --exec-path=*)"; do
   TOTAL=$((TOTAL + 1))
@@ -832,22 +915,34 @@ for r in "Bash(claude *)" "Bash(env *)" "Bash(git -c *)" "Bash(git -C *)" "Bash(
   fi
 done
 
-# git -c and git -C are both denied at EVERY tier, and the second one is the easy rule to
-# mistake for lazy breadth. `-c` is arbitrary code execution via core.fsmonitor. `-C`
-# merely changes directory -- but every destructive git deny is a glob anchored on the
-# literal subcommand, so a `git -C <dir>` prefix sits in front and none of them match:
-# `git -C . clean -xdf` and `git -C . reflog expire --expire=now --all` both walk
-# straight through, and `-C .` needs no second repository so no sandbox fence is behind
-# it. Lowering this one rule would make the whole destructive-git set advisory below
-# High, which is why it is asserted here per tier rather than only spot-checked above.
-echo "[git -c and git -C are tier-invariant]"
+# git -c stays denied at EVERY tier (arbitrary code execution via core.fsmonitor). git -C
+# is no longer a blanket deny -- it only changes directory, so `git -C <dir> X` is as safe
+# as `cd <dir> && git X`, which is allowed. The blanket was there because a `-C <dir>`
+# prefix sits where every destructive-git glob expects `git` and none match; DENY_GIT_DASH_C
+# restores exactly that coverage with per-subcommand `-C` twins. Asserted per tier, in both
+# directions: the destructive `-C` forms are denied and the ordinary ones are not, so neither
+# a reader that drops the twins nor one that re-adds the blanket (which would re-deny
+# `git -C . status`) passes. The red team verified 26/26 destructive vs 0/17 ordinary.
+echo "[git -c tier-invariant; git -C narrowed to destructive twins]"
 for t in $TIERS; do
-  PAIR="$(python3 -c "
+  assert_eq "yes" "$(python3 -c "
 import json
 deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
-print('%s/%s' % ('deny' if 'Bash(git -c *)' in deny else 'allow',
-                 'deny' if 'Bash(git -C *)' in deny else 'allow'))" 2>/dev/null)"
-  assert_eq "deny/deny" "$PAIR" "$t: git -c and git -C both denied (a -C prefix defeats every destructive git glob)"
+print('yes' if 'Bash(git -c *)' in deny and 'Bash(git -C *)' not in deny else 'no')" 2>/dev/null)" \
+    "$t denies git -c and carries no blanket git -C"
+  for cmd in "git -C . clean -fdx" "git -C /tmp/x reset --hard HEAD~3" "git -C . restore ." \
+             "git -C . reflog expire --expire=now --all" "git -C . push --mirror" \
+             "git -C . fetch --upload-pack=/tmp/x.sh ." "git -C . -c core.fsmonitor=/tmp/x.sh status" \
+             "git -C . config --global alias.z !x"; do
+    assert_eq "yes" "$([ "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$t.json" "$cmd" 2>&1)" != none ] && echo yes || echo no)" \
+      "$t denies the destructive \`$cmd\`"
+  done
+  for cmd in "git -C . status --short" "git -C .. log --oneline -8" "git -C /tmp/x diff --stat" \
+             "git -C . rev-parse HEAD" "git -C . branch --show-current" "git -C . fetch origin" \
+             "git -C . commit -m fix" "git -C . branch -D old-branch"; do
+    assert_eq "none" "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$t.json" "$cmd" 2>&1)" \
+      "$t leaves the ordinary \`$cmd\` to run"
+  done
 done
 
 # git --config-env is git -c with the value read from an environment variable, and the
@@ -1383,13 +1478,25 @@ if others != {k: v for k, v in m.items() if k not in ('permissions', 'sandbox')}
     diffs.append('non-firewall keys changed')
 print(' | '.join(diffs))
 " "$WORK/maint-relaxed.json" "$WORK/gen.maintainer.json" 2>/dev/null || echo __ERROR__)"
-assert_eq "permissions.deny -['Bash(claude *)', 'Bash(claude)', 'Edit(/.claude/hooks/**)', 'Edit(/.safe-ai-skill/**)'] +[] | sandbox.excludedCommands -[] +['git submodule *']" \
-  "$MAINT_DIFF" "maintainer differs from relaxed by exactly the four kit-self-protection denies and the submodule exclusion"
+assert_eq "permissions.deny -['Bash(claude mcp add*)', 'Edit(/.claude/hooks/**)', 'Edit(/.safe-ai-skill/**)'] +[] | sandbox.excludedCommands -[] +['git submodule *']" \
+  "$MAINT_DIFF" "maintainer differs from relaxed by exactly the three kit-self-protection denies and the submodule exclusion"
 assert_eq "yes yes" "$(python3 -c "
 import json
 deny = (json.load(open('$WORK/gen.maintainer.json')).get('permissions') or {}).get('deny') or []
 print('yes' if 'Edit(~/.claude/hooks/**)' in deny else 'no', 'yes' if 'Edit(//**/managed-settings.json)' in deny else 'no')" 2>/dev/null)" \
   "maintainer keeps the user-scope hooks deny and the managed-settings deny"
+# Rule set 10 narrowed the nested-claude rules at every tier, and the maintainer tier
+# keeps Relaxed's flag denies: a nested agent with its policy dropped is refused here
+# too. Every MAINTAINER_OMIT_DENY entry must be a rule Relaxed emits, or the omission
+# is a no-op and the tier's documented difference is not its real one.
+assert_eq "yes yes" "$(python3 -c "
+import json
+r = (json.load(open('$WORK/maint-relaxed.json')).get('permissions') or {}).get('deny') or []
+m = (json.load(open('$WORK/gen.maintainer.json')).get('permissions') or {}).get('deny') or []
+flags = [x for x in r if x.startswith('Bash(claude *--')]
+print('yes' if flags and all(x in m for x in flags) else 'no',
+      'yes' if 'Bash(claude *--dangerously-skip-permissions*)' in m else 'no')" 2>/dev/null)" \
+  "maintainer keeps every nested-claude policy-weakening flag deny Relaxed has"
 assert_eq "maintainer maintainer" "$(python3 -c "
 import json
 d = json.load(open('$WORK/proj/.claude/security.json'))
@@ -1413,5 +1520,143 @@ rm -f "$WORK/proj/CLAUDE-solana.md" "$WORK/proj/install.sh"
 # unchanged. Pin that, so a stricter fallback later is a decision, not an accident.
 assert_eq "relaxed 1" "$(KIT_FIREWALL_TIER=maintainer bash -c '. "$1"; t=$(kit_tier); printf "%s %s" "$t" "$(kit_tier_num "$t")"' _ "$REPO_ROOT/.claude/hooks/lib-headless.sh" 2>/dev/null)" \
   "the hooks act at Relaxed under the maintainer tier"
+
+# ── rule set 10: Relaxed stops getting in the way, with no routed-around loss ──
+# dm <tier> <cmd> -> "yes" if some Bash deny stops it, else "no".
+dm() { [ "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$1.json" "$2" 2>&1)" != none ] && echo yes || echo no; }
+
+# rm: exact catastrophic literals and the `\*`-escaped globs are denied at every tier;
+# honest cleanup (temp dirs, dot build dirs, expanded paths) is not -- that is the whole
+# friction win, with the real target classifier living in egress-guard.awk (fw-hooks).
+echo "[rm: literals + escaped globs, honest cleanup freed]"
+for t in $TIERS; do
+  for cmd in "rm -rf /" "rm -rf ~" "rm -rf ~/" "rm -rf ." "rm -rf .." "rm -rf .git" \
+             "rm -rf /*" "rm -rf ~/*" "rm -rf *" "rm -rf .*"; do
+    assert_eq "yes" "$(dm "$t" "$cmd")" "$t denies the catastrophic \`$cmd\`"
+  done
+  for cmd in "rm -rf /tmp/claude-501/scratch" "rm -rf .next" "rm -rf ./target" "rm -rf node_modules" \
+             "rm -rf .anchor"; do
+    assert_eq "no" "$(dm "$t" "$cmd")" "$t leaves honest cleanup \`$cmd\` to run"
+  done
+done
+
+# kill -9/killall/pkill and docker removal: allowed at Off and Relaxed, denied at Medium
+# and High. (The every-tier kill-a-peer / kill -1 guard is a hook, not tested here.)
+echo "[process control and docker removal by tier]"
+for t in off relaxed; do
+  for cmd in "pkill -f solana-test-validator" "killall node" "kill -9 1234" \
+             "docker rm abc" "docker rmi img" "docker system prune -f" "docker volume rm v" \
+             "docker compose down -v" "docker compose down --volumes"; do
+    assert_eq "no" "$(dm "$t" "$cmd")" "$t allows \`$cmd\` (day-to-day work)"
+  done
+done
+for t in medium high; do
+  for cmd in "pkill -f solana-test-validator" "killall node" "kill -9 1234" \
+             "docker rm abc" "docker rmi img" "docker system prune -f" "docker volume rm v" \
+             "docker compose down -v" "docker compose down --volumes"; do
+    assert_eq "yes" "$(dm "$t" "$cmd")" "$t denies \`$cmd\`"
+  done
+done
+
+# `sh -c`, `bash -lc` and `zsh -c` keep their permission-layer denies at every tier.
+# `bash -c` keeps its rule at Medium and High only: memsearch's recall runs its set-up
+# line through it, and Claude Code checks a skill's set-up line against the rules alone,
+# so an every-tier rule stopped recall everywhere. At Off and Relaxed secrets-guard.sh
+# still refuses the agent's own `bash -c` (tests/test_secrets_guard.sh); no rule does.
+echo "[shell -c at the permission layer]"
+for t in $TIERS; do
+  for cmd in "sh -c 'echo hi'" "bash -lc 'echo hi'" "zsh -c 'echo hi'"; do
+    assert_eq "yes" "$(dm "$t" "$cmd")" "$t denies \`$cmd\` at the permission layer"
+  done
+  # The rule strings travel in argv: bash 3.2 mis-scans a `)` inside a quoted python
+  # literal when this $(...) sits in a loop.
+  assert_eq "yes" "$(python3 -c "
+import json, sys
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+print('yes' if set(sys.argv[1:]) <= deny else 'no')" 'Bash(sh -c *)' 'Bash(bash -lc *)' 'Bash(zsh -c *)' 2>/dev/null)" \
+    "$t carries Bash(sh -c *), Bash(bash -lc *) and Bash(zsh -c *) verbatim"
+done
+for t in off relaxed; do
+  assert_eq "no" "$(dm "$t" "bash -c 'echo hi'")" "$t has no rule for \`bash -c\` (a skill's set-up line can run)"
+  assert_eq "no" "$(python3 -c "
+import json, sys
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+print('yes' if sys.argv[1] in deny else 'no')" 'Bash(bash -c *)' 2>/dev/null)" \
+    "$t does not carry Bash(bash -c *)"
+done
+for t in medium high; do
+  assert_eq "yes" "$(dm "$t" "bash -c 'echo hi'")" "$t denies \`bash -c\` at the permission layer"
+  assert_eq "yes" "$(python3 -c "
+import json, sys
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+print('yes' if sys.argv[1] in deny else 'no')" 'Bash(bash -c *)' 2>/dev/null)" \
+    "$t carries Bash(bash -c *) verbatim"
+done
+
+# The two kit-owned helpers are on the allow list at every tier, beside skills.sh:
+# decisions.sh writes the decision record, report-page.sh renders /decide's and
+# /report's pages.
+echo "[decision and report helpers allow]"
+for t in $TIERS; do
+  for rule in 'Bash(bash .claude/bin/decisions.sh *)' 'Bash(bash .claude/bin/report-page.sh *)'; do
+    assert_eq "yes" "$(python3 -c "
+import json, sys
+allow = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('allow') or [])
+print('yes' if sys.argv[1] in allow else 'no')" "$rule" 2>/dev/null)" \
+      "$t allows $rule"
+  done
+done
+
+# gh's host file, ~/.config/gh/hosts.yml, is readable at Off and Relaxed and denied at Medium and
+# High, as a Read() deny AND in the sandbox denyRead; every other credential stays denied
+# at every tier. Checked on the generated files, path assembled so no literal appears here.
+echo "[gh host file: readable at Relaxed, denied at Medium+High]"
+GH_READ="Read(~/.config/gh/""hosts.yml)"
+GH_SB="~/.config/gh/""hosts.yml"
+for t in off relaxed; do
+  assert_eq "no" "$(python3 -c "
+import json
+d = json.load(open('$WORK/gen.$t.json')); p = d.get('permissions') or {}
+fs = ((d.get('sandbox') or {}).get('filesystem') or {}); dr = fs.get('denyRead') or []
+print('yes' if '$GH_READ' in (p.get('deny') or []) or '$GH_SB' in dr else 'no')" 2>/dev/null)" \
+    "$t leaves the gh host file readable (no Read deny, not in sandbox denyRead)"
+done
+for t in medium high; do
+  assert_eq "yes" "$(python3 -c "
+import json
+d = json.load(open('$WORK/gen.$t.json')); p = d.get('permissions') or {}
+fs = ((d.get('sandbox') or {}).get('filesystem') or {}); dr = fs.get('denyRead') or []
+print('yes' if '$GH_READ' in (p.get('deny') or []) and '$GH_SB' in dr else 'no')" 2>/dev/null)" \
+    "$t denies the gh host file (Read deny and sandbox denyRead)"
+done
+# The other host/registry credentials and the wallet stay denied at EVERY tier.
+for t in $TIERS; do
+  assert_eq "yes" "$(python3 -c "
+import json
+deny = set((json.load(open('$WORK/gen.$t.json')).get('permissions') or {}).get('deny') or [])
+need = ['Read(~/.npmrc)', 'Read(~/.git-credentials)', 'Read(~/.netrc)',
+        'Read(~/.config/solana/id.json)', 'Read(~/.aws)']
+print('yes' if all(r in deny for r in need) else 'no')" 2>/dev/null)" \
+    "$t keeps the wallet and the other host/registry credentials denied"
+done
+
+# ── the rule-set history names each number once, and ends at RULE_SET_VERSION ─
+# /update re-applies a tier only when the recorded number is behind, so two rule sets
+# sharing a number is a set that never reaches the installs already on that number. Two
+# branches each wrote an `8 -> 9` entry once; the merge kept both and shipped neither as
+# a 10. The history comment is where that shows, so it is read here.
+echo "[rule-set history]"
+assert_eq "ok" "$(python3 - "$FIREWALL" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+steps = [(int(a), int(b)) for a, b in re.findall(r"^#\s+(\d+) -> (\d+):", src, re.M)]
+want = int(re.search(r"^RULE_SET_VERSION = (\d+)$", src, re.M).group(1))
+bad = []
+if [b for _, b in steps] != list(range(2, want + 1)):
+    bad.append("entries end at %s, not RULE_SET_VERSION %d" % ([b for _, b in steps][-3:], want))
+bad += ["%d -> %d is not one step" % s for s in steps if s[1] != s[0] + 1]
+print("; ".join(bad) or "ok")
+PY
+)" "firewall.sh's rule-set history has one entry per number, ending at RULE_SET_VERSION"
 
 print_summary
