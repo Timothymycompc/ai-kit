@@ -3,8 +3,39 @@ set -euo pipefail
 
 # Test runner for Solana AI Kit
 # Runs all test_*.sh files and reports results.
+#
+#   bash tests/run_all.sh          one suite per CPU at a time
+#   bash tests/run_all.sh -j 4     at most four at a time (-j4 and --jobs 4 work too)
+#   bash tests/run_all.sh -j 1     one after another, output streamed as it runs
+#   SAK_TEST_JOBS=N                the same as -j N; -j wins when both are given
+#
+# In parallel each suite writes its own log, and the logs are printed whole, in suite
+# order, as each one finishes, so the output reads as a serial run does. Must run on
+# macOS's bash 3.2, which has no `wait -n`: the scheduler polls instead.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+cpu_count() {
+  local n
+  for n in "$(nproc 2>/dev/null)" "$(getconf _NPROCESSORS_ONLN 2>/dev/null)" "$(sysctl -n hw.ncpu 2>/dev/null)"; do
+    case "$n" in '' | *[!0-9]* | 0) ;; *) echo "$n"; return ;; esac
+  done
+  echo 1
+}
+
+JOBS="${SAK_TEST_JOBS:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -j | --jobs) JOBS="${2:-}"; shift 2 || shift ;;
+    -j*) JOBS="${1#-j}"; shift ;;
+    --jobs=*) JOBS="${1#--jobs=}"; shift ;;
+    *) echo "usage: run_all.sh [-j N]   (unknown argument: $1)" >&2; exit 64 ;;
+  esac
+done
+[ -n "$JOBS" ] || JOBS="$(cpu_count)"
+case "$JOBS" in
+  '' | *[!0-9]* | 0) echo "run_all.sh: -j / SAK_TEST_JOBS needs a positive integer, got '$JOBS'" >&2; exit 64 ;;
+esac
 
 TOTAL_SUITES=0
 PASSED_SUITES=0
@@ -13,20 +44,34 @@ SKIPPED_SUITES=0
 FAILED_NAMES=""
 SKIPPED_NAMES=""
 
+# Everything the run writes lives in one private directory: each suite's log, exit
+# status and skip count, so suites running side by side never share a file.
+RUN_DIR="$(mktemp -d 2>/dev/null || true)"
+if [ -z "$RUN_DIR" ] || [ ! -d "$RUN_DIR" ]; then
+  RUN_DIR="${TMPDIR:-/tmp}/sak-run-all.$$"
+  mkdir -p "$RUN_DIR" 2>/dev/null || RUN_DIR=""
+fi
+cleanup() {
+  local p
+  # An interrupted parallel run leaves suites behind: stop them and what they started.
+  for p in $(jobs -p 2>/dev/null || true); do
+    pkill -TERM -P "$p" 2>/dev/null || true
+    kill "$p" 2>/dev/null || true
+  done
+  [ -z "$RUN_DIR" ] || rm -rf "$RUN_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
 # Suites that find an ext/ pack present but empty skip those checks instead of failing
 # (see tests/helpers.sh). Collect the counts so the remedy appears once at the end of a
-# full run rather than only inside each suite. Best effort: no writable temp dir just
-# means no aggregate line.
-SAK_SKIP_REPORT="${TMPDIR:-/tmp}/sak-run-all-skips.$$"
-: > "$SAK_SKIP_REPORT" 2>/dev/null || SAK_SKIP_REPORT=""
+# full run rather than only inside each suite. Each suite reports into its own file
+# (print_summary appends to SAK_SKIP_REPORT), merged in suite order at the end so the
+# list reads the same however the suites were scheduled. Best effort: no writable temp
+# dir just means no aggregate line.
+SAK_SKIP_REPORT=""
+[ -z "$RUN_DIR" ] || SAK_SKIP_REPORT="$RUN_DIR/skips"
 export SAK_SKIP_REPORT
-
-# Each suite's output is kept so the runner can check it reported at all. A suite that
-# dies under set -e before print_summary prints no "Results:" line, and on one OS that
-# read as silence rather than as a failure for two sessions (#216).
-SUITE_LOG="${TMPDIR:-/tmp}/sak-run-all-suite.$$"
-: > "$SUITE_LOG" 2>/dev/null || SUITE_LOG=/dev/null
-trap 'rm -f "${SAK_SKIP_REPORT:-/dev/null}" "$SUITE_LOG" 2>/dev/null || true' EXIT
 
 echo "========================================"
 echo " Solana AI Kit - Test Suite"
@@ -52,31 +97,111 @@ done
 # (tests/helpers.sh sets the same for a suite run on its own).
 export SOLANA_AI_KIT_SAFE_AI_SKILL="${SOLANA_AI_KIT_SAFE_AI_SKILL:-0}"
 
+SUITES=""
 for test_file in "$SCRIPT_DIR"/test_*.sh; do
-  test_name="$(basename "$test_file" .sh)"
-  TOTAL_SUITES=$((TOTAL_SUITES + 1))
+  [ -f "$test_file" ] || continue
+  SUITES="$SUITES $(basename "$test_file" .sh)"
+done
 
-  echo "--- $test_name ---"
-  RC=0
-  bash "$test_file" 2>&1 | tee "$SUITE_LOG" || RC=$?
+# record <name> <rc> <log> — classify one finished suite. The log is what it printed.
+record() {
+  local test_name="$1" rc="$2" log="$3"
+  TOTAL_SUITES=$((TOTAL_SUITES + 1))
   # No summary means the suite stopped somewhere it did not choose to. Treat that as a
-  # failure whatever it exited with, so it can never pass for having said nothing.
-  if [ "$SUITE_LOG" != /dev/null ] && ! grep -q '^Results:' "$SUITE_LOG"; then
-    echo "NO SUMMARY: $test_name exited $RC without reaching print_summary"
-    RC=1
+  # failure whatever it exited with, so it can never pass for having said nothing (#216).
+  if [ -n "$log" ] && ! grep -q '^Results:' "$log"; then
+    echo "NO SUMMARY: $test_name exited $rc without reaching print_summary"
+    rc=1
   fi
   # 2 means the suite checked nothing but skips: not a pass, not a failure either.
-  if [ "$RC" -eq 0 ]; then
+  if [ "$rc" -eq 0 ]; then
     PASSED_SUITES=$((PASSED_SUITES + 1))
-  elif [ "$RC" -eq 2 ]; then
+  elif [ "$rc" -eq 2 ]; then
     SKIPPED_SUITES=$((SKIPPED_SUITES + 1))
     SKIPPED_NAMES="$SKIPPED_NAMES  - $test_name\n"
   else
     FAILED_SUITES=$((FAILED_SUITES + 1))
     FAILED_NAMES="$FAILED_NAMES  - $test_name\n"
   fi
+  # This suite's skips join the run-wide report in suite order.
+  if [ -n "$SAK_SKIP_REPORT" ] && [ -s "$SAK_SKIP_REPORT.$test_name" ]; then
+    cat "$SAK_SKIP_REPORT.$test_name" >> "$SAK_SKIP_REPORT"
+  fi
   echo ""
-done
+}
+
+# skip_report_for <name> — the file that suite's print_summary appends its skips to.
+skip_report_for() { [ -z "$SAK_SKIP_REPORT" ] || printf '%s' "$SAK_SKIP_REPORT.$1"; }
+
+if [ "$JOBS" -eq 1 ]; then
+  # Serial: one suite at a time, its output streamed as it runs.
+  for test_name in $SUITES; do
+    echo "--- $test_name ---"
+    RC=0
+    LOG=""
+    [ -z "$RUN_DIR" ] || LOG="$RUN_DIR/$test_name.log"
+    SAK_SKIP_REPORT="$(skip_report_for "$test_name")" \
+      bash "$SCRIPT_DIR/$test_name.sh" 2>&1 | tee "${LOG:-/dev/null}" || RC=$?
+    record "$test_name" "$RC" "$LOG"
+  done
+else
+  if [ -z "$RUN_DIR" ]; then
+    echo "run_all.sh: no writable temp dir for the suite logs; run with -j 1" >&2
+    exit 1
+  fi
+  # The slowest suites start first, so none of them is left to begin near the end and
+  # set the critical path alone. Slowest first, as measured serially on CI's macOS runner
+  # and locally; a name not in the tree is ignored, and every other suite follows in glob
+  # order. Output order is unaffected: it is always suite order.
+  SLOW="test_install_agents_only test_hooks test_skill_extensions test_install test_update_firewall test_env_schema test_safe_ai_skill_policy test_update test_update_migrations test_validate test_safe_ai_skill_install test_update_settings_migration"
+  ORDER=""
+  for s in $SLOW; do
+    case " $SUITES " in *" $s "*) ORDER="$ORDER $s" ;; esac
+  done
+  for s in $SUITES; do
+    case " $SLOW " in *" $s "*) ;; *) ORDER="$ORDER $s" ;; esac
+  done
+  set -- $ORDER
+  echo "(running $# suites, $JOBS at a time)"
+  echo ""
+
+  # launch <name> — run one suite in the background; its .rc file appears when it is done.
+  launch() {
+    (
+      rc=0
+      SAK_SKIP_REPORT="$(skip_report_for "$1")" \
+        bash "$SCRIPT_DIR/$1.sh" > "$RUN_DIR/$1.log" 2>&1 < /dev/null || rc=$?
+      echo "$rc" > "$RUN_DIR/$1.rc.tmp" && mv "$RUN_DIR/$1.rc.tmp" "$RUN_DIR/$1.rc"
+    ) &
+  }
+
+  LAUNCHED_LIST=""
+  PRINT_QUEUE="$SUITES"
+  while [ -n "$PRINT_QUEUE" ]; do
+    # Count what has finished since the last pass, then fill the free slots.
+    RUNNING=0
+    for s in $LAUNCHED_LIST; do [ -f "$RUN_DIR/$s.rc" ] || RUNNING=$((RUNNING + 1)); done
+    while [ $# -gt 0 ] && [ "$RUNNING" -lt "$JOBS" ]; do
+      launch "$1"
+      LAUNCHED_LIST="$LAUNCHED_LIST $1"
+      RUNNING=$((RUNNING + 1))
+      shift
+    done
+    # Print every suite at the head of the queue that has finished, in suite order.
+    PRINTED=no
+    while [ -n "$PRINT_QUEUE" ]; do
+      set_head="${PRINT_QUEUE# }"; head_name="${set_head%% *}"
+      [ -f "$RUN_DIR/$head_name.rc" ] || break
+      echo "--- $head_name ---"
+      cat "$RUN_DIR/$head_name.log"
+      record "$head_name" "$(cat "$RUN_DIR/$head_name.rc")" "$RUN_DIR/$head_name.log"
+      case "$set_head" in *" "*) PRINT_QUEUE="${set_head#* }" ;; *) PRINT_QUEUE="" ;; esac
+      PRINTED=yes
+    done
+    [ -z "$PRINT_QUEUE" ] || [ "$PRINTED" = yes ] || sleep 0.2
+  done
+  wait
+fi
 
 echo "========================================"
 echo " Final Summary"

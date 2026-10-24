@@ -66,6 +66,23 @@ new_tmp() {
   printf '%s' "$d"
 }
 
+# fetch_tag <tag> — make sure this checkout has <tag>, fetching it when a shallow clone
+# lacks it. Returns 1 when it still is not there (no network), for the caller to skip.
+#
+# More than one suite may want the same tag at once under run_all.sh's parallel mode, and
+# two fetches into one shallow repository contend for its ref and shallow locks: the
+# loser fails although the winner is about to land the tag. So a failed fetch is retried,
+# and the tag counts as present the moment either one has written it.
+fetch_tag() {
+  local i
+  for i in 1 2 3 4 5; do
+    git -C "$_KIT_ROOT" rev-parse -q --verify "refs/tags/$1" >/dev/null 2>&1 && return 0
+    git -C "$_KIT_ROOT" fetch -q --depth=1 origin tag "$1" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  git -C "$_KIT_ROOT" rev-parse -q --verify "refs/tags/$1" >/dev/null 2>&1
+}
+
 # --- Uninitialized ext/ packs: a setup state, not broken config -----------------------
 #
 # A fresh clone or a git worktree without `git submodule update --init` leaves every

@@ -24,9 +24,10 @@ jobs:
           # third-party trees straight into its fixture project. The registry's `vendored`
           # pins are read from each pack's index, which one level provides.
           submodules: true
-          # Tags, not just the tip: tests/test_update.sh reads the v2.1.0 settings.json and
-          # the frozen update.sh byte range straight from the tag, so the migration baseline
-          # is matched by construction instead of by a vendored copy that drifts.
+          # Tags, not just the tip: tests/test_update_firewall.sh reads the v2.1.0
+          # settings.json and the frozen update.sh byte range straight from the tag, and
+          # tests/test_update.sh its shipped rules, so the migration baseline is matched by
+          # construction instead of by a vendored copy that drifts.
           fetch-depth: 0
 
       - name: Validate JSON files
