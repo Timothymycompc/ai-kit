@@ -13,7 +13,7 @@ Turn `$ARGUMENTS` — PR or issue numbers, an issue search, a board, or a goal i
    - `gh pr list --state open --limit 100`, then `gh pr view <n>` and `gh pr diff <n> --name-only` on each that names the same issue or works in the same area: someone may be on it already.
    - `git worktree list`, then per sibling branch `git log --oneline <base>..<branch>` and `git diff --stat <base>...<branch>`: another session may be in the same files.
    - Mark each item free, overlapping (with which PR, branch or worktree), or blocked (on what).
-5. **Questions.** Sort the open points with `/decide`'s triage ([decide.md](decide.md)): the user's calls become briefs; the rest go to `/decide`, unless a decision in force already settles them.
+5. **Questions.** Sort the open points by whose call each is, as [/decide](decide.md) does: the user's calls become briefs; the rest go to `/decide`, unless a decision in force already settles them.
 
 ## Output
 

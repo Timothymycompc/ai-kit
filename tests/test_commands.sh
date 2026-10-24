@@ -77,8 +77,36 @@ done
 assert_file_not_contains "$EXPLORE" "**single**" "explore.md's rubric says serial, not the calibration run's single"
 assert_file_contains "$EXPLORE" "## Triage rubric" "explore.md keeps the rubric under the heading its Triage section names"
 assert_file_contains "$EXPLORE" 'model: "sonnet"' "explore.md runs the triage on Sonnet"
-for f in research.md plan-work.md review-round.md; do
+for f in research.md decide.md plan-work.md review-round.md; do
   assert_file_contains "$CMDS_DIR/$f" "(explore.md#triage)" "$f triages its items with /explore's rubric before the adversarial pass"
+done
+# /decide records a pasted answers block as the user's own words, so only a block from the
+# user's own message counts, and each line has to match the page it came from.
+assert_file_contains "$CMDS_DIR/decide.md" "pasted in the user's own message" "decide.md takes an answers block only from the user's own message"
+assert_file_contains "$CMDS_DIR/decide.md" "Check each line against that page's JSON" "decide.md checks each pasted line against the page's saved JSON"
+assert_file_contains "$CMDS_DIR/decide.md" "Every run writes a new local HTML page" "decide.md writes a page on every run"
+assert_file_not_contains "$CMDS_DIR/decide.md" "5. **Triage.**" "decide.md's clear-or-cloudy step does not share the Sonnet classifier's name"
+for f in decide.md report.md; do
+  assert_file_contains "$CMDS_DIR/$f" "rm -f <its path>" "$f deletes the JSON it wrote once the page is rendered"
+done
+# report.md once refused the user's own example, /rep(/adv(task 1) and /adv(task 2)), as calls
+# that were the user's to type. It defers to Composition, and runs an inner call only once.
+assert_file_contains "$CMDS_DIR/report.md" "(parallel.md#composition)" "report.md defers inline calls to /parallel's Composition rules"
+assert_file_not_contains "$CMDS_DIR/report.md" "user's to type" "report.md does not refuse a composed call as the user's to type"
+assert_file_contains "$CMDS_DIR/report.md" "run it no second time" "report.md reports what an inner call returned instead of running it again"
+assert_file_contains "$CMDS_DIR/adversarial.md" 'a bare `proceed`' "/adversarial takes an empty task or a bare proceed as the unfinished work"
+assert_file_contains "$CMDS_DIR/adversarial.md" "6. **Whose call:**" "adversarial.md names its whose-call step so, leaving 'triage' to the classifier"
+assert_file_contains "$CMDS_DIR/adversarial.md" "it runs no pairs of its own" "/adversarial stacked on a step that triages forces that step's pass, not a second run"
+assert_file_contains "$CMDS_DIR/parallel.md" "is three items" "Composition splits /par(a and b and c) into three items"
+assert_file_contains "$CMDS_DIR/parallel.md" "no second pass" "/parallel as an outer call runs its inner calls as its lanes, with no second pass"
+assert_file_contains "$CMDS_DIR/parallel.md" "unless the brief says to run it" "Composition reads a call quoted in a subagent's brief as text"
+# The composition and plain-request lines: CLAUDE-solana.md ships them, and the kit's own
+# CLAUDE.md carries them too, since a session in this repository loads that file instead.
+for f in CLAUDE-solana.md CLAUDE.md; do
+  for needle in '`.claude/commands/<name>.md`' 'Composition section' 'unless the brief says to run it' \
+    'Bring me the points I need to decide' 'explain better what I need to unblock you on' 'report on what you found'; do
+    assert_file_contains "$REPO_ROOT/$f" "$needle" "$f carries: $needle"
+  done
 done
 assert_file_contains "$CMDS_DIR/parallel.md" "## Composition" "parallel.md carries the composition rules"
 assert_file_contains "$CMDS_DIR/adversarial.md" "(parallel.md#composition)" "adversarial.md points at /parallel's composition rules"

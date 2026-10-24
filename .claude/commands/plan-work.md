@@ -7,7 +7,7 @@ Plan `$ARGUMENTS` — a goal, an intake item, or a research or decision file; wi
 ## Steps
 
 1. **Inputs.** Read the decisions in force (`bash .claude/bin/decisions.sh in-force`; if the helper is missing or fails, say so and work from the conversation), the files named, and the code the goal touches (`Explore` subagents in parallel for a large codebase). Pin the base with `git rev-parse HEAD` (uncommitted changes are not in it): implementers branch from that commit, because a subagent's `isolation: worktree` starts from the default branch.
-2. **Questions.** The user's calls ([triage](decide.md)) become briefs; plan around what they block and mark those tasks blocked. Minor calls go through `/decide`.
+2. **Questions.** The user's calls ([whose call](decide.md)) become briefs; plan around what they block and mark those tasks blocked. Minor calls go through `/decide`.
 3. **Tasks.** Each names:
    - **Owner:** the kit agent that fits (`anchor-engineer`, `pinocchio-engineer`, `solana-frontend-engineer`, `rust-backend-engineer`, `mobile-engineer`, `tech-docs-writer`, …), else general-purpose.
    - **Files:** the exact paths it creates or modifies, then the ones it only reads. No file is written by two tasks.

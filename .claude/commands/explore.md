@@ -21,7 +21,7 @@ Sort the tasks in `$ARGUMENTS` by what each one needs, then run each that way. [
 
 ## Triage
 
-Every command that triages runs it this way: this one, and `/research`, `/plan-work` and `/review-round` before their adversarial pass.
+Every command that triages runs it this way: this one, `/research`, `/plan-work` and `/review-round` before their adversarial pass, and `/decide` before its panel.
 
 1. Number the items, each on one self-contained line: what it is, and what rides on it. The triage sees nothing else.
 2. One subagent on Sonnet labels them: the Agent tool with `model: "sonnet"`, or `agent(<prompt>, {model: 'sonnet'})` inside a workflow. Its prompt is the [Triage rubric](#triage-rubric) section below, verbatim, then the numbered items, and nothing more. Where no subagent can run, apply the rubric in this session and say so.
