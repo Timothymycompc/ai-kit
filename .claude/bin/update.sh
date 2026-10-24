@@ -1272,8 +1272,9 @@ GITIGNORE="$TARGET_DIR/.gitignore"
 # Ignores added after an install may already exist: install.sh writes them for fresh
 # installs, so without this an existing project never gets them. Appended outside the
 # kit config block, since a user may have removed that block with /commit-claude-config.
+# reports/ holds the pages bin/report-page.sh writes, which can hold private decisions.
 if [ "$DRY_RUN" = false ] && [ -f "$GITIGNORE" ]; then
-  for ignore in ".memsearch/" "$CONFIG_NAME/worktrees/"; do
+  for ignore in ".memsearch/" "$CONFIG_NAME/worktrees/" "$CONFIG_NAME/reports/"; do
     # Git for Windows checks a tracked .gitignore out with CRLF: match without the CR,
     # or the line is appended a second time. Two patterns rather than `tr | grep -q`:
     # under pipefail an early match kills `tr` with SIGPIPE, and a large file then

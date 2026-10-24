@@ -395,11 +395,13 @@ ALLOW = [
         # Kit-owned renderer for the local HTML pages /decide and /report produce: it
         # reads one JSON file of the shape it expects, at most 1 MiB, and writes only
         # page-named files (each page and a copy of its JSON), index.json, a create-only
-        # .gitignore and temp files inside <root>/.claude/reports/, or $TMPDIR/kit-reports/
-        # when that folder cannot be written, re-rendering the earlier pages there; no
-        # network request. Listed beside decisions.sh so a page renders without a prompt;
-        # its own input checks are what keep it from copying an arbitrary file somewhere
-        # readable.
+        # .gitignore, temp files and a private staging folder it renders each page in
+        # before renaming it into place, all inside <root>/.claude/reports/ — or inside
+        # $TMPDIR/kit-reports/, or a private kit-reports.XXXXXX beside it, when that
+        # folder cannot be used — re-rendering the earlier pages there; beyond that, only
+        # a scratch folder under $TMPDIR that it removes on exit, and no network request.
+        # Listed beside decisions.sh so a page renders without a prompt; its own input
+        # checks are what keep it from copying an arbitrary file somewhere readable.
         "Bash(bash .claude/bin/report-page.sh *)",
     ],
     [

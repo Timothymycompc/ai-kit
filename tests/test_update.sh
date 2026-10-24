@@ -50,7 +50,7 @@ fi
 
 # --- Counts after update ---
 assert_count "$TEMP_DIR/.claude/agents" "*.md" "15" "Agent count == 15 after update"
-assert_count "$TEMP_DIR/.claude/commands" "*.md" "34" "Command count == 34 after update"
+assert_count "$TEMP_DIR/.claude/commands" "*.md" "54" "Command count == 54 after update"
 
 # --- Dry-run mode ---
 echo "[dry-run]"

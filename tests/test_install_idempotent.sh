@@ -42,7 +42,7 @@ assert_dir_exists "$TEMP_DIR/.claude" ".claude/ still valid after 2nd install"
 assert_dir_exists "$TEMP_DIR/.claude/agents" "agents/ preserved after 2nd install"
 assert_dir_exists "$TEMP_DIR/.claude/commands" "commands/ preserved after 2nd install"
 assert_count "$TEMP_DIR/.claude/agents" "*.md" "15" "Agent count correct after 2nd install"
-assert_count "$TEMP_DIR/.claude/commands" "*.md" "34" "Command count correct after 2nd install"
+assert_count "$TEMP_DIR/.claude/commands" "*.md" "54" "Command count correct after 2nd install"
 
 # Verify specific files have content (not empty from bad copy)
 assert_file_exists "$TEMP_DIR/.claude/agents/anchor-engineer.md" "Specific agent exists after 2nd install"
@@ -58,6 +58,9 @@ assert_eq "1" "$EXT_DUPES" "No duplicate ext/ entries in .gitignore"
 
 LOCAL_DUPES=$(grep -c "CLAUDE.local.md" "$TEMP_DIR/.gitignore" | tr -d ' ')
 assert_eq "1" "$LOCAL_DUPES" "No duplicate CLAUDE.local.md entries in .gitignore"
+
+REPORTS_DUPES=$(grep -cxF ".claude/reports/" "$TEMP_DIR/.gitignore" | tr -d ' ')
+assert_eq "1" "$REPORTS_DUPES" "No duplicate .claude/reports/ entries in .gitignore"
 
 # --- Third install: CLAUDE.md now matches the kit's, so the backup of the user's copy must survive ---
 echo "[third install]"

@@ -38,8 +38,9 @@ What is in the kit repository, which parts reach an installed project, and the w
     │   ├── resync.sh                # Submodule resync script
     │   ├── firewall.sh              # Generates a tier's permission + sandbox rules
     │   ├── decisions.sh             # The decision record: add, supersede, in-force, export
+    │   ├── report-page.sh           # /report's and /decide's HTML pages in .claude/reports/ (no network)
     │   └── skills.sh                # List skill packs, install extensions on demand
-    ├── commands/                # 34 workflow commands
+    ├── commands/                # 54 workflow commands
     ├── hooks/                   # PreToolUse guards, and the decision-record hooks
     ├── skills/                  # Progressive-loading knowledge
     │   ├── SKILL.md                 # Unified hub routing to all skills

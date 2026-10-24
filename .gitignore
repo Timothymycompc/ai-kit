@@ -270,6 +270,10 @@ flycheck_*.el
 # Phase-handoff context files (idea.md, build.md — per-session, never committed)
 .claude/context/
 
+# Report pages from .claude/bin/report-page.sh (/report, /decide's sheets): they can hold
+# private decisions, so they stay on this machine
+.claude/reports/
+
 # Temporary files
 tmp/
 temp/
