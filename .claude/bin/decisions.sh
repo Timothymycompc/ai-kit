@@ -9,7 +9,8 @@
 #
 # Why a script: Claude Code treats a Write or Edit into .git/ as a sensitive-file write
 # and asks before any allow rule applies, so entries are written here, with literal
-# arguments, under the one allow rule Bash(bash .claude/bin/decisions.sh *). Only the
+# arguments, under the one allow rule Bash(bash .claude/bin/decisions.sh *), which
+# firewall rule set 10 adds; under an earlier rule set a call may prompt. Only the
 # user's main session writes, which hooks/decisions-guard.sh enforces by refusing a
 # subagent `add` and `supersede`; subagents propose entries in their reports.
 #

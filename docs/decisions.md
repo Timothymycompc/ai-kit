@@ -154,7 +154,7 @@ It runs at every firewall tier, Off included: who may speak for you does not var
 
 | Tier | The helper writes the record | The hooks read it |
 |------|------------------------------|-------------------|
-| Off, Relaxed, Medium | Yes. `Bash(bash .claude/bin/decisions.sh *)` is in the allow list, so it runs without a prompt | Yes |
+| Off, Relaxed, Medium | Yes. Rule set 10 puts `Bash(bash .claude/bin/decisions.sh *)` in the allow list, so it runs without a prompt; under an earlier rule set it may prompt | Yes |
 | High | **Not yet.** High's sandbox fences reads under your home directory, and the helper is not yet supported inside that fence; on Claude Code 2.1.304 the fence is expected to stop it reading its own script. Record decisions from a session at a lower tier until it is | Yes: hooks run outside the sandbox |
 
 The write guard refuses a subagent's write at every tier.
