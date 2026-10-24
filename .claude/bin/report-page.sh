@@ -41,7 +41,7 @@
 # go. The page fetches nothing (system fonts, and a CSP of default-src 'none'), because it
 # can hold private decisions.
 #
-# The input checks are strict because the firewall allows this script without a prompt:
+# The input checks are strict because the firewall's allow rule (rule set 10) runs this script without a prompt:
 # it must not become a way to copy any file somewhere readable. It reads one regular file,
 # once and at most 1 MiB of it, and goes on only if that is shaped like a page's JSON (an
 # object naming "title" and "decisions", or "title" and "summary"), which a keypair, a JSON
