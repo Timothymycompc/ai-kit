@@ -940,7 +940,13 @@ PY
   # install already runs on Bash, which is why "already run" now also asks whether the
   # live entry's matcher selects the shipped entry's tools: on the script alone, this
   # entry would never be added.
-  HOOK_SET_VERSION=3
+  # 3 -> 4: the decision-record hooks. decisions-inject.sh on SessionStart and
+  # SubagentStart, decisions-push.sh on PreToolUse for every tool,
+  # decisions-report-check.sh on SubagentStop, and decisions-guard.sh on PreToolUse for
+  # Bash, the file tools and context-mode. Two of those events are new to the block,
+  # and the loop below creates an event list a project lacks, so each arrives as an
+  # appended entry like any guard.
+  HOOK_SET_VERSION=4
   cat > "$TEMP_DIR/kit_hooks.py" <<'PY'
 import hashlib, json, os, re, sys, tempfile
 

@@ -32,9 +32,10 @@ run_update() {
   (cd "$PROJ" && SOLANA_AI_KIT_LOCAL_SRC="$REPO_ROOT" bash .claude/bin/update.sh "$@") 2>&1
 }
 
-# guard_entries <script> — how many hook entries in settings.json run that kit script.
+# guard_entries <script> [settings] — how many hook entries in settings.json (the
+# project's, unless another file is named) run that kit script.
 guard_entries() {
-  python3 - "$SETTINGS" "$1" <<'PY'
+  python3 - "${2:-$SETTINGS}" "$1" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 needle, n = sys.argv[2], 0
@@ -47,20 +48,10 @@ print(n)
 PY
 }
 
-# shipped_entries <script> — how many hook entries the kit's own settings.json runs that
-# script in. secrets-guard.sh ships twice: on Bash and context-mode, and on Read and Grep.
-shipped_entries() {
-  python3 - "$REPO_ROOT/.claude/settings.json" "$1" <<'PY'
-import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-needle, n = sys.argv[2], 0
-for entries in (data.get("hooks") or {}).values():
-    for entry in entries if isinstance(entries, list) else []:
-        if any(needle in (h.get("command") or "") for h in entry.get("hooks") or []):
-            n += 1
-print(n)
-PY
-}
+# shipped_entries <script> — how many entries the kit's own settings.json runs that
+# script in: one for a guard, one per event for a script registered on several, and two
+# for secrets-guard.sh (on Bash and context-mode, and on Read and Grep).
+shipped_entries() { guard_entries "$1" "$REPO_ROOT/.claude/settings.json"; }
 
 # entries_on <script> <matcher> — how many entries run that script with exactly that matcher.
 entries_on() {
@@ -228,7 +219,7 @@ assert_eq "$AFTER_ONE" "$(shasum -a 256 "$SETTINGS" | awk '{print $1}')" "a thir
 # --- One guard missing: only that one comes back ----------------------------
 echo ""
 echo "[one guard missing]"
-ONE_GUARD="$(printf '%s\n' $GUARDS | head -1)"
+ONE_GUARD="$(printf '%s\n' $GUARDS | grep -e '-guard\.sh$' | head -1)"
 python3 - "$SETTINGS" "$SECURITY" "$ONE_GUARD" <<'PY'
 import json, sys
 
@@ -304,6 +295,65 @@ PY
 run_update >/dev/null
 assert_eq "1" "$(guard_entries secrets-guard.sh)" "a secrets-guard.sh entry on every tool is not doubled"
 assert_file_contains "$SETTINGS" "on-every-tool" "the user's own entry is still the one that runs"
+
+# --- An install from hook set 3: every guard, no decision-record hooks yet --------
+#
+# The state an install from the release before the decision record is in: hook set 3
+# recorded with that release's fingerprint (today's shipped block without the decision
+# hooks). The registration must run and add exactly the decision hooks. The second case
+# records today's own fingerprint beside set 3, so only the version gate can reopen the
+# registration: it fails if HOOK_SET_VERSION is left at 3. It starts from the kit's own
+# settings, as a fresh install has them, since the case above left secrets-guard.sh on
+# the user's own entry.
+echo ""
+echo "[hook set 3 -> 4: the decision-record hooks reach an install at hook set 3]"
+cp "$REPO_ROOT/.claude/settings.json" "$SETTINGS"; cp "$REPO_ROOT/.claude/security.json" "$SECURITY"
+DECISION_HOOKS="$(printf '%s\n' $GUARDS | grep -e '^decisions-' | tr '\n' ' ')"
+assert_eq "yes" "$([ -n "$DECISION_HOOKS" ] && echo yes || echo no)" "fixture: the kit ships decision-record hooks ($DECISION_HOOKS)"
+set3() {  # set3 <fingerprint-of: release|current>
+  python3 - "$SETTINGS" "$SECURITY" "$REPO_ROOT/.claude/settings.json" "$1" <<'PY'
+import hashlib, json, sys
+settings_path, security_path, shipped_path, which = sys.argv[1:5]
+def drop(hooks):
+    out = {}
+    for event, entries in hooks.items():
+        kept = [e for e in entries if not any(
+            "/decisions-" in (h.get("command") or "") for h in e.get("hooks") or [])]
+        if kept:
+            out[event] = kept
+    return out
+def fingerprint(block):
+    return hashlib.sha256(json.dumps(block, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+data = json.load(open(settings_path, encoding="utf-8"))
+data["hooks"] = drop(data["hooks"])
+json.dump(data, open(settings_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+shipped = json.load(open(shipped_path, encoding="utf-8"))["hooks"]
+security = json.load(open(security_path, encoding="utf-8"))
+security["hookSetVersion"] = 3
+security["hookSetFingerprint"] = fingerprint(drop(shipped) if which == "release" else shipped)
+json.dump(security, open(security_path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PY
+}
+for which in release current; do
+  set3 "$which"
+  for script in $DECISION_HOOKS; do
+    assert_eq "0" "$(guard_entries "$script")" "fixture ($which fingerprint): $script is not registered"
+  done
+  SET4="$(run_update)"
+  for script in $DECISION_HOOKS; do
+    assert_contains "$SET4" "$script" "($which fingerprint) the run names $script"
+  done
+  for script in $GUARDS; do
+    assert_eq "$(shipped_entries "$script")" "$(guard_entries "$script")" \
+      "($which fingerprint) $script is registered as often as the kit ships it"
+  done
+  assert_eq "$WANT_HS" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("hookSetVersion"))' "$SECURITY")" \
+    "($which fingerprint) the record moves to the shipped hook set"
+done
+AFTER_SET4="$(shasum -a 256 "$SETTINGS" | awk '{print $1}')"
+run_update >/dev/null
+assert_eq "$AFTER_SET4" "$(shasum -a 256 "$SETTINGS" | awk '{print $1}')" "a second /update adds nothing more"
 
 # --- A guard the user rewrote is left alone ---------------------------------
 #

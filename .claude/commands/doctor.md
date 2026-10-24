@@ -3,7 +3,7 @@ description: "Read-only check of toolchain and kit config, with one fix-it comma
 model: sonnet
 ---
 
-Run the eleven checks below, then report. Status values: `OK` healthy, `WARN` works but fix soon, `FAIL` blocks workflows, `n/a` not applicable.
+Run the thirteen checks below, then report. Status values: `OK` healthy, `WARN` works but fix soon, `FAIL` blocks workflows, `n/a` not applicable.
 
 ## Checks
 
@@ -252,6 +252,87 @@ Read these in order; stop at the first that matches.
 - WARN `installed` shows a sha other than `pinned`: the plugin lags the kit's pin. `claude plugin update safe-ai-skill@stbr`.
 - OK otherwise: report its scope and sha.
 
+**12. Decision hooks.** `decisions-inject.sh` (SessionStart, SubagentStart) and `decisions-push.sh` (PreToolUse, every tool) hand the session and every subagent the user's decisions in force from the record in check 13; `decisions-report-check.sh` (SubagentStop) sends one of the kit's agents back once when its report leaves out one of its five labelled lines. None of those three can block a tool call. `decisions-guard.sh` (PreToolUse) is the one that can: it refuses a subagent's write to the record, so only the main session writes it. `/update` copies the scripts and registers any the project lacks, recording the hook set it applied as `hookSetVersion` in `.claude/security.json`.
+```bash
+python3 - <<'PY'
+import json, pathlib
+def load(p):
+    f = pathlib.Path(p)
+    return json.loads(f.read_text()) if f.is_file() else {}
+hooks = load(".claude/settings.json").get("hooks") or {}
+def has(event, name):
+    return any(name in (h.get("command") or "") for e in (hooks.get(event) or []) for h in (e.get("hooks") or []))
+want = [("SessionStart", "decisions-inject.sh"), ("SubagentStart", "decisions-inject.sh"),
+        ("PreToolUse", "decisions-push.sh"), ("SubagentStop", "decisions-report-check.sh"),
+        ("PreToolUse", "decisions-guard.sh")]
+print("wired:", sum(has(e, s) for e, s in want), "of", len(want))
+print("missing:", ", ".join("%s/%s" % (e, s) for e, s in want if not has(e, s)) or "none")
+print("guards:", sum(has("PreToolUse", g) for g in ("secrets-guard", "onchain-guard", "egress-guard", "fetch-exec-guard")))
+print("scripts:", all(pathlib.Path(".claude/hooks", s).is_file() for _, s in want))
+print("guard_files:", all(pathlib.Path(".claude/hooks", f).is_file() for f in ("decisions-guard.awk", "lib-tokenize.awk", "lib-headless.sh")))
+print("hook_set:", load(".claude/security.json").get("hookSetVersion") or 0)
+print("full_install:", pathlib.Path(".claude/VERSION").is_file())
+print("config_dir:", pathlib.Path(".claude/VERSION").parent.name)
+PY
+```
+Read these in order; stop at the first that matches.
+- `n/a` `config_dir: .agents`: an `--agents` install has no `settings.json` (check 9 says why), so nothing hands agents the list or checks their reports. `bin/decisions.sh` still records.
+- `n/a` `full_install: False`: the plugin path. The plugin's own `hooks/hooks.json` carries all four, so there is nothing to register in the project.
+- WARN `wired: 0` and `guards: 0`: no kit hook is registered at all, so the `hooks` array was emptied or rewritten by hand — **removed on purpose**. Report it and offer no fix.
+- WARN `scripts: False`: a decision hook's script is missing, and a registration whose script is gone runs nothing, silently. Usually **this install predates the decision hooks**; `/update` copies the scripts in and registers the ones the project lacks.
+- WARN `guard_files: False`: a file `decisions-guard.sh` reads is missing (`decisions-guard.awk`, `lib-tokenize.awk` or `lib-headless.sh`), so the guard lets every call through, silently, as the firewall guards do without their libraries. `/update` copies `hooks/` wholesale; run it.
+- OK `wired: 5 of 5`: the hooks are live. Report check 13's state beside it.
+- WARN `wired: 0` and `hook_set` below 4: the scripts are on disk, but `/update`'s registration has not run since they shipped, or it skipped this project. Run `/update`; it prints `[registered]`, or `[skipped]` with the reason.
+- WARN `wired: 0`: `/update` registered them and they were removed since — **removed on purpose**. Report it and offer no fix; the kit re-registers them only when a later version changes its hook set.
+- WARN anything else (`wired` 1 to 4): partly hand-edited. Name what `missing` lists and let the user decide; do not rewrite it. A missing `PreToolUse/decisions-guard.sh` means a subagent can write the record.
+
+**13. Decision record.** The record is a directory under the clone's git directory, `$(git rev-parse --git-common-dir)/decisions/`, shared by every worktree of the clone. The hooks inject its `in-force.md`, the list `.claude/bin/decisions.sh` regenerates on every write. Read the directory directly rather than through the helper, whose `in-force` and `hash` can rewrite files, and never print an entry.
+```bash
+python3 - <<'PY'
+import pathlib, subprocess
+try:
+    r = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True)
+    out = r.stdout.strip() if r.returncode == 0 else ""
+except OSError:
+    out = ""
+if not out:
+    print("record:", "unreadable" if pathlib.Path(".git").exists() else "none")
+    raise SystemExit
+rec = pathlib.Path(out).resolve() / "decisions"
+lst, sha = rec / "in-force.md", rec / "in-force.sha"
+try:
+    if rec.is_symlink() or lst.is_symlink():
+        print("record: link")
+    elif not rec.is_dir():
+        print("record: absent")
+    else:
+        entries = [p for p in rec.iterdir()
+                   if p.name[:2] in ("D-", "P-", "S-") and p.suffix == ".md" and not p.is_symlink()]
+        newest = max((p.stat().st_mtime for p in entries), default=0)
+        # Ids the list still names whose entry file is gone: deleted by hand since.
+        listed = [l[2:].split(":", 1)[0].split(" ", 1)[0]
+                  for l in (lst.read_text(errors="replace").splitlines() if lst.is_file() else [])
+                  if l.startswith("- ")]
+        gone = [i for i in listed if not (rec / (i + ".md")).is_file()]
+        print("record: present")
+        print("entries:", len(entries))
+        print("in_force_bytes:", lst.stat().st_size if lst.is_file() else "missing")
+        # The helper touches in-force.sha on every regeneration, so an entry newer than it
+        # was edited since. Not the directory's own mtime: the hooks' seen/ directory moves it.
+        print("stale:", bool(gone) or (bool(entries) and not (lst.is_file() and sha.is_file() and newest <= sha.stat().st_mtime)))
+except OSError as exc:
+    print("record: unreadable", exc.strerror)
+PY
+```
+Read these in order; stop at the first that matches.
+- `n/a` `record: none`: not inside a git repository, and the record lives under one.
+- WARN `record: unreadable`: this shell cannot read the git directory; at High, the sandbox fences reads under the home directory. Report it and offer no fix: the hooks read the record outside the sandbox.
+- OK `record: absent`: nothing is recorded yet, and the hooks stay silent until the first entry.
+- WARN `record: link`: the record directory or its `in-force.md` is a symlink, which the hooks refuse, so that a tracked file can never speak as the user: nothing reaches agents. The user replaces the link with the directory itself; never point it into the repository.
+- WARN `stale: True`: an entry was edited or deleted since the list was last generated, or the list is missing, usually after a hand edit, so agents are handed an out-of-date list or none. Regenerate it: `bash .claude/bin/decisions.sh in-force`.
+- WARN `in_force_bytes` over 9000: the hooks cut the list there and point agents at the file for the rest. Ask the user which entries to shorten; superseding one with shorter wording keeps its history.
+- OK otherwise: report the entry count and the list's size, never its contents.
+
 ## Output
 
 One table, then fix-its for the non-OK rows only, in the order to run them:
@@ -272,6 +353,8 @@ One table, then fix-its for the non-OK rows only, in the order to run them:
 | 9 | Firewall tier      | OK     | relaxed declared = enforced     |
 | 10| Guard registrations | OK    | fetch-exec and Read/Grep registered |
 | 11| safe-ai-skill      | FAIL   | enabled, not installed          |
+| 12| Decision hooks     | OK     | wired 5 of 5                    |
+| 13| Decision record    | OK     | 6 entries, 1.8 KB in force      |
 
 ### Fix-its (run in order)
 1. `git submodule update --init --recursive`

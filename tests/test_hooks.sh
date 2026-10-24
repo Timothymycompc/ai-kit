@@ -435,6 +435,125 @@ else
   FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1))
 fi
 
+# ── the decision-record hooks: registration ─────────────────────────────────
+# Three scripts on four events, in two copies. What they do is
+# tests/test_decision_hooks.sh's job; this holds the wiring. Each event runs its script
+# once in settings.json and once in the plugin. Injection and the push carry no matcher,
+# since they serve every agent and every tool; the report check names the kit's agents.
+# None goes through `exec`: the wrapper exits 0 whatever the script does, so a hook that
+# only adds context, or checks a report, can never block a tool call. They are not
+# guards, so they stay out of the guard tuple above. The record's one guard,
+# decisions-guard.sh, is checked on its own below.
+echo "[decision hooks: registration]"
+for FILE in "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/plugin/hooks/hooks.json"; do
+  NAME="${FILE#"$REPO_ROOT"/}"
+  DREG="$(python3 - "$FILE" <<'PY'
+import json, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]
+want = [("SessionStart", "decisions-inject.sh", None), ("SubagentStart", "decisions-inject.sh", None),
+        ("PreToolUse", "decisions-push.sh", None), ("SubagentStop", "decisions-report-check.sh", "agents")]
+out = []
+for event, script, matcher in want:
+    found = [(e, h) for e in hooks.get(event, []) for h in e.get("hooks", [])
+             if script in (h.get("command") or "")]
+    if len(found) != 1:
+        out.append("%s/%s registered %d times" % (event, script, len(found)))
+        continue
+    entry, h = found[0]
+    m = entry.get("matcher")
+    if matcher is None and m not in (None, "", "*"):
+        out.append("%s/%s is narrowed to %r" % (event, script, m))
+    if matcher and not m:
+        out.append("%s/%s matches every agent" % (event, script))
+    if h.get("type") != "command":
+        out.append("%s/%s is not a command hook" % (event, script))
+    cmd = (h.get("command") or "").rstrip()
+    if "exec " in cmd or not cmd.endswith("; exit 0"):
+        out.append("%s/%s can pass on the script's exit status" % (event, script))
+print("; ".join(out) or "ok")
+PY
+)"
+  assert_eq "ok" "$DREG" "$NAME: each decision hook is registered once, for its event, through an exit-0 wrapper"
+done
+for f in decisions-inject.sh decisions-push.sh decisions-report-check.sh; do
+  TOTAL=$((TOTAL + 1))
+  if [ -L "$REPO_ROOT/plugin/hooks/$f" ] && [ -e "$REPO_ROOT/plugin/hooks/$f" ]; then
+    echo "  PASS: plugin/hooks/$f resolves (symlink into .claude/hooks)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: plugin/hooks/$f is missing, so a plugin install never runs it"
+    FAIL=$((FAIL + 1))
+  fi
+done
+# The report check holds the kit's agents to the return contract and no one else, so the
+# list in the script, the matcher in both copies and .claude/agents/ name the same
+# agents. An agent added to the kit fails here until it is added to all three.
+AGENT_SYNC="$(python3 - "$REPO_ROOT" <<'PY'
+import glob, json, os, re, sys
+root = sys.argv[1]
+agents = set()
+for p in glob.glob(os.path.join(root, ".claude", "agents", "*.md")):
+    m = re.search(r"^name:\s*(\S+)", open(p, encoding="utf-8").read(), re.M)
+    if m:
+        agents.add(m.group(1))
+script = open(os.path.join(root, ".claude", "hooks", "decisions-report-check.sh"), encoding="utf-8").read()
+case = re.search(r"case \$\{V#solana-ai-kit:\} in\n(.*?)\) ;;", script, re.S)
+listed = set(re.findall(r"[a-z][a-z0-9-]+", case.group(1))) if case else set()
+out = [] if agents else ["no agents found under .claude/agents/"]
+if listed != agents:
+    out.append("script lists +%s -%s" % (sorted(listed - agents), sorted(agents - listed)))
+for rel in (".claude/settings.json", "plugin/hooks/hooks.json"):
+    for e in json.load(open(os.path.join(root, rel)))["hooks"].get("SubagentStop", []):
+        if any("decisions-report-check.sh" in (h.get("command") or "") for h in e.get("hooks", [])):
+            m = re.fullmatch(r"\^\(solana-ai-kit:\)\?\(([a-z0-9|-]+)\)\$", e.get("matcher") or "")
+            names = set(m.group(1).split("|")) if m else set()
+            if names != agents:
+                out.append("%s matcher +%s -%s" % (rel, sorted(names - agents), sorted(agents - names)))
+print("; ".join(out) or "ok")
+PY
+)"
+assert_eq "ok" "$AGENT_SYNC" "the report check, both SubagentStop matchers and .claude/agents/ name the same agents"
+
+# ── the decision record's guard: registration ───────────────────────────────
+# decisions-guard.sh is the one decision hook that blocks: a subagent's write to the
+# record. So it is wired as the firewall guards are, through `exec`, for its exit 2 to
+# reach Claude Code, and its matcher adds the file-editing tools to their Bash and
+# context-mode. What it decides is tests/test_decisions_guard.sh's job.
+echo "[decisions guard: registration]"
+DG_MATCHER='Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__context-mode__.*'
+for FILE in "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/plugin/hooks/hooks.json"; do
+  NAME="${FILE#"$REPO_ROOT"/}"
+  DGREG="$(python3 - "$FILE" "$DG_MATCHER" <<'PY'
+import json, sys
+hooks, want = json.load(open(sys.argv[1]))["hooks"], sys.argv[2]
+found = [(ev, e, h) for ev, entries in hooks.items() for e in entries for h in e.get("hooks", [])
+         if "decisions-guard.sh" in (h.get("command") or "")]
+out = []
+if len(found) != 1:
+    out.append("registered %d times" % len(found))
+for ev, e, h in found:
+    if ev != "PreToolUse":
+        out.append("on %s" % ev)
+    if e.get("matcher") != want:
+        out.append("matcher %r" % e.get("matcher"))
+    if h.get("type") != "command" or 'exec sh "$H"' not in (h.get("command") or ""):
+        out.append("not run through exec, so its exit 2 never blocks")
+print("; ".join(out) or "ok")
+PY
+)"
+  assert_eq "ok" "$DGREG" "$NAME: the decisions guard is registered once, on PreToolUse, through exec, for Bash, the file tools and context-mode"
+done
+for f in decisions-guard.sh decisions-guard.awk; do
+  TOTAL=$((TOTAL + 1))
+  if [ -L "$REPO_ROOT/plugin/hooks/$f" ] && [ -e "$REPO_ROOT/plugin/hooks/$f" ]; then
+    echo "  PASS: plugin/hooks/$f resolves (symlink into .claude/hooks)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: plugin/hooks/$f is missing, so a plugin install never runs the guard"
+    FAIL=$((FAIL + 1))
+  fi
+done
+
 # ===========================================================================
 # MCP gating: context-mode's executor and fetcher, through the same guards
 # ===========================================================================

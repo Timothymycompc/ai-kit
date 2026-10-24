@@ -107,6 +107,15 @@ for required in test_firewall test_egress_guard test_fetch_exec_guard test_doc_g
     exit 1
   fi
 done
+# The decision record's two protections, each with one suite: a field that looks like a
+# credential never reaches the record (test_decisions), and only the user's main session
+# writes it (test_decisions_guard). Whatever the record holds reaches every agent.
+for required in test_decisions test_decisions_guard; do
+  if [ ! -f "$SCRIPT_DIR/$required.sh" ]; then
+    echo "MISSING SUITE: tests/$required.sh (the decision record's protections ship with it)"
+    exit 1
+  fi
+done
 
 # install.sh's safe-ai-skill step calls the real `claude` CLI; keep every suite off it
 # (tests/helpers.sh sets the same for a suite run on its own).

@@ -372,8 +372,42 @@ fi
 echo "[hooks]"
 HOOKS="$(json_get '["hooks"]')"
 HOOK_EVENTS="$(python3 -c "import json; print(' '.join(sorted(json.load(open('$SETTINGS'))['hooks'])))" 2>/dev/null)"
-# Nothing formats files, runs builds or echoes after a tool call, a turn or a subagent.
-assert_eq "PreToolUse SessionStart" "$HOOK_EVENTS" "hooks are only SessionStart and PreToolUse"
+# 2.2.0 kept SessionStart and PreToolUse only. The decision record adds the two subagent
+# events, to hand every subagent the user's decisions in force and to check a kit agent's
+# report. Still nothing formats files, runs builds or echoes after a tool call or a turn,
+# and the subagent events carry the decision hooks and nothing else.
+assert_eq "PreToolUse SessionStart SubagentStart SubagentStop" "$HOOK_EVENTS" \
+  "hooks are SessionStart, PreToolUse, SubagentStart and SubagentStop"
+SUBAGENT_HOOKS="$(python3 -c "
+import json, re
+d = json.load(open('$SETTINGS'))['hooks']
+bad = [h.get('command', '') for ev in ('SubagentStart', 'SubagentStop') for e in d.get(ev, [])
+       for h in e.get('hooks', []) if not re.search(r'\.claude/hooks/decisions-[a-z-]+\.sh', h.get('command', ''))]
+print('ok' if not bad else 'other: ' + '; '.join(c[:60] for c in bad))
+" 2>/dev/null)"
+assert_eq "ok" "$SUBAGENT_HOOKS" "the subagent events run the decision-record hooks and nothing else"
+# /update carries a kit hook into an existing install only when its command names a
+# script in hooks/, so a prompt or agent hook would reach fresh installs and no one else.
+ALL_COMMAND="$(python3 -c "
+import json
+d = json.load(open('$SETTINGS'))['hooks']
+print('ok' if all(h.get('type') == 'command' and h.get('command')
+                  for evs in d.values() for e in evs for h in e.get('hooks', [])) else 'no')
+" 2>/dev/null)"
+assert_eq "ok" "$ALL_COMMAND" "every hook is a command hook, which /update can carry to an existing install"
+# Of the decision hooks, only the record's guard can block, and it is the one hook that
+# watches the file-editing tools: whether a subagent or the main session is writing the
+# record is in the hook payload, which no permission rule can read.
+DECISION_BLOCKERS="$(python3 -c "
+import json, re
+d = json.load(open('$SETTINGS'))['hooks']
+print(' '.join('%s:%s:%s' % (ev, m.group(1), e.get('matcher', ''))
+               for ev, entries in sorted(d.items()) for e in entries for h in e.get('hooks', [])
+               for m in [re.search(r'\.claude/hooks/(decisions-[a-z-]+\.sh)', h.get('command', ''))]
+               if m and 'exec sh' in h['command']))
+" 2>/dev/null)"
+assert_eq "PreToolUse:decisions-guard.sh:Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__context-mode__.*" "$DECISION_BLOCKERS" \
+  "decisions-guard.sh is the one decision hook that can block, for Bash, the file tools and context-mode"
 
 # Hook contract: matchers only match tool names (no undocumented "when" key),
 # the payload is read from stdin JSON, and only exit 2 blocks a tool call.
