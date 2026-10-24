@@ -330,6 +330,103 @@ run_update >/dev/null
 assert_eq "1" "$(guard_entries "$ONE_GUARD")" "the user's own invocation of $ONE_GUARD is not doubled"
 assert_file_contains "$SETTINGS" "with-my-own-flags" "the user's own invocation is still the one that runs"
 
+# --- Migration F1/F2/F10: a narrowed or respelled matcher must not be doubled, and
+# --- /doctor check 10 must read it the way /update does -------------------------------
+#
+# /update judges a shipped entry already-run by the script it names and the tools its
+# matcher selects. named_tools reads only a plain `|` list, so without a probe set a
+# shipped `Bash|mcp__context-mode__.*` offered only Bash and a user entry on the MCP
+# half read as not-running — a second full copy appended, against the CHANGELOG's
+# promise. And a live matcher respelled `Read, Grep` or `Read | Grep`, or anchored, read
+# as selecting nothing, so the Read|Grep entry was appended beside a working one.
+echo ""
+echo "[F1: a guard narrowed to its context-mode half is not doubled]"
+cp "$REPO_ROOT/.claude/settings.json" "$SETTINGS"; cp "$REPO_ROOT/.claude/security.json" "$SECURITY"
+python3 - "$SETTINGS" "$SECURITY" <<'PY'
+import json, sys
+sp, qp = sys.argv[1], sys.argv[2]
+d = json.load(open(sp, encoding="utf-8"))
+for e in d["hooks"]["PreToolUse"]:
+    if any("egress-guard.sh" in (h.get("command") or "") for h in e.get("hooks") or []):
+        e["matcher"] = "mcp__context-mode__.*"      # the user drops Bash, keeps the MCP half
+json.dump(d, open(sp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+s = json.load(open(qp, encoding="utf-8")); s["hookSetVersion"] = 0
+json.dump(s, open(qp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PY
+assert_eq "1" "$(guard_entries egress-guard.sh)" "fixture: egress-guard runs once, on the MCP half"
+run_update >/dev/null
+assert_eq "1" "$(guard_entries egress-guard.sh)" "a guard narrowed to its context-mode half is not doubled"
+assert_eq "1" "$(entries_on egress-guard.sh 'mcp__context-mode__.*')" "the user's narrowing is left in place"
+
+echo "[F2: Read, Grep / Read | Grep / anchored spellings are not doubled]"
+# /doctor check 10 carries this same matcher reading (its own copy), so the two agree
+# by construction; pin that doctor.md still has it, so a revert there is caught.
+assert_file_contains "$REPO_ROOT/.claude/commands/doctor.md" 're.fullmatch(r"[A-Za-z0-9_\-, |]+", m)' \
+  "doctor check 10 reads a matcher as /update does (exact |/, list)"
+assert_file_contains "$REPO_ROOT/.claude/commands/doctor.md" 'print("hook_set:"' \
+  "doctor check 10 reads the recorded hook set, to tell predates from removed-at-set"
+# doctor_fg — doctor check 10's file_guard over the current $SETTINGS (its selects()
+# verbatim), so the test pins that /doctor reads the matcher the way /update does.
+doctor_fg() {
+  python3 - "$SETTINGS" <<'PY'
+import json, re, sys
+pre = ((json.load(open(sys.argv[1], encoding="utf-8")).get("hooks") or {}).get("PreToolUse") or [])
+def selects(m, tool):
+    if not isinstance(m, str) or m.strip() in ("", "*"): return True
+    if re.fullmatch(r"[A-Za-z0-9_\-, |]+", m):
+        return tool in [a.strip() for a in re.split(r"[|,]", m)]
+    try: return re.search(m, tool) is not None
+    except re.error: return False
+def fg(e):
+    if not any("secrets-guard" in (h.get("command") or "") for h in e.get("hooks") or []): return False
+    m = e.get("matcher"); return selects(m, "Read") or selects(m, "Grep")
+print("True" if any(fg(e) for e in pre) else "False")
+PY
+}
+for SPELL in "Read, Grep" "Read,Grep" "Read | Grep" " Read|Grep " "^(Read|Grep)$"; do
+  cp "$REPO_ROOT/.claude/settings.json" "$SETTINGS"; cp "$REPO_ROOT/.claude/security.json" "$SECURITY"
+  python3 - "$SETTINGS" "$SECURITY" "$SPELL" <<'PY'
+import json, sys
+sp, qp, spell = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(sp, encoding="utf-8"))
+for e in d["hooks"]["PreToolUse"]:
+    if any("secrets-guard.sh" in (h.get("command") or "") for h in e.get("hooks") or []) \
+       and (e.get("matcher") or "").replace(" ", "") in ("Read|Grep", "Read,Grep", "^(Read|Grep)$"):
+        e["matcher"] = spell
+json.dump(d, open(sp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+s = json.load(open(qp, encoding="utf-8")); s["hookSetVersion"] = 0
+json.dump(s, open(qp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PY
+  BEFORE="$(guard_entries secrets-guard.sh)"
+  assert_eq "True" "$(doctor_fg)" "doctor reads '$SPELL' as covering the file guard (agrees with /update)"
+  run_update >/dev/null
+  assert_eq "$BEFORE" "$(guard_entries secrets-guard.sh)" "the respelled matcher '$SPELL' is not doubled"
+  assert_eq "1" "$(entries_on secrets-guard.sh "$SPELL")" "the user's spelling '$SPELL' is left in place"
+done
+
+echo "[F10: at hook set 3 a removed Read|Grep entry is not re-added, and doctor says so]"
+cp "$REPO_ROOT/.claude/settings.json" "$SETTINGS"; cp "$REPO_ROOT/.claude/security.json" "$SECURITY"
+python3 - "$SETTINGS" "$SECURITY" "$REPO_ROOT/.claude/settings.json" <<'PY'
+import json, sys
+sp, qp = sys.argv[1], sys.argv[2]
+d = json.load(open(sp, encoding="utf-8"))
+d["hooks"]["PreToolUse"] = [e for e in d["hooks"]["PreToolUse"]
+    if not (any("secrets-guard.sh" in (h.get("command") or "") for h in e.get("hooks") or [])
+            and e.get("matcher") in ("Read|Grep", "Read, Grep", "Read,Grep", " Read|Grep ", "Read | Grep", "^(Read|Grep)$"))]
+json.dump(d, open(sp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+s = json.load(open(qp, encoding="utf-8"))
+s["hookSetVersion"] = 3
+# today's shipped fingerprint, so the gate stays closed: computed from the kit's block.
+import hashlib
+kit = json.load(open(sys.argv[3], encoding="utf-8"))["hooks"]
+s["hookSetFingerprint"] = hashlib.sha256(json.dumps(kit, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()[:16]
+json.dump(s, open(qp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PY
+assert_eq "False" "$(doctor_fg)" "fixture: the file guard is gone"
+assert_eq "0" "$(entries_on secrets-guard.sh 'Read|Grep')" "fixture: no Read|Grep entry at hook set 3"
+run_update >/dev/null
+assert_eq "0" "$(entries_on secrets-guard.sh 'Read|Grep')" "update does not re-add it at the current hook set (gate closed)"
+
 # --- An install with no settings.json is reported, not rebuilt --------------
 echo ""
 echo "[no settings.json]"

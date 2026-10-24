@@ -131,20 +131,34 @@ Whatever the row, a tier change only binds the next session: permission rules ar
 **10. Guard registrations.** Two kit guard registrations came after the first three guards. `.claude/hooks/fetch-exec-guard.sh` gates `npx -y <stranger>`, `pnpm dlx`, `uvx`, `pipx run`, `cargo install` and `go install pkg@version` when the package is not a declared dependency — reporting at Relaxed and Medium, denying at High — and, at every tier but Off, denies a nested Claude Code launch that carries a policy-weakening flag. The exception at High is `KIT_FETCH_EXEC_ALLOW` in that script: the packages the kit's own commands invoke (`create-solana-dapp`, `codama`, `shank-cli`, `avm` from Anchor's git repo and four more) are reported there rather than denied, matched on the exact name within one ecosystem. It is the only implementation route for gating `cargo install`, which sits in `permissions.allow` at every tier. The second is `.claude/hooks/secrets-guard.sh` registered once more, on the Read and Grep tools, so they cannot read `gh`'s host file at any tier (`file_guard`). The scripts are enforcement and the `hooks` entries are what run them. `/update` copies the scripts every time but registers a missing entry only when the kit's hook set moves forward (hook set 2 for fetch-exec-guard, 3 for the Read and Grep entry), so the two can disagree in between.
 ```bash
 python3 - <<'PY'
-import json, pathlib
+import json, pathlib, re
 def load(p):
     f = pathlib.Path(p)
     return json.loads(f.read_text()) if f.is_file() else {}
 pre = ((load(".claude/settings.json").get("hooks") or {}).get("PreToolUse") or [])
 def has(name):
     return any(name in (h.get("command") or "") for e in pre for h in (e.get("hooks") or []))
-def on_read(e):
-    m = e.get("matcher") or ""
-    return m in ("", "*", ".*") or "Read" in m.split("|")
+# selects() reads a matcher as Claude Code and /update's kit_hooks.py read one, so this
+# check agrees with what /update would do: none/""/"*" is every tool, a `|`- or
+# `,`-separated list with optional whitespace is exact, anything else an unanchored regex.
+def selects(m, tool):
+    if not isinstance(m, str) or m.strip() in ("", "*"):
+        return True
+    if re.fullmatch(r"[A-Za-z0-9_\-, |]+", m):
+        return tool in [a.strip() for a in re.split(r"[|,]", m)]
+    try:
+        return re.search(m, tool) is not None
+    except re.error:
+        return False
+def file_guarded(e):
+    if not any("secrets-guard" in (h.get("command") or "") for h in (e.get("hooks") or [])):
+        return False
+    m = e.get("matcher")
+    return selects(m, "Read") or selects(m, "Grep")
 print("registered:", has("fetch-exec-guard"))
-print("file_guard:", any(on_read(e) and any("secrets-guard" in (h.get("command") or "")
-                                            for h in (e.get("hooks") or [])) for e in pre))
+print("file_guard:", any(file_guarded(e) for e in pre))
 print("older_guards:", sum(has(g) for g in ("secrets-guard", "onchain-guard", "egress-guard")))
+print("hook_set:", int(load(".claude/security.json").get("hookSetVersion") or 0))
 print("script:", pathlib.Path(".claude/hooks/fetch-exec-guard.sh").is_file())
 print("full_install:", pathlib.Path(".claude/VERSION").is_file())
 print("config_dir:", pathlib.Path(".claude/VERSION").parent.name)
@@ -171,10 +185,10 @@ PY
 ```
 - WARN anything else (`older_guards` 1 or 2): the array is partly hand-edited. Say which guards are missing and let the user decide; do not rewrite it.
 
-Then `file_guard`, skipping it where a row above was `n/a`:
-- OK `file_guard: True`: the Read and Grep tools are refused `gh`'s host file at every tier.
+Then `file_guard`, skipping it where a row above was `n/a`. `file_guard` and the rows below read the matcher the way `/update` does (a `|`- or `,`-separated list is exact, `^(Read|Grep)$` a regex that selects both), and split on `hook_set`, so this check and `/update` never disagree: `/update` registers a missing kit entry only when the hook set moves forward, so an entry gone at the current set is one it will not re-add now.
+- OK `file_guard: True`: the Read and Grep tools are refused `gh`'s host file at every tier. A live entry that covers only one of them, or covers them by a regex, still reads as `True`, because that is what `/update` treats as already running.
 - WARN `file_guard: False` and `older_guards: 0`: removed on purpose, as above. Offer no fix.
-- WARN `file_guard: False` and `older_guards` above 0: **this install predates the Read and Grep entry** (hook set 3), so at `off` and `relaxed` those tools can still read `gh`'s host file and its token. `/update` registers it; to do it now (standard JSON formatting, as above):
+- WARN `file_guard: False`, `older_guards` above 0 and `hook_set` below 3: **this install predates the Read and Grep entry** (hook set 3), so at `off` and `relaxed` those tools can still read `gh`'s host file and its token. The next `/update` reaches hook set 3 and registers it; to do it now (standard JSON formatting, as above):
 ```bash
 python3 - <<'PY'
 import json
@@ -187,8 +201,9 @@ d.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
 json.dump(d, open(p, "w"), indent=2)
 PY
 ```
+- WARN `file_guard: False`, `older_guards` above 0 and `hook_set` 3 or more: this install already reached hook set 3, so it had the Read and Grep entry and it has since been **removed** — or the record was carried ahead by hand. `/update` registers a missing kit entry only when the hook set moves forward, so it will not re-add this one at the current set. Report it as removed and offer no automatic fix; the snippet above re-adds it by hand, or `off` disables every guard explicitly.
 
-One ambiguity this check cannot resolve: `older_guards: 3` with one of these registrations surgically removed looks exactly like an install that predates it. It is reported as "predates", so if the removal was deliberate, ignore the row — or set the firewall tier to `off`, which disables every guard explicitly.
+One ambiguity this check cannot resolve below hook set 3: `older_guards: 3` with the fetch-exec registration surgically removed looks exactly like an install that predates it. It is reported as "predates", so if the removal was deliberate, ignore the row — or set the firewall tier to `off`, which disables every guard explicitly.
 
 **11. safe-ai-skill.** The kit's security plugin: it gates mainnet, authority and value-moving actions, MCP tools included, and pins skills and MCPs at session start. A full install enables it in `.claude/settings.json`, but Claude Code installs a plugin from an external source only when each user runs the install, so "enabled" and "installed" are separate questions. Claude Code's install list is an internal file, read best-effort; never run `claude` here.
 ```bash

@@ -1051,25 +1051,44 @@ def named_tools(entry):
 
 def selects(matcher, tool):
     """Whether a matcher selects a tool, read as Claude Code reads one: none, "" or "*"
-    is every tool, a name or a `|` list of names is exact, anything else a regex."""
+    is every tool; a name, or a list of names separated by `|` or `,` with optional
+    surrounding whitespace, is exact; anything else is an unanchored regex. The exact
+    set is Claude Code's: letters, digits, `_`, `-`, spaces, `,` and `|`."""
     if not isinstance(matcher, str) or matcher.strip() in ("", "*"):
         return True
-    if re.fullmatch(r"[A-Za-z0-9_|]+", matcher):
-        return tool in [a.strip() for a in matcher.split("|")]
+    if re.fullmatch(r"[A-Za-z0-9_\-, |]+", matcher):
+        return tool in [a.strip() for a in re.split(r"[|,]", matcher)]
     try:
         return re.search(matcher, tool) is not None
     except re.error:
         return False
 
 
+# The tool names a shipped matcher's regex half is tested against, so a live entry
+# narrowed to that half (context-mode only) still counts as running the shipped entry.
+# named_tools reads only a plain `|` alternative, so without these a matcher like
+# `Bash|mcp__context-mode__.*` offered only `Bash`, and a user entry on the MCP tools
+# alone was read as not running it and a second full copy appended (the CHANGELOG
+# promises a guard the user narrowed is left alone).
+PROBES = ("Bash", "Read", "Grep", "Glob", "Write", "Edit", "MultiEdit", "NotebookEdit",
+          "WebFetch", "mcp__context-mode__ctx_execute", "mcp__context-mode__ctx_execute_file",
+          "mcp__context-mode__ctx_batch_execute", "mcp__context-mode__ctx_index",
+          "mcp__context-mode__ctx_fetch_and_index")
+
+
 def runs(live_entry, entry, wanted):
     """A live entry already runs a shipped one: it names one of the same kit scripts and
-    its matcher selects a tool the shipped matcher names. A shipped matcher that names
-    no plain tool is matched on the script alone."""
+    its matcher selects a tool the shipped matcher selects. Coverage is judged over a
+    probe set, not the plain names alone, so the shipped matcher's regex half counts; a
+    shipped matcher that selects everything is matched on the script alone."""
     if not isinstance(live_entry, dict) or not (scripts_of(live_entry) & wanted):
         return False
-    tools = named_tools(entry)
-    return not tools or any(selects(live_entry.get("matcher"), t) for t in tools)
+    matcher = entry.get("matcher")
+    if not isinstance(matcher, str) or matcher.strip() in ("", "*"):
+        return True
+    probes = named_tools(entry) | set(PROBES)
+    shipped = [t for t in probes if selects(matcher, t)]
+    return not shipped or any(selects(live_entry.get("matcher"), t) for t in shipped)
 
 
 if os.path.islink(SETTINGS):

@@ -253,42 +253,58 @@ function code_hits(a,   i, n, P, t) {
   return ""
 }
 
-# ---- shell -c, a hard block at every tier.
+# ---- shell, a hard block at every tier when it runs a program the matcher cannot read.
 #
-# bash/sh/zsh/dash/ksh invoked with -c (or -lc/-ic) runs an arbitrary program the
-# permission matcher cannot read.  The permission layer denies `sh -c *`, `bash -lc *`
-# and `zsh -c *` at every tier (DENY_WRAPPERS) and `bash -c *` at Medium and High
-# (DENY_BASH_C).  On the Bash-tool and MCP surface, where this hook fires, every shell
-# -c is denied at every tier including Off — the forms the rules name and the ones they
-# never covered (dash, ksh, the -ic variant, and env/command/exec prefixes the
-# tokenizer walks past) alike.  For `bash -c` at Off and Relaxed, and for every form in
-# a plugin install, which ships no permission rules, it is the only layer.  The one
-# memsearch line is cleared (kit_allow) in secrets-guard.sh before this awk runs.  fish
-# and ash are out of scope: the block covers the five shells above.
-function is_cshell(c) { return (c == "sh" || c == "bash" || c == "zsh" || c == "dash" || c == "ksh") }
-# shellc_hit — the stage's real command, past wrappers, is one of those shells run
-# with a -c flag.  A shell given a script path (`bash x.sh`) or a bare `-` is not a
-# -c and runs no inline program, so it is left alone.
-function shellc_hit(T, n,   ci, w, i) {
+# A shell (bash/sh/zsh/dash/ksh, and ash/fish) runs a program no permission rule can
+# read when it is given one inline with -c or fed one through stdin.  The permission
+# layer denies `sh -c *`, `bash -lc *` and `zsh -c *` at every tier (DENY_WRAPPERS) and
+# `bash -c *` at Medium and High (DENY_BASH_C), and this block is the layer behind them:
+# on the Bash-tool and MCP surface, where this hook fires, such an invocation is denied
+# at every tier including Off — the forms the rules name and the ones they never covered
+# alike.  For `bash -c` at Off and Relaxed, and for every form in a plugin install, which
+# ships no permission rules, it is the only layer.  The one memsearch line is cleared
+# (kit_allow) in secrets-guard.sh before this awk runs.
+#
+# Three un-inspectable shapes, all read through lib-tokenize.awk's shared helpers so they
+# agree with #294's heredoc reader on what a shell runs:
+#   * an inline -c string (hd_inline_flag), past a separate-word option before it
+#     (`bash -O extglob -c …`, `--rcfile F -c …` — hd_optarg);
+#   * a program read from stdin: a bare shell, `-s`, a `<` redirection, and so the shell
+#     end of `… | bash` (each pipeline stage is scanned on its own);
+#   * `busybox sh`/`busybox ash`, where the applet is the real shell.
+# A shell given a script path argument (`bash x.sh`) runs that file, which the rules and
+# the sandbox still see, so it is left alone.  A variable-named shell (`"$SHELL" -c`) a
+# static matcher cannot resolve; that residual is documented in docs/firewall.md.
+function is_cshell(c) { return (is_shell(c) || c == "ash") }     # is_shell adds fish
+function shellc_hit(T, n,   ci, w, r) {
   ci = first_word(T, n)
   while (ci <= n) {
     w = base(T[ci])
-    if (is_cshell(w)) {
-      for (i = ci + 1; i <= n; i++) {
-        if (T[i] == "-o" || T[i] == "+o") { i++; continue }       # `sh -o errexit -c …`
-        if (T[i] ~ /^-[A-Za-z]*c[A-Za-z]*$/) return 1             # -c, -lc, -ic, -lic …
-        if (T[i] ~ /^[-+]/) continue
-        return 0                                                   # a script path: stdin/file, not -c
-      }
-      return 0
-    }
+    if (w == "busybox" && ci < n && is_cshell(base(T[ci + 1]))) { ci++; w = base(T[ci]) }
+    if (is_cshell(w)) return shellc_shell(T, n, ci)
     if (!is_wrapper(w)) return 0
     ci++
     while (ci <= n && T[ci] ~ /^-/) { if (kit_wrapper_optarg(w, T[ci]) && ci < n) ci++; ci++ }   # walk a wrapper's options
+    while (ci <= n && (r = kit_redir(T, n, ci)) > 0) ci += r
     if (ci <= n && kit_wrapper_operand(w, T[ci])) ci++
     while (ci <= n && (T[ci] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || kit_reserved(T[ci]))) ci++
   }
   return 0
+}
+# shellc_shell — the shell at T[ci] runs an un-inspectable program: 1 for an inline -c
+# or a program read from stdin, 0 for a script path.  The option walk and the -c, -s and
+# stdin tests are lib-tokenize.awk's, so this agrees with the heredoc reader.
+function shellc_shell(T, n, ci,   w, i, t, r) {
+  w = base(T[ci])
+  for (i = ci + 1; i <= n; i++) {
+    t = T[i]
+    if ((r = kit_redir(T, n, i)) > 0) { i += r - 1; continue }   # `bash < f`: reads stdin
+    if (hd_inline_flag(w, t)) return 1                            # -c, -lc, -ic …
+    if (t ~ /^-[A-Za-z]*s[A-Za-z]*$/) return 1                   # -s reads stdin
+    if (t ~ /^[-+]/) { if (hd_optarg(w, 1, t)) i++; continue }   # a separate-word option takes a value
+    return 0                                                      # a script path: its file, not stdin
+  }
+  return 1                                                        # no script arg: reads stdin
 }
 
 BEGIN { VAULTRE = ENVIRON["KIT_VAULT_RE"]; glob_witnesses() }

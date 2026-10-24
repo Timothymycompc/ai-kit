@@ -52,11 +52,23 @@ KIT_INPUT=$(cat)
 # Glob is not registered: it returns names, never contents, so it cannot put the token
 # in a transcript, and a hook on it would cost a process on every call for nothing.
 
-# kit_gh_hosts — GH_HOSTS: gh's host file, resolved the way gh resolves it.
+# kit_gh_hosts — GH_HOSTS_LIST: every host file that may hold a gh token, one per line,
+# only the ones that exist.  gh reads $GH_CONFIG_DIR/hosts.yml when GH_CONFIG_DIR is set,
+# else ${XDG_CONFIG_HOME:-$HOME/.config}/gh/hosts.yml — but setting GH_CONFIG_DIR for one
+# command does not move or empty the default file, which keeps its token and is still
+# readable by the file tools, so the default ~/.config/gh/hosts.yml (and the XDG one) is
+# protected whatever the env points at now.  GH_HAVE is set when the list is non-empty.
 kit_gh_hosts() {
-  if [ -n "${GH_CONFIG_DIR-}" ]; then GH_HOSTS=$GH_CONFIG_DIR/hosts.yml
-  else GH_HOSTS=${XDG_CONFIG_HOME:-${HOME-}/.config}/gh/hosts.yml; fi
-  case $GH_HOSTS in /*) ;; *) GH_HOSTS=$PWD/$GH_HOSTS ;; esac
+  GH_HOSTS_LIST= GH_HAVE=
+  for _c in "${GH_CONFIG_DIR:+$GH_CONFIG_DIR/hosts.yml}" \
+            "${XDG_CONFIG_HOME:-${HOME-}/.config}/gh/hosts.yml" \
+            "${HOME-}/.config/gh/hosts.yml"; do
+    [ -n "$_c" ] || continue
+    case $_c in /*) ;; *) _c=$PWD/$_c ;; esac
+    case "$GH_HOSTS_LIST" in *"$_c$KIT_NL"*) continue ;; esac   # dedup by exact string
+    [ -e "$_c" ] || continue
+    GH_HOSTS_LIST=$GH_HOSTS_LIST$_c$KIT_NL GH_HAVE=1
+  done
 }
 
 # kit_lex <path> — KIT_LEX: the path with `.`, `..` and repeated `/` resolved as text.
@@ -87,44 +99,81 @@ kit_abs() {
   case $KIT_ABS in /*) ;; *) KIT_ABS=${KIT_CWD:-$PWD}/$KIT_ABS ;; esac
 }
 
-# kit_is_gh_hosts <path> — the path names gh's host file.
+# kit_is_gh_hosts <path> — the path names one of the gh host files in GH_HOSTS_LIST.
 kit_is_gh_hosts() {
   kit_abs "$1"
   kit_lex "$KIT_ABS"
-  [ "$KIT_ABS" -ef "$GH_HOSTS" ] || [ "$KIT_LEX" -ef "$GH_HOSTS" ]
+  _ra=$KIT_ABS _rl=$KIT_LEX _rest=$GH_HOSTS_LIST
+  while [ -n "$_rest" ]; do
+    _h=${_rest%%"$KIT_NL"*} _rest=${_rest#*"$KIT_NL"}
+    [ -n "$_h" ] || continue
+    if [ "$_ra" -ef "$_h" ] || [ "$_rl" -ef "$_h" ]; then return 0; fi
+  done
+  return 1
 }
 
-# kit_gh_dirs — the directories a search must not start from, as three chain starts:
-# GH_LDIR, the file's directory as spelled; GH_PDIR, the same directory with symlinks
-# resolved; GH_TDIR, the directory of the file's own link target when it is a symlink.
+# kit_gh_dirs <hostfile> — the directories a search of that host file must not start
+# from, as three chain starts: GH_LDIR, the file's directory as spelled; GH_PDIR, the
+# same directory with symlinks resolved; GH_TDIR, the directory of the file's own link
+# target when it is a symlink.
 kit_gh_dirs() {
-  kit_lex "$GH_HOSTS"
+  kit_lex "$1"
   GH_LDIR=${KIT_LEX%/*} GH_PDIR= GH_TDIR=
   [ -n "$GH_LDIR" ] || GH_LDIR=/
   _here=$PWD
-  if CDPATH= cd -P -- "${GH_HOSTS%/*}" 2>/dev/null; then GH_PDIR=$PWD; fi
-  if [ -L "$GH_HOSTS" ]; then
-    _lt=$(readlink -- "$GH_HOSTS" 2>/dev/null) || _lt=
-    case $_lt in '' | /*) ;; *) _lt=${GH_HOSTS%/*}/$_lt ;; esac
+  if CDPATH= cd -P -- "${1%/*}" 2>/dev/null; then GH_PDIR=$PWD; fi
+  if [ -L "$1" ]; then
+    _lt=$(readlink -- "$1" 2>/dev/null) || _lt=
+    case $_lt in '' | /*) ;; *) _lt=${1%/*}/$_lt ;; esac
     if [ -n "$_lt" ] && CDPATH= cd -P -- "${_lt%/*}" 2>/dev/null; then GH_TDIR=$PWD; fi
   fi
   CDPATH= cd -- "$_here" 2>/dev/null || :
 }
 
-# kit_holds_gh_hosts <root> — a search from <root> reads gh's host file: the root is the
-# file, or it is a directory on the way up from the file to /.
+# kit_holds_gh_hosts <root> — a search from <root> reads a gh host file: the root is one
+# of them, a directory on the way up from one of them to /, or a directory with an
+# immediate child that is a symlink into one of them (a stow-style `config/gh` link, say).
+# The sideways-symlink check is one level deep, which ripgrep and ctx_index reach only
+# with --follow / followSymlinks; a symlink nested deeper is a residual, documented in
+# docs/firewall.md.
 kit_holds_gh_hosts() {
   kit_abs "$1"
   kit_lex "$KIT_ABS"
-  _ra=$KIT_ABS _rl=$KIT_LEX
-  if [ "$_ra" -ef "$GH_HOSTS" ] || [ "$_rl" -ef "$GH_HOSTS" ]; then return 0; fi
-  [ -n "${GH_LDIR-}" ] || kit_gh_dirs
-  for _d in "$GH_LDIR" "$GH_PDIR" "$GH_TDIR"; do
-    while [ -n "$_d" ]; do
-      if [ "$_ra" -ef "$_d" ] || [ "$_rl" -ef "$_d" ]; then return 0; fi
-      [ "$_d" != / ] || break
-      _d=${_d%/*}
-      [ -n "$_d" ] || _d=/
+  _ra=$KIT_ABS _rl=$KIT_LEX _rest=$GH_HOSTS_LIST
+  while [ -n "$_rest" ]; do
+    _h=${_rest%%"$KIT_NL"*} _rest=${_rest#*"$KIT_NL"}
+    [ -n "$_h" ] || continue
+    if [ "$_ra" -ef "$_h" ] || [ "$_rl" -ef "$_h" ]; then return 0; fi
+    kit_gh_dirs "$_h"
+    for _d in "$GH_LDIR" "$GH_PDIR" "$GH_TDIR"; do
+      while [ -n "$_d" ]; do
+        if [ "$_ra" -ef "$_d" ] || [ "$_rl" -ef "$_d" ]; then return 0; fi
+        [ "$_d" != / ] || break
+        _d=${_d%/*}
+        [ -n "$_d" ] || _d=/
+      done
+    done
+  done
+  kit_dir_gh_link "$_ra"
+}
+
+# kit_dir_gh_link <dir> — an immediate child of <dir> is a symlink that resolves to a gh
+# host file or its directory.  Only runs when the walk above found no ancestor, and only
+# on the Grep and context-mode paths, which already early-exit unless a host file exists.
+kit_dir_gh_link() {
+  [ -d "$1" ] || return 1
+  for _e in "$1"/* "$1"/.*; do
+    [ -L "$_e" ] || continue
+    case ${_e##*/} in . | ..) continue ;; esac
+    _rest=$GH_HOSTS_LIST
+    while [ -n "$_rest" ]; do
+      _h=${_rest%%"$KIT_NL"*} _rest=${_rest#*"$KIT_NL"}
+      [ -n "$_h" ] || continue
+      if [ "$_e" -ef "$_h" ]; then return 0; fi
+      kit_gh_dirs "$_h"
+      for _d in "$GH_LDIR" "$GH_PDIR" "$GH_TDIR"; do
+        [ -n "$_d" ] && [ "$_e" -ef "$_d" ] && return 0
+      done
     done
   done
   return 1
@@ -151,7 +200,7 @@ case $KIT_INPUT in
     case $_t in
       Read | Grep)
         kit_gh_hosts
-        [ -e "$GH_HOSTS" ] || exit 0
+        [ -n "$GH_HAVE" ] || exit 0
         KIT_CWD=$_c
         [ -n "$KIT_CWD" ] && [ -d "$KIT_CWD" ] || KIT_CWD=$PWD
         if [ "$_t" = Read ]; then
@@ -173,7 +222,7 @@ kit_parse
 # catches the spelled path; this catches a link, another case and a directory above it.
 if [ -n "${KIT_MCP-}" ]; then
   kit_gh_hosts
-  if [ -e "$GH_HOSTS" ]; then
+  if [ -n "$GH_HAVE" ]; then
     if [ -n "${KIT_HAVE_JQ-}" ]; then
       eval "set -- $(printf '%s' "$KIT_INPUT" | jq -r \
         '[(.tool_input // .toolInput // {}) | .. | objects | .path? | strings] | @sh' 2>/dev/null)"
