@@ -168,9 +168,11 @@ SECURITY = os.path.join(TARGET, SECURITY_REL)
 #           `git submodule update --init` in a linked worktree, which shippability gate 4
 #           keeps working, and High already has it, since its Edit deny reaches the
 #           sandbox (git_common_edit_deny).
-#   8 -> 9: Relaxed stops getting in the way of day-to-day work, with no loss the red team
-#           could route a denied command through. `Bash(git -C *)` becomes DENY_GIT_DASH_C,
-#           a `-C`-prefixed twin of each destructive git rule, so `git -C <dir> status`
+#   9 -> 10: Relaxed stops getting in the way of day-to-day work, with no loss the red
+#           team could route a denied command through. Numbered 10, not 9: #282 took 9
+#           first, for `git --exec-path=`, and /update compares only the number.
+#           `Bash(git -C *)` becomes DENY_GIT_DASH_C, a `-C`-prefixed twin of each
+#           destructive git rule, `--exec-path=` included, so `git -C <dir> status`
 #           runs while `git -C <dir> clean` does not. The `rm -rf /*`/`~/*`/`.*` globs
 #           (which matched any expanded path) become exact catastrophic literals plus
 #           `\*`-escaped globs; the recursive-target classifier is egress-guard.awk's.
@@ -185,7 +187,7 @@ SECURITY = os.path.join(TARGET, SECURITY_REL)
 #           recall set-up line runs at Off and Relaxed; `sh -c`, `bash -lc` and `zsh -c`
 #           keep their every-tier denies. `Bash(bash .claude/bin/decisions.sh *)` and
 #           `Bash(bash .claude/bin/report-page.sh *)` join the allow list.
-RULE_SET_VERSION = 9
+RULE_SET_VERSION = 10
 # enforced.ruleIdsScope: this record lists the generated block and nothing else. Records
 # without it predate #165, when a first apply recorded the user's own rules as well.
 RULEIDS_SCOPE = "generated"
@@ -1012,7 +1014,7 @@ DENY_DOCKER_DESTRUCTIVE = [
 ]
 
 # Medium and High. `bash -c` is a wrapper the matcher cannot see past, like the rest of
-# DENY_WRAPPERS, and it left that every-tier group in rule set 9 for one reason: a skill's
+# DENY_WRAPPERS, and it left that every-tier group in rule set 10 for one reason: a skill's
 # set-up line. memsearch's memory-recall skill derives its collection with one
 # `bash -c` line, and Claude Code checks a skill's set-up line against the permission
 # rules only and aborts the skill on a deny, so an every-tier rule stopped recall at

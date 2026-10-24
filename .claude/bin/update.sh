@@ -869,7 +869,7 @@ PY
   # hooks/ copy above, which is why a hook gate reaches an install whose ruleSetVersion
   # is already current (rule set 5 shipped four of those).
   #
-  # Rule set 9 is the reason this matters most: it both ADDS and DROPS corpus rules, and
+  # Rule set 10 is the reason this matters most: it both ADDS and DROPS corpus rules, and
   # the catch-up is the only route either half reaches an install that already has a
   # security.json. The apply subtracts the recorded enforced.ruleIds before writing the
   # new block, so the drops (`Bash(git -C *)`, the `rm -rf /*` globs, `git branch -D`, the

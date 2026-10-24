@@ -664,9 +664,9 @@ done
 #     fence, because below High it defers to the user on their own repository.
 #   * Four Bash deny GROUPS at Medium and High: Bash(gh api *) (rule set 5), the kill
 #     group (kill -9/killall/pkill) and the docker destructive group (container, image
-#     and volume removal), both moved off every-tier in rule set 9 because process
+#     and volume removal), both moved off every-tier in rule set 10 because process
 #     control and container cleanup are day-to-day work at Relaxed, and Bash(bash -c *),
-#     moved in rule set 9 so a skill's bash -c set-up line (memsearch's recall) runs at
+#     moved in rule set 10 so a skill's bash -c set-up line (memsearch's recall) runs at
 #     the default tier.
 # A Bash deny is the one that most plausibly reaches user or managed scope by
 # hand-copying, where no descent can lift it, so the varying Bash set is pinned by exact
@@ -1498,7 +1498,7 @@ rm -f "$WORK/proj/CLAUDE-solana.md" "$WORK/proj/install.sh"
 assert_eq "relaxed 1" "$(KIT_FIREWALL_TIER=maintainer bash -c '. "$1"; t=$(kit_tier); printf "%s %s" "$t" "$(kit_tier_num "$t")"' _ "$REPO_ROOT/.claude/hooks/lib-headless.sh" 2>/dev/null)" \
   "the hooks act at Relaxed under the maintainer tier"
 
-# ── rule set 9: Relaxed stops getting in the way, with no routed-around loss ──
+# ── rule set 10: Relaxed stops getting in the way, with no routed-around loss ──
 # dm <tier> <cmd> -> "yes" if some Bash deny stops it, else "no".
 dm() { [ "$(python3 "$WORK/gap_probe.py" --deny-matches "$WORK/gen.$1.json" "$2" 2>&1)" != none ] && echo yes || echo no; }
 
@@ -1616,5 +1616,24 @@ need = ['Read(~/.npmrc)', 'Read(~/.git-credentials)', 'Read(~/.netrc)',
 print('yes' if all(r in deny for r in need) else 'no')" 2>/dev/null)" \
     "$t keeps the wallet and the other host/registry credentials denied"
 done
+
+# ── the rule-set history names each number once, and ends at RULE_SET_VERSION ─
+# /update re-applies a tier only when the recorded number is behind, so two rule sets
+# sharing a number is a set that never reaches the installs already on that number. Two
+# branches each wrote an `8 -> 9` entry once; the merge kept both and shipped neither as
+# a 10. The history comment is where that shows, so it is read here.
+echo "[rule-set history]"
+assert_eq "ok" "$(python3 - "$FIREWALL" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+steps = [(int(a), int(b)) for a, b in re.findall(r"^#\s+(\d+) -> (\d+):", src, re.M)]
+want = int(re.search(r"^RULE_SET_VERSION = (\d+)$", src, re.M).group(1))
+bad = []
+if [b for _, b in steps] != list(range(2, want + 1)):
+    bad.append("entries end at %s, not RULE_SET_VERSION %d" % ([b for _, b in steps][-3:], want))
+bad += ["%d -> %d is not one step" % s for s in steps if s[1] != s[0] + 1]
+print("; ".join(bad) or "ok")
+PY
+)" "firewall.sh's rule-set history has one entry per number, ending at RULE_SET_VERSION"
 
 print_summary

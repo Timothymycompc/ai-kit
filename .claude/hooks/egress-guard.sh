@@ -280,7 +280,7 @@ MERGE=$(git_seg 'gh[[:space:]]+pr[[:space:]]+merge')
 # Named one by one rather than matched broadly, so the claim in the docs is checkable.
 # `git reset --hard` and its `--ha` abbreviation, `git clean` and `git restore` are
 # absent because they are already denied at every tier; `git branch -D`/`-f` left that
-# set in rule set 9 and are asked for below.  A bare `git reset` only unstages and is
+# set in rule set 10 and are asked for below.  A bare `git reset` only unstages and is
 # left alone.
 REWRITE_WHY='This rewrites local git history. It is recoverable from the reflog, but the High firewall tier asks first.'
 if [ "$TIERN" -ge 3 ]; then

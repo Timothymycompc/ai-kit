@@ -13,7 +13,7 @@ Show or change the agentic firewall tier. `off`, `relaxed` (default), `medium`, 
 bash .claude/bin/firewall.sh show
 ```
 
-Report the declared tier, the enforced tier, whether they agree, and the recorded rule count. Read the count from the script rather than tallying `settings.json` by hand: `enforced.ruleIds` records every list a tier generates, in `sandbox` as well as in `permissions`, and counting one half reports the other half as missing — on this repo, tallying `permissions` alone sees 437 of the 605 recorded rules and calls the other 168 absent. `absent` above zero is the real signal that the file lost rules the last apply wrote; the script names the fix. For local overrides, the sandbox state and the plugin case, run `/doctor` (check 9).
+Report the declared tier, the enforced tier, whether they agree, and the recorded rule count. Read the count from the script rather than tallying `settings.json` by hand: `enforced.ruleIds` records every list a tier generates, in `sandbox` as well as in `permissions`, and counting one half reports the other half as missing — on this repo, tallying `permissions` alone sees 439 of the 607 recorded rules and calls the other 168 absent. `absent` above zero is the real signal that the file lost rules the last apply wrote; the script names the fix. For local overrides, the sandbox state and the plugin case, run `/doctor` (check 9).
 
 ## Switch — `/firewall <tier>`
 

@@ -171,7 +171,7 @@ for r in "Read(~/.ssh/**)" "Read(~/.config/solana/id.json)" "Bash(cat *keypair*.
   assert_rule deny "$r" yes "permissions.deny has $r"
 done
 # Destructive filesystem commands stay hard blocks. "mkfs*" also catches mkfs.ext4,
-# which "mkfs *" misses. The rm rules are exact targets since rule set 9: the old
+# which "mkfs *" misses. The rm rules are exact targets since rule set 10: the old
 # "rm -rf ~/*" glob matched any expanded home path, so "rm -rf ~/" replaced it.
 for r in "Bash(mkfs*)" "Bash(rm -rf /)" "Bash(rm -rf ~)" "Bash(rm -rf ~/)" "Bash(rm -rf .git)" "Bash(rm -rf .git/*)"; do
   assert_rule deny "$r" yes "permissions.deny has $r"
