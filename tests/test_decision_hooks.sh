@@ -281,6 +281,19 @@ assert_eq "0" "$(grep -c run "$WORK/cksum.runs" || true)" "and no tool call read
 set_record cccc3334 "# In force${NL}${NL}- D-5 raced${NL}- D-5b added by hand"
 run "$PUSH" "$WT" "$(payload PreToolUse agent_id=no-sha)"
 assert_contains "$(ctx "$OUT")" "D-5b added by hand" "once a version is written, the running agent is handed the list"
+# An unreadable list is not a delivery: the agent's one push waits until it can be read.
+rm -f "$REC/in-force.sha"
+chmod 000 "$REC/in-force.md"
+if [ -r "$REC/in-force.md" ]; then
+  echo "  SKIP: an unreadable list (running as a user who can read any file)"
+else
+  run "$PUSH" "$WT" "$(payload PreToolUse agent_id=unreadable)"
+  assert_eq "0|" "$RC|$OUT" "an unreadable list pushes nothing"
+  chmod 644 "$REC/in-force.md"
+  run "$PUSH" "$WT" "$(payload PreToolUse agent_id=unreadable)"
+  assert_contains "$(ctx "$OUT")" "D-5b added by hand" "and the agent still gets the list once it can be read"
+fi
+chmod 644 "$REC/in-force.md"
 
 echo ""
 echo "[ids]"

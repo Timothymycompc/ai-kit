@@ -83,7 +83,7 @@ record() {
   common_dir || return 1
   R=$G/decisions
   [ -d "$R" ] && [ ! -L "$R" ] && [ -f "$R/in-force.md" ] && [ ! -L "$R/in-force.md" ] \
-    && [ -s "$R/in-force.md" ] || return 1
+    && [ -s "$R/in-force.md" ] && [ -r "$R/in-force.md" ] || return 1
   S=
   if [ -f "$R/in-force.sha" ] && [ ! -L "$R/in-force.sha" ]; then
     IFS= read -r S < "$R/in-force.sha" || :
