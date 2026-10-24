@@ -60,14 +60,14 @@ KIT_INPUT=$(cat)
 # protected whatever the env points at now.  GH_HAVE is set when the list is non-empty.
 kit_gh_hosts() {
   GH_HOSTS_LIST= GH_HAVE=
-  for _c in "${GH_CONFIG_DIR:+$GH_CONFIG_DIR/hosts.yml}" \
+  for _ghc in "${GH_CONFIG_DIR:+$GH_CONFIG_DIR/hosts.yml}" \
             "${XDG_CONFIG_HOME:-${HOME-}/.config}/gh/hosts.yml" \
             "${HOME-}/.config/gh/hosts.yml"; do
-    [ -n "$_c" ] || continue
-    case $_c in /*) ;; *) _c=$PWD/$_c ;; esac
-    case "$GH_HOSTS_LIST" in *"$_c$KIT_NL"*) continue ;; esac   # dedup by exact string
-    [ -e "$_c" ] || continue
-    GH_HOSTS_LIST=$GH_HOSTS_LIST$_c$KIT_NL GH_HAVE=1
+    [ -n "$_ghc" ] || continue
+    case $_ghc in /*) ;; *) _ghc=$PWD/$_ghc ;; esac
+    case "$GH_HOSTS_LIST" in *"$_ghc$KIT_NL"*) continue ;; esac   # dedup by exact string
+    [ -e "$_ghc" ] || continue
+    GH_HOSTS_LIST=$GH_HOSTS_LIST$_ghc$KIT_NL GH_HAVE=1
   done
 }
 

@@ -234,11 +234,12 @@ ln -s "$FH/.config" "$FH/links/cfg"
 ln -s "$FH/dotfiles/nvim" "$FH/.config/nvim"
 
 # tool_verdict <tier> <tool> <tool_input JSON> [cwd] [env...] -> deny | allow | ask | silent
+# The hook runs from the payload cwd unless HOOK_PWD names another directory.
 tool_verdict() {
   local tier="$1" tool="$2" input="$3" cwd="${4:-$FH/proj}" pay out
   shift 4 2>/dev/null || shift $#
   pay="$(python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":sys.argv[1],"tool_input":json.loads(sys.argv[2]),"cwd":sys.argv[3]}))' "$tool" "$input" "$cwd")"
-  out="$(cd "$cwd" && printf '%s' "$pay" | env -u GH_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$FH" \
+  out="$(cd "${HOOK_PWD:-$cwd}" && printf '%s' "$pay" | env -u GH_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$FH" \
     CLAUDE_PROJECT_DIR="$REPO_ROOT" KIT_FIREWALL_TIER="$tier" KIT_FIREWALL_HEADLESS=0 "$@" \
     sh "$GUARD" 2>/dev/null)"
   case "$out" in *'"deny"'*) echo deny ;; *'"allow"'*) echo allow ;; *'"ask"'*) echo ask ;; *) echo silent ;; esac
@@ -277,6 +278,19 @@ for TIER in off relaxed medium high; do
   want_tool "$TIER" silent "Grep of a sibling of the file's directory" Grep "$(gp "$FH/dotfiles")"
   want_tool "$TIER" silent "Read of a path that does not exist" Read "$(rd "$FH/.config/gh/nope.yml")"
   want_tool "$TIER" silent "Grep of a path that does not exist" Grep "$(gp "$FH/no/such/dir")"
+done
+
+# The payload's cwd, not the directory the hook happens to run in, anchors a relative
+# path: the two differ whenever Claude Code starts the hook from elsewhere.
+for TIER in relaxed high; do
+  HOOK_PWD="$FH/proj" want_tool "$TIER" deny "Read of a relative path, cwd the gh directory, hook run elsewhere" \
+    Read "$(rd "$HY")" "$FH/.config/gh"
+  HOOK_PWD="$FH/proj" want_tool "$TIER" deny "Grep with no path, cwd the gh directory, hook run elsewhere" \
+    Grep "$G_NOPATH" "$FH/.config/gh"
+  HOOK_PWD="$FH/proj" want_tool "$TIER" deny "Grep of a relative gh, cwd ~/.config, hook run elsewhere" \
+    Grep "$(gp "gh")" "$FH/.config"
+  HOOK_PWD="$FH" want_tool "$TIER" silent "Grep with no path, cwd the project, hook run from \$HOME" \
+    Grep "$G_NOPATH" "$FH/proj"
 done
 
 # Another case is the same file only on a case-insensitive volume (macOS's default).

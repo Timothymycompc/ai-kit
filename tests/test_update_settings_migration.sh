@@ -114,6 +114,12 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# The hook set this kit ships, read from update.sh rather than pinned, so a scenario that
+# records the current set stays current when the set is bumped.
+WANT_HS="$(awk -F= '/^  HOOK_SET_VERSION=/{print $2; exit}' "$REPO_ROOT/.claude/bin/update.sh")"
+assert_eq "yes" "$([[ "$WANT_HS" =~ ^[0-9]+$ ]] && echo yes || echo no)" \
+  "fixture: update.sh names the hook set it ships ($WANT_HS)"
+
 PERMS_BEFORE="$(json_slice permissions)"
 SANDBOX_BEFORE="$(json_slice sandbox)"
 
@@ -404,9 +410,9 @@ PY
   assert_eq "1" "$(entries_on secrets-guard.sh "$SPELL")" "the user's spelling '$SPELL' is left in place"
 done
 
-echo "[F10: at hook set 3 a removed Read|Grep entry is not re-added, and doctor says so]"
+echo "[F10: at the current hook set a removed Read|Grep entry is not re-added, and doctor says so]"
 cp "$REPO_ROOT/.claude/settings.json" "$SETTINGS"; cp "$REPO_ROOT/.claude/security.json" "$SECURITY"
-python3 - "$SETTINGS" "$SECURITY" "$REPO_ROOT/.claude/settings.json" <<'PY'
+python3 - "$SETTINGS" "$SECURITY" "$REPO_ROOT/.claude/settings.json" "$WANT_HS" <<'PY'
 import json, sys
 sp, qp = sys.argv[1], sys.argv[2]
 d = json.load(open(sp, encoding="utf-8"))
@@ -415,15 +421,15 @@ d["hooks"]["PreToolUse"] = [e for e in d["hooks"]["PreToolUse"]
             and e.get("matcher") in ("Read|Grep", "Read, Grep", "Read,Grep", " Read|Grep ", "Read | Grep", "^(Read|Grep)$"))]
 json.dump(d, open(sp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 s = json.load(open(qp, encoding="utf-8"))
-s["hookSetVersion"] = 3
-# today's shipped fingerprint, so the gate stays closed: computed from the kit's block.
+s["hookSetVersion"] = int(sys.argv[4])
+# today's shipped set and fingerprint, so the gate stays closed: computed from the kit's block.
 import hashlib
 kit = json.load(open(sys.argv[3], encoding="utf-8"))["hooks"]
 s["hookSetFingerprint"] = hashlib.sha256(json.dumps(kit, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()[:16]
 json.dump(s, open(qp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 PY
 assert_eq "False" "$(doctor_fg)" "fixture: the file guard is gone"
-assert_eq "0" "$(entries_on secrets-guard.sh 'Read|Grep')" "fixture: no Read|Grep entry at hook set 3"
+assert_eq "0" "$(entries_on secrets-guard.sh 'Read|Grep')" "fixture: no Read|Grep entry at the current hook set"
 run_update >/dev/null
 assert_eq "0" "$(entries_on secrets-guard.sh 'Read|Grep')" "update does not re-add it at the current hook set (gate closed)"
 
