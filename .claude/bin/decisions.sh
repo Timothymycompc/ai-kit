@@ -116,13 +116,22 @@ resolve() {
 # Each pattern runs on a field with its newlines flattened, so a key pasted as a
 # pretty-printed array is caught too. A false positive costs a rephrase; a miss puts a
 # secret in a file every agent is shown.
+#
+# Shapes, not secrets: a Solana transaction signature is 64 bytes in base58 too, and is
+# refused with the keys. A seed phrase is not caught: twelve or twenty-four ordinary
+# words are any sentence, and refusing a run of them would refuse prose.
 B58='1-9A-HJ-NP-Za-km-z'
+BYTE='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 SECRET_LABELS=()
 SECRET_ARGS=()
 secret() { SECRET_LABELS[${#SECRET_LABELS[@]}]="$1"; SECRET_ARGS[${#SECRET_ARGS[@]}]="-e"; SECRET_ARGS[${#SECRET_ARGS[@]}]="$2"; }
 secret "a PEM key or certificate block" '-----BEGIN'
 secret "a keypair byte array"           '\[[[:space:]]*([0-9]{1,3}[[:space:]]*,[[:space:]]*){31,}[0-9]{1,3}'
-secret "a base58 64-byte secret key"    "(^|[^$B58])[$B58]{85,90}([^$B58]|\$)"
+# A keypair's 64 bytes with no bracket, or in braces: a bare list, new byte[] { … }.
+secret "a keypair byte array"           "(^|[^0-9])($BYTE[[:space:]]*,[[:space:]]*){63}$BYTE([^0-9]|\$)"
+# 64 bytes encode to 87 or 88 characters, and fewer only after leading zero bytes (as
+# few as 86 after one); 80 leaves room for those and for a key copied a few short.
+secret "a base58 64-byte secret key"    "(^|[^$B58])[$B58]{80,90}([^$B58]|\$)"
 secret "a GitHub token"                 '(^|[^A-Za-z0-9_])(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})'
 secret "an sk- API key"                 '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}'
 secret "a Slack token"                  '(^|[^A-Za-z0-9_-])(xox[abposr]-[A-Za-z0-9-]{10,}|xapp-[0-9]-[A-Za-z0-9-]{10,})'

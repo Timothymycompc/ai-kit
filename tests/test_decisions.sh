@@ -420,6 +420,13 @@ refuse --words "a keypair byte array" "my keypair $BYTES"
 refuse --premises "a keypair byte array" "$PRETTY"
 refuse --decision "a PEM key or certificate block" "-----BEG""IN OPENSSH PRIVATE KEY----- abc"
 refuse --words "a base58 64-byte secret key" "4$(rep K 87)"
+# A Solana keypair is 64 bytes: refused as a bare list of its numbers and inside a C# or
+# Unity initializer's braces, as well as a JSON array, and in base58 from 80 characters.
+BARE="$(i=0; s=""; while [ "$i" -lt 64 ]; do s="$s$(( (i * 53 + 11) % 256 )), "; i=$((i + 1)); done; printf '%s' "${s%, }")"
+refuse --words "a keypair byte array" "the deploy key is $BARE"
+refuse --decision "a keypair byte array" "new byte[] { $BARE }"
+refuse --words "a base58 64-byte secret key" "$(rep K 80)"
+refuse --premises "a base58 64-byte secret key" "key $(rep 7 84) here"
 refuse --words "a GitHub token" "token gh""p_$(rep a 36) here"
 refuse --covers "a GitHub token" "github_""pat_$(rep B 40)"
 refuse --words "an sk- API key" "sk-""ant-api03-$(rep x 30)"
@@ -441,10 +448,13 @@ refuse --slug "a GitHub token" "gh""p_$(rep a 36)"
 for v in "the token program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA stays pinned" \
   "commit c7a86c9e1f2d3b4a5c6d7e8f9a0b1c2d3e4f5a6b" "sha256 $(rep ab 32)" \
   "the wallet ~/.config/solana/id.json and .env stay denied" "HELIUS_API_KEY stays optional; set HELIUS_API_KEY=<your key>" \
-  "task-runner-configuration-for-the-ci-matrix" "GITHUB_TOKEN=\${{ secrets.GITHUB_TOKEN }}" "[1, 2, 3]"; do
+  "task-runner-configuration-for-the-ci-matrix" "GITHUB_TOKEN=\${{ secrets.GITHUB_TOKEN }}" "[1, 2, 3]" \
+  "PRs 12, 13, 14 and 15 merge first; ports 8080, 8899 and 9900 stay open"; do
   run "$MAIN" add --kind decision --question "Not a secret?" --decision "Accepted." --words "$v" --status proposed --slug not-secret
   assert_eq "0" "$RC" "accepts: ${v:0:60}"
 done
+run "$MAIN" add --kind decision --question "Not a secret?" --decision "Accepted." --words "$(rep K 79)" --status proposed --slug not-secret
+assert_eq "0" "$RC" "a base58 run under 80 characters is not taken for a secret key"
 
 echo "[limits]"
 run "$MAIN" add --kind decision --question q --decision d --words "$(rep x 4001)"

@@ -16,7 +16,7 @@ The record keeps the decisions you made, the principles you set and the standing
 
 **The cost is that teammates don't see it.** `decisions.sh export --handoff` prints a readable digest to hand to a co-maintainer or a later session, and a decision your team has to review belongs in the pull request or a design document as well.
 
-**Never secrets.** A field that looks like a credential (a PEM block, a keypair byte array, a base58 secret key, an API token in a common format, a URL carrying a password) is refused, nothing is written, and no message prints the value. The check knows common formats, not every secret, so keep keys out of what you record: whatever the list holds is shown to every agent.
+**Never secrets.** A field that looks like a credential (a PEM block, a keypair's bytes as a JSON array or as any list of 64 numbers from 0 to 255, a base58 secret key of 80 to 90 characters, an API token in a common format, a URL carrying a password) is refused, nothing is written, and no message prints the value. The check reads shapes, not secrets. A Solana transaction signature has a secret key's shape and is refused too, so shorten one you cite. A seed phrase passes, because refusing a run of ordinary words would refuse ordinary prose. A key written out in hex nearly always passes as well, since it looks like a digest. Keep keys out of what you record: whatever the list holds is shown to every agent.
 
 ## Who writes it
 
