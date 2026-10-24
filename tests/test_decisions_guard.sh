@@ -170,6 +170,9 @@ DENY_CMDS=(
   "source .claude/bin/decisions.sh add --question q"
   "bash .claude/bin/DECISIONS.SH add --question q"
   "bash .claude/bin/decisions.sh add --kind D --question q --stdin <<'DECISION_END'${NL}decision: d${NL}words: w${NL}DECISION_END"
+  # A heredoc a shell or an interpreter runs is code, quoted delimiter or not.
+  "sh -s <<'EOF'${NL}bash .claude/bin/decisions.sh add --kind D --question q --decision d --words w${NL}EOF"
+  "python3 - <<'PY'${NL}import os${NL}os.system(\"bash .claude/bin/decisions.sh add --kind D --question q --decision d --words w\")${NL}PY"
 )
 for c in "${DENY_CMDS[@]}"; do
   assert_eq "deny" "$(bash_as agent-1 "$c")" "refused: ${c//$NL/\\n}"
@@ -194,6 +197,7 @@ ALLOW_CMDS=(
   "echo 'bash .claude/bin/decisions.sh add --kind D'"
   "echo run .claude/bin/decisions.sh add from the main session"
   "cat > notes.md <<'EOF'${NL}bash .claude/bin/decisions.sh add --kind D${NL}EOF"
+  "python3 - <<'PY'${NL}print(\"the main session runs bash .claude/bin/decisions.sh add\")${NL}PY"
   "bash tests/test_decisions.sh"
   "sed -n 1,40p .claude/bin/decisions.sh"
   "shellcheck .claude/bin/decisions.sh"
@@ -352,6 +356,9 @@ control "the case fold" deny "$GOT"
 MUT="$(mutant resolve decisions-guard.sh 'if cd -P -- "$_d" 2>/dev/null; then' 'if false; then')" || MUT=
 GOT=; [ -z "$MUT" ] || GOT="$(edit_as agent-1 Write "$WORK/alias/.git/decisions/D-x.md" "$MUT")"
 control "resolving linked directories" deny "$GOT"
+MUT="$(mutant interp decisions-guard.awk 'function hd_interp_line(w, l) { gsub(/["\047]/, "", l); return l }' '')" || MUT=
+GOT=; [ -z "$MUT" ] || GOT="$(bash_as agent-1 "python3 - <<'PY'${NL}import os${NL}os.system(\"$ADD\")${NL}PY" "$MUT")"
+control "the interpreter-heredoc callback" deny "$GOT"
 
 assert_dir_exists "$REC" "fixture: the record directory is still there"
 assert_eq "" "$(ls -A "$REC")" "and nothing in this suite wrote into it"
