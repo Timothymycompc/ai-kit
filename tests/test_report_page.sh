@@ -1052,20 +1052,29 @@ assert_eq "10" "$(html_count "$(real "$T/cc")/.claude/reports")" "...and leave a
 
 echo "[speed]"
 # Time growing with the square of the data would let one large page stall every later run.
+# The budget is CPU time: the user and system time of the runs themselves, read from
+# `times`. Wall time measured the machine's load as much as the script, and failed on a
+# busy machine. cpu_mark must run in this shell: a subshell, $(...) included, has no
+# finished children to count.
+cpu_mark() { times > "$T/times.$1"; }
+cpu_cs() { awk 'NR == 2 { n = 0; for (i = 1; i <= 2; i++) { split($i, a, "m"); sub(/s$/, "", a[2]); n += a[1] * 60 + a[2] } printf "%d\n", n * 100 }' "$T/times.$1"; }
 new_repo "$T/big"
 { printf '{"title": "Many angle brackets", "summary": "'; head -c 300000 /dev/zero | tr '\0' '<'; printf '"}\n'; } > "$T/lt.json"
-START=$SECONDS
+cpu_mark 0
 run 2026-01-02-090000 "$T/big" report "$T/lt.json"
 succeeded "a page whose data holds 300,000 \"<\" on one line"
-check "...renders in under 15 seconds (took $((SECONDS - START)) s)" test $((SECONDS - START)) -lt 15
-START=$SECONDS
+cpu_mark 1; C0=$(cpu_cs 0); C1=$(cpu_cs 1)
+check "...renders in under 10 s of CPU (took $(( (C1 - C0) / 100 )).$(( (C1 - C0) % 100 / 10 )) s)" test $((C1 - C0)) -lt 1000
+cpu_mark 0
 run 2026-01-02-100000 "$T/big" report "$T/minirep.json"
-check "...and so does the next page, which re-renders it (took $((SECONDS - START)) s)" test $((SECONDS - START)) -lt 15
+cpu_mark 1; C0=$(cpu_cs 0); C1=$(cpu_cs 1)
+check "...and so does the next page, which re-renders it (took $(( (C1 - C0) / 100 )).$(( (C1 - C0) % 100 / 10 )) s of CPU)" test $((C1 - C0)) -lt 1000
 { printf '{"title": "'; head -c 120000 /dev/zero | tr '\0' 'T'; printf '", "summary": "s"}\n'; } > "$T/longtitle.json"
-START=$SECONDS
+cpu_mark 0
 run 2026-01-02-110000 "$T/big" report "$T/longtitle.json"
 succeeded "a page with a 120,000-character title"
-check "...renders in under 15 seconds, the title cut short before it is cleaned (took $((SECONDS - START)) s)" test $((SECONDS - START)) -lt 15
+cpu_mark 1; C0=$(cpu_cs 0); C1=$(cpu_cs 1)
+check "...renders in under 10 s of CPU, the title cut short before it is cleaned (took $(( (C1 - C0) / 100 )).$(( (C1 - C0) % 100 / 10 )) s)" test $((C1 - C0)) -lt 1000
 
 # --- What it refuses to read ----------------------------------------------------------
 echo "[input]"

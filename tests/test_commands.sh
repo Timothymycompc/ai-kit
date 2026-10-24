@@ -86,6 +86,8 @@ assert_file_contains "$CMDS_DIR/decide.md" "pasted in the user's own message" "d
 assert_file_contains "$CMDS_DIR/decide.md" "Check each line against that page's JSON" "decide.md checks each pasted line against the page's saved JSON"
 assert_file_contains "$CMDS_DIR/decide.md" "Every run writes a new local HTML page" "decide.md writes a page on every run"
 assert_file_not_contains "$CMDS_DIR/decide.md" "5. **Triage.**" "decide.md's clear-or-cloudy step does not share the Sonnet classifier's name"
+assert_eq "1" "$(grep -c '^[0-9][0-9]*\. \*\*Triage' "$CMDS_DIR/decide.md")" "decide.md has one step named Triage, the Sonnet classifier"
+assert_file_contains "$CMDS_DIR/decide.md" "**Clear or cloudy**" "decide.md names its whose-call sorting Clear or cloudy"
 for f in decide.md report.md; do
   assert_file_contains "$CMDS_DIR/$f" "rm -f <its path>" "$f deletes the JSON it wrote once the page is rendered"
 done
