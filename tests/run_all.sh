@@ -23,16 +23,23 @@ cpu_count() {
   echo 1
 }
 
-JOBS="${SAK_TEST_JOBS:-}"
+# A count that was given but is empty (`-j ""`, `SAK_TEST_JOBS=`) is an error, not a
+# request for the default: a caller expanding an unset variable must not get full width.
+# Only an unset SAK_TEST_JOBS and no -j mean "one per CPU".
+JOBS=""
+JOBS_GIVEN=no
+if [ -n "${SAK_TEST_JOBS+set}" ]; then JOBS="$SAK_TEST_JOBS"; JOBS_GIVEN=yes; fi
 while [ $# -gt 0 ]; do
   case "$1" in
-    -j | --jobs) JOBS="${2:-}"; shift 2 || shift ;;
-    -j*) JOBS="${1#-j}"; shift ;;
-    --jobs=*) JOBS="${1#--jobs=}"; shift ;;
+    -j | --jobs)
+      if [ $# -lt 2 ]; then echo "run_all.sh: $1 needs a job count" >&2; exit 64; fi
+      JOBS="$2"; JOBS_GIVEN=yes; shift 2 ;;
+    -j*) JOBS="${1#-j}"; JOBS_GIVEN=yes; shift ;;
+    --jobs=*) JOBS="${1#--jobs=}"; JOBS_GIVEN=yes; shift ;;
     *) echo "usage: run_all.sh [-j N]   (unknown argument: $1)" >&2; exit 64 ;;
   esac
 done
-[ -n "$JOBS" ] || JOBS="$(cpu_count)"
+[ "$JOBS_GIVEN" = yes ] || JOBS="$(cpu_count)"
 case "$JOBS" in
   '' | *[!0-9]* | 0) echo "run_all.sh: -j / SAK_TEST_JOBS needs a positive integer, got '$JOBS'" >&2; exit 64 ;;
 esac
@@ -54,6 +61,7 @@ fi
 cleanup() {
   local p
   # An interrupted parallel run leaves suites behind: stop them and what they started.
+  # Only two levels deep: a suite's own children (a hung git, say) can outlive it.
   for p in $(jobs -p 2>/dev/null || true); do
     pkill -TERM -P "$p" 2>/dev/null || true
     kill "$p" 2>/dev/null || true
@@ -190,12 +198,12 @@ else
     # Print every suite at the head of the queue that has finished, in suite order.
     PRINTED=no
     while [ -n "$PRINT_QUEUE" ]; do
-      set_head="${PRINT_QUEUE# }"; head_name="${set_head%% *}"
+      rest="${PRINT_QUEUE# }"; head_name="${rest%% *}"
       [ -f "$RUN_DIR/$head_name.rc" ] || break
       echo "--- $head_name ---"
       cat "$RUN_DIR/$head_name.log"
       record "$head_name" "$(cat "$RUN_DIR/$head_name.rc")" "$RUN_DIR/$head_name.log"
-      case "$set_head" in *" "*) PRINT_QUEUE="${set_head#* }" ;; *) PRINT_QUEUE="" ;; esac
+      case "$rest" in *" "*) PRINT_QUEUE="${rest#* }" ;; *) PRINT_QUEUE="" ;; esac
       PRINTED=yes
     done
     [ -z "$PRINT_QUEUE" ] || [ "$PRINTED" = yes ] || sleep 0.2
