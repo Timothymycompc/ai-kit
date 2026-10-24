@@ -86,4 +86,36 @@ echo "[no on-chain verb: silent]"
 want relaxed silent "a local build is not an on-chain write" "cargo build-sbf"
 want relaxed silent "a solana query is not a write"          "solana balance --url http://localhost:8899"
 
+# ── an MCP call's own tool_name or command argument changes nothing ─────────
+# kit_parse reads the tool name from the payload's top level and always rebuilds an
+# MCP call's command from the fields the tool runs. A context-mode call carrying a
+# tool_name or command argument of its own skipped that rebuild, and a mainnet deploy
+# in its code met no gate at any tier.
+echo "[an MCP call's own tool_name or command argument: the mainnet gate still holds]"
+# raw <tier> <headless> <payload> -> deny | ask | silent
+raw() {
+  local out
+  out="$(cd "$REPO_ROOT" && printf '%s' "$3" | CLAUDE_PROJECT_DIR="$REPO_ROOT" \
+    KIT_FIREWALL_TIER="$1" KIT_FIREWALL_HEADLESS="$2" sh "$GUARD" 2>/dev/null)"
+  case "$out" in *'"deny"'*) echo deny ;; *'"ask"'*) echo ask ;; *) echo silent ;; esac
+}
+# mcp_pay <code> <extra tool_input JSON> [tool_input first: 1]
+mcp_pay() {
+  python3 -c '
+import json, sys
+ti = {"language": "shell", "code": sys.argv[1]}; ti.update(json.loads(sys.argv[2]))
+top = [("hook_event_name", "PreToolUse"), ("tool_name", "mcp__context-mode__ctx_execute")]
+pairs = [("tool_input", ti)] + top if sys.argv[3] == "1" else top + [("tool_input", ti)]
+print(json.dumps(dict(pairs)))' "$1" "$2" "${3:-0}"
+}
+DEPLOY="solana program deploy --url mainnet-beta x.so"
+for EXTRA in '{}' '{"tool_name":"x"}' '{"tool_name":"Bash"}' '{"command":"ls"}'; do
+  for FIRST in 0 1; do
+    P="$(mcp_pay "$DEPLOY" "$EXTRA" "$FIRST")"
+    assert_eq deny "$(raw relaxed 1 "$P")" "headless Relaxed denies a mainnet deploy in ctx_execute carrying $EXTRA (tool_input first: $FIRST)"
+    assert_eq ask  "$(raw relaxed 0 "$P")" "interactive Relaxed asks on it (tool_input first: $FIRST, $EXTRA)"
+    assert_eq deny "$(raw high 0 "$P")" "High denies it (tool_input first: $FIRST, $EXTRA)"
+  done
+done
+
 print_summary

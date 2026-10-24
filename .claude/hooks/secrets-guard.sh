@@ -142,9 +142,11 @@ case $KIT_INPUT in
     if command -v jq >/dev/null 2>&1; then
       eval "$(printf '%s' "$KIT_INPUT" | jq -r '
         def s($v): $v | if type == "string" then . elif . == null then "" else tostring end;
-        @sh "_t=\(s(.tool_name)) _f=\(s(.tool_input.file_path // .toolInput.file_path)) _r=\(s(.tool_input.path // .toolInput.path)) _c=\(s(.cwd))"' 2>/dev/null)"
+        @sh "_t=\(s(.tool_name // .toolName)) _f=\(s(.tool_input.file_path // .toolInput.file_path)) _r=\(s(.tool_input.path // .toolInput.path)) _c=\(s(.cwd))"' 2>/dev/null)"
     else
-      _t=$(kit_field tool_name) _f=$(kit_field file_path) _r=$(kit_field path) _c=$(kit_field cwd)
+      # The tool name and cwd sit beside tool_input, never in it (kit_field_top).
+      _t=$(kit_field_top tool_name) _f=$(kit_field file_path) _r=$(kit_field path) _c=$(kit_field_top cwd)
+      [ -n "$_t" ] || _t=$(kit_field_top toolName)
     fi
     case $_t in
       Read | Grep)

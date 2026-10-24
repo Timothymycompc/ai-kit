@@ -298,6 +298,43 @@ for TIER in off relaxed; do
   want_tool "$TIER" silent "ctx_execute_file on an ordinary file" mcp__context-mode__ctx_execute_file "$(cx "$FH/proj/src/app.ts")"
 done
 
+# ── an MCP call's own tool_name or command argument changes nothing ─────────
+# kit_parse reads the tool name from the payload's top level, where Claude Code puts
+# it, and always rebuilds an MCP call's command from the fields the tool runs. A
+# context-mode call that carried a tool_name argument was taken for a plain tool and
+# never read, and one that carried a command argument was read as that command
+# instead of its code. A Bash call with a tool_name argument is still a Bash call.
+echo "[an MCP call's own tool_name or command argument does not change what is read]"
+F1_READ='cat ~/.npmrc'
+f1() { python3 -c 'import json,sys; ti={"language":"shell","code":sys.argv[1]}; ti.update(json.loads(sys.argv[2])); print(json.dumps(ti))' "$1" "$2"; }
+for TIER in off relaxed medium high; do
+  for EXTRA in '{"tool_name":"x"}' '{"tool_name":"Bash"}' '{"command":"ls"}' '{"tool_name":"Read","command":"ls"}'; do
+    want_tool "$TIER" deny "ctx_execute reading a credential, carrying $EXTRA" \
+      mcp__context-mode__ctx_execute "$(f1 "$F1_READ" "$EXTRA")"
+  done
+  want_tool "$TIER" deny "ctx_execute running a shell -c, carrying its own tool_name" \
+    mcp__context-mode__ctx_execute "$(f1 "bash -c id" '{"tool_name":"x"}')"
+  want_tool "$TIER" deny "a Bash call carrying a tool_name argument is still read" \
+    Bash "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1], "tool_name": "x"}))' "$F1_READ")"
+  want_tool "$TIER" silent "ctx_execute of ordinary code, carrying its own tool_name" \
+    mcp__context-mode__ctx_execute "$(f1 "ls -la" '{"tool_name":"x"}')"
+done
+# Without jq the name comes from a text scan of the top level, whatever the field
+# order: tool_input first, holding its own tool_name, is the order a first-match
+# scan read wrong. The file-tool branch reads its tool name the same way.
+f1_raw() { python3 -c 'import json,sys; print(json.dumps({"tool_input": json.loads(sys.argv[1]), "hook_event_name": "PreToolUse", "tool_name": sys.argv[2], "cwd": sys.argv[3]}))' "$@"; }
+f1_run() {  # f1_run <payload> [env...] -> deny | silent
+  local pay="$1" out; shift
+  out="$(cd "$FH/proj" && printf '%s' "$pay" | env -u GH_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$FH" \
+    CLAUDE_PROJECT_DIR="$REPO_ROOT" KIT_FIREWALL_TIER=relaxed KIT_FIREWALL_HEADLESS=0 "$@" sh "$GUARD" 2>/dev/null)" || true
+  case "$out" in *'"deny"'*) echo deny ;; *) echo silent ;; esac
+}
+F1_MCP="$(f1_raw "$(f1 "$F1_READ" '{"tool_name":"x"}')" mcp__context-mode__ctx_execute "$FH/proj")"
+F1_RD="$(f1_raw "$(python3 -c 'import json,sys; print(json.dumps({"file_path": sys.argv[1], "tool_name": "x"}))' "$GHF")" Read "$FH/proj")"
+assert_eq deny "$(f1_run "$F1_MCP")" "ctx_execute with tool_input ahead of tool_name, carrying its own tool_name"
+assert_eq deny "$(f1_run "$F1_MCP" PATH="$NOJQ")" "...and with no jq on PATH"
+assert_eq deny "$(f1_run "$F1_RD" PATH="$NOJQ")" "Read of the host file with tool_input first, carrying its own tool_name, no jq on PATH"
+
 # ── drift guard: every canonical protected path still matches the vault regex ──
 # The glob check tests a glob against these canonical paths; if kit_vault_re is
 # narrowed so one stops matching, the glob evasion for it silently reopens. Assert
