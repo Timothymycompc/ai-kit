@@ -183,7 +183,7 @@ Then **restart Claude Code** — the plugin does not activate until you do.
 ls .memsearch/memory/
 ```
 
-Those memories are plain markdown you can read, edit and commit; the Milvus index is a derived cache that can be rebuilt from them, not the source of truth. Recall is `/memory-recall <question>`, or just asking naturally — the skill self-invokes when a question needs history.
+Those memories are plain markdown you can read, edit and commit; the Milvus index is a derived cache that can be rebuilt from them, not the source of truth. Recall is `/memory-recall <question>`, or just asking naturally — the skill self-invokes when a question needs history. It runs at the firewall's Off and Relaxed tiers, Relaxed being the default. At Medium and High it does not: the skill derives its collection with a `bash -c` line, those two tiers deny `bash -c`, and Claude Code stops a skill whose set-up line meets a deny rule ([what the rule's tiers trade](firewall.md#permissions-and-safety-gates)).
 
 Note that `.memsearch/` lands in the **project** directory, not only in `~`. `install.sh` adds `.memsearch/` to your project's `.gitignore`, and `/update` adds it to projects installed before that, so the memory index stays out of your commits.
 
@@ -191,7 +191,7 @@ Beyond the standard install: Zilliz Cloud (managed, free tier) if you want memor
 
 ## Settings the kit leaves to you
 
-`.claude/settings.json` ships the sandbox, permission rules, hooks and attribution, registers the `stbr` marketplace (`extraKnownMarketplaces`) and enables `safe-ai-skill@stbr`, and pins nothing about how Claude works. Its permission and sandbox block is generated from the [firewall tier](../README.md#firewall-tiers) and rewritten whole when the tier changes, so edit the tier with `/firewall` rather than the block. Turn these on yourself with the command shown or in `.claude/settings.local.json`, which `/update` never touches:
+`.claude/settings.json` ships the sandbox, permission rules, hooks and attribution, registers the `stbr` marketplace (`extraKnownMarketplaces`) and enables `safe-ai-skill@stbr`, and pins nothing about how Claude works. Its hooks are the `SessionStart` banner, which also hands Claude one line naming the RPC host, the wallet and the firewall tier; four `PreToolUse` guards, silent unless they stop, prompt on or flag a call ([firewall.md](firewall.md)); three [decision-record hooks](decisions.md#how-it-reaches-agents), which add the decisions in force only in a repository that keeps a record, and send one of the kit's agents back once when its report leaves out a label; and the record's [write guard](decisions.md#the-write-guard), which refuses a subagent's write to it. Its permission and sandbox block is generated from the [firewall tier](../README.md#firewall-tiers) and rewritten whole when the tier changes, so edit the tier with `/firewall` rather than the block. Turn these on yourself with the command shown or in `.claude/settings.local.json`, which `/update` never touches:
 
 - **Effort**: `/effort` (the kit no longer forces `max`)
 - **Agent teams**: `{"env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"}}`, see [Agent Teams](agents-and-commands.md#agent-teams)

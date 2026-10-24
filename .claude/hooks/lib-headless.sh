@@ -118,6 +118,49 @@ kit_field_all() {
     }' 2>/dev/null
 }
 
+# kit_field_top <key> — the first string value of "<key>" at the payload's top level
+# (object depth 1), for the no-jq path.  kit_field takes .tool_input.<key> first and
+# its text fallback takes the first "<key>" anywhere, which is right for a tool's own
+# fields and wrong for the tool name: Claude Code puts tool_name beside tool_input,
+# never inside it, so one nested inside, in any field order, is the tool's argument.
+kit_field_top() {
+  printf '%s' "$KIT_INPUT" | KIT_KEY="$1" awk '
+    function ws(s) { while (substr(s,1,1) == " " || substr(s,1,1) == "\t" || substr(s,1,1) == "\n" || substr(s,1,1) == "\r") s = substr(s,2); return s }
+    BEGIN { RS = "\004"; k = "\"" ENVIRON["KIT_KEY"] "\""; depth = 0 }
+    {
+      s = $0; L = length(s); q = 0
+      for (i = 1; i <= L; i++) {
+        c = substr(s, i, 1)
+        if (q) { if (c == "\\") i++; else if (c == "\"") q = 0; continue }
+        if (c == "\"") {
+          if (depth == 1 && substr(s, i, length(k)) == k) {
+            t = ws(substr(s, i + length(k)))
+            if (substr(t, 1, 1) == ":") {
+              t = ws(substr(t, 2))
+              if (substr(t, 1, 1) != "\"") exit
+              t = substr(t, 2); out = ""
+              for (j = 1; j <= length(t); j++) {
+                d = substr(t, j, 1)
+                if (d == "\\") {
+                  e = substr(t, j + 1, 1); j++
+                  if (e == "n") out = out "\n"; else if (e == "t") out = out "\t"
+                  else if (e == "r") out = out "\r"; else if (e == "u") j += 4; else out = out e
+                  continue
+                }
+                if (d == "\"") break
+                out = out d
+              }
+              printf "%s", out; exit
+            }
+          }
+          q = 1; continue
+        }
+        if (c == "{" || c == "[") depth++
+        else if (c == "}" || c == "]") depth--
+      }
+    }' 2>/dev/null
+}
+
 # kit_mcp_normalize — turn an MCP tool input into a shell-shaped KIT_CMD.
 #
 # Why normalise instead of writing a dedicated MCP guard: each of the four guards
@@ -253,39 +296,52 @@ KIT_NL='
 
 kit_parse() {
   command -v jq >/dev/null 2>&1 && KIT_HAVE_JQ=1 || KIT_HAVE_JQ=
-  KIT_CMD= KIT_PERMISSION_MODE= KIT_CWD= KIT_TOOL= KIT_MCP= KIT_LANG=
+  KIT_CMD= KIT_PERMISSION_MODE= KIT_CWD= KIT_TOOL= KIT_MCP= KIT_LANG= _j=
+  # The tool name is read from the top level only (.tool_name, Grok's .toolName),
+  # never through kit_field, which prefers .tool_input: an MCP call that carried its
+  # own tool_name argument was taken for a plain tool, never normalised, and passed
+  # every guard unread.
   if [ -n "$KIT_HAVE_JQ" ]; then
     _sep=$(printf '\001')
     _j=$(printf '%s' "$KIT_INPUT" | jq -r '
       def g($k): (.tool_input[$k] // .toolInput[$k] // .[$k] // "");
       def s($v): if ($v | type) == "string" then $v else ($v | tostring) end;
-      [s(.permission_mode // .permissionMode // ""), s(.cwd // ""), s(g("command"))]
+      [s(.permission_mode // .permissionMode // ""), s(.cwd // ""),
+       s(.tool_name // .toolName // ""), s(g("command"))]
       | join("")' 2>/dev/null) || _j=
     if [ -n "$_j" ]; then
       KIT_PERMISSION_MODE=${_j%%"$_sep"*}
       _r=${_j#*"$_sep"}
       KIT_CWD=${_r%%"$_sep"*}
+      _r=${_r#*"$_sep"}
+      KIT_TOOL=${_r%%"$_sep"*}
       KIT_CMD=${_r#*"$_sep"}
     fi
   fi
   # jq absent, or the payload was not valid JSON: fall back to text extraction
   # rather than letting a truncated payload through unexamined.
-  [ -n "$KIT_CMD" ] || KIT_CMD=$(kit_field command 2>/dev/null) || KIT_CMD=
+  if [ -z "$_j" ]; then
+    KIT_TOOL=$(kit_field_top tool_name 2>/dev/null) || KIT_TOOL=
+    [ -n "$KIT_TOOL" ] || KIT_TOOL=$(kit_field_top toolName 2>/dev/null) || KIT_TOOL=
+    KIT_CMD=$(kit_field command 2>/dev/null) || KIT_CMD=
+  fi
   case $KIT_CMD in null) KIT_CMD= ;; esac
   case $KIT_PERMISSION_MODE in null) KIT_PERMISSION_MODE= ;; esac
-  [ -z "$KIT_CMD" ] || kit_size_cap
+  case $KIT_TOOL in null) KIT_TOOL= ;; esac
   [ -n "$KIT_CWD" ] && [ -d "$KIT_CWD" ] || KIT_CWD=$PWD
 
-  # MCP tools are named mcp__<server>__<tool>.  `command` is not their field, so
-  # KIT_CMD is still empty here and the normaliser fills it; a Bash call with a
-  # real command never reaches this branch.  Generic in the server name on
-  # purpose: which servers are gated is a registration decision in
-  # settings.json (matcher "mcp__context-mode__.*"), not something to hard-code
-  # into the one file every guard sources.
-  KIT_TOOL=$(kit_field tool_name 2>/dev/null) || KIT_TOOL=
-  case $KIT_TOOL in null) KIT_TOOL= ;; esac
+  # MCP tools are named mcp__<server>__<tool>.  `command` is not a field of theirs
+  # that a guard can trust: a `command` in their input is an argument like any
+  # other, so whatever kit_parse read there is dropped and KIT_CMD is always rebuilt
+  # from the fields the tool runs (kit_mcp_normalize reads `command` among them).
+  # Skipping the rebuild whenever a `command` was present let a planted one stand
+  # in for the code the call really ran.  Generic in the server name on purpose:
+  # which servers are gated is a registration decision in settings.json (matcher
+  # "mcp__context-mode__.*"), not something to hard-code into the one file every
+  # guard sources.
   case $KIT_TOOL in
-    mcp__*) [ -n "$KIT_CMD" ] || kit_mcp_normalize ;;
+    mcp__*) KIT_CMD=; kit_mcp_normalize ;;
+    *) [ -z "$KIT_CMD" ] || kit_size_cap ;;
   esac
 }
 
@@ -374,6 +430,19 @@ kit_ask() {
 # looks for a word: bash runs `a"n"chor deploy` and `npm pub"l"ish` as the words
 # without them, which a glob on the raw text never saw (#297).
 kit_unquoted() { printf '%s' "$1" | tr -d "\"'\\\\"; }
+
+# kit_allow <reason> — approve a call, skipping its permission prompt.  The
+# guards almost never grant: their job is to restrict, and a silent exit 0
+# already defers to the permission rules.  An allow cannot lift a rule either:
+# Claude Code evaluates deny and ask rules whatever a hook returns, so it decides
+# only where no rule does.  The one caller is secrets-guard.sh's exact allowlist
+# for memsearch's collection-derivation line, a `bash -c` that `Bash(bash -c *)`
+# still denies at Medium and High.  The match that reaches it must be whole-string
+# exact, never a prefix or a pattern.
+kit_allow() {
+  _kit_emit allow "$1"
+  exit 0
+}
 
 # kit_deny <reason> — hard block.  Both shapes: the JSON decision for harnesses
 # that read stdout, stderr + exit 2 for Claude Code (and for Grok Build, which

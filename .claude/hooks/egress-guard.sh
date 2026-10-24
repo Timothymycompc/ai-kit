@@ -67,6 +67,29 @@ KIT_INPUT=$(cat)
 kit_parse
 [ -n "$KIT_CMD" ] || exit 0
 
+# ---- destructive-system pass: catastrophic `rm -rf` and process kills.
+#
+# Run BEFORE the Off early-exit, so it holds at every tier.  These are not egress,
+# but they live here because egress-guard is the one guard with an Off early-exit
+# to run ahead of, and because a permission rule matches an `rm` target only as
+# typed (another flag spelling or a variable passes it) and the kill rules sit at
+# Medium+High.  The classifier (KIT_RMKILL in egress-guard.awk) denies a
+# catastrophic rm target in any spelling, `kill` of PID -1, and pkill/killall of a
+# peer agent; ordinary cleanup and killing one's own workers pass.  Prefiltered so
+# a command naming none of these never pays for the awk.
+case $KIT_CMD in
+  *rm\ * | *rm$KIT_NL* | *kill* | *pkill* | *killall*)
+    if [ -f "$HOOK_DIR/lib-tokenize.awk" ] && [ -f "$HOOK_DIR/egress-guard.awk" ]; then
+      RMK=$(printf '%s\n' "$KIT_CMD" | KIT_RMKILL=1 KIT_CWD="${KIT_CWD:-$PWD}" \
+        awk -f "$HOOK_DIR/lib-tokenize.awk" -f "$HOOK_DIR/egress-guard.awk" 2>/dev/null) || RMK=
+      case $RMK in
+        RM\ *) kit_deny "This command ${RMK#RM } — denied at every tier. Remove a specific path, not a home/root/project target or an unquoted variable that could be empty. Ordinary cleanup (./build dirs, a scratch subpath) is unaffected." ;;
+        KILL\ *) kit_deny "This command ${RMK#KILL } — denied at every tier. Signal a specific PID, or a worker by name that is not a peer agent (node, vitest). If you must, the user runs it." ;;
+      esac
+    fi
+    ;;
+esac
+
 TIER=$(kit_tier)
 [ "$TIER" = "off" ] && exit 0
 TIERN=$(kit_tier_num "$TIER")
@@ -255,9 +278,10 @@ MERGE=$(git_seg 'gh[[:space:]]+pr[[:space:]]+merge')
 # ---- High only: history rewrites that ARE recoverable, from the reflog.
 #
 # Named one by one rather than matched broadly, so the claim in the docs is checkable.
-# `git reset --hard` and its `--ha` abbreviation, `git clean`, `git restore` and
-# `git branch -D`/`--delete` are absent because they are already denied at every tier;
-# a bare `git reset` only unstages and is left alone.
+# `git reset --hard` and its `--ha` abbreviation, `git clean` and `git restore` are
+# absent because they are already denied at every tier; `git branch -D`/`-f` left that
+# set in rule set 10 and are asked for below.  A bare `git reset` only unstages and is
+# left alone.
 REWRITE_WHY='This rewrites local git history. It is recoverable from the reflog, but the High firewall tier asks first.'
 if [ "$TIERN" -ge 3 ]; then
   REWRITE=$(git_seg "git$GOPT[[:space:]]+(rebase|filter-branch|filter-repo)|git$GOPT[[:space:]]+commit[[:space:]][^;&|]*--amend|git$GOPT[[:space:]]+stash[[:space:]]+(drop|clear)")
@@ -269,15 +293,32 @@ if [ "$TIERN" -ge 3 ]; then
   fi
   # Deleting a branch or a tag, scanned by word rather than by regex.  "-d as a whole
   # word" has no portable ERE spelling (BSD grep wants [[:<:]], GNU wants \b), and the
-  # obvious `[^;&|]*-d` matched `git branch --sort=-date`.  `git branch -D` and
-  # `--delete` are absent here because they are already denied at every tier; for a tag
-  # both spellings are open, so both are listed.
+  # obvious `[^;&|]*-d` matched `git branch --sort=-date`.  The safe delete -d and
+  # --delete are asked for branch and tag alike.
   DEL=$(git_seg "git$GOPT[[:space:]]+(branch|tag)")
   if [ -n "$DEL" ]; then
     set -f
     for w in $DEL; do
       case $w in
         -d | --delete | --delete=*) ask_later "$REWRITE_WHY" ;;
+      esac
+    done
+    set +f
+  fi
+  # `git branch -D`/`-f`/`--force` — the force delete and the force reset of a branch.
+  # These were denied at every tier; since the firewall drops them from the every-tier
+  # set (they are reflog-recoverable, FIREWALL-SPEC's recoverable-git matrix), High asks
+  # instead and the lower tiers allow.  -D/-f are matched on the branch segment only, so
+  # `git tag -f` (force-create a tag) is untouched; `-a`, `-m`, `--sort=-date` carry no
+  # D or f and do not fire.
+  BR=$(git_seg "git$GOPT[[:space:]]+branch")
+  if [ -n "$BR" ]; then
+    set -f
+    for w in $BR; do
+      case $w in
+        -D | -f | --force) ask_later "$REWRITE_WHY" ;;
+        --*) ;;                                       # a long option: never a short -D/-f cluster
+        -[A-Za-z]*) case $w in *[Df]*) ask_later "$REWRITE_WHY" ;; esac ;;   # -Df, -fd clusters
       esac
     done
     set +f

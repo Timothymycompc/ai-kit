@@ -37,10 +37,11 @@ What is in the kit repository, which parts reach an installed project, and the w
     │   ├── kit-ref.sh               # The release tag /update fetches
     │   ├── resync.sh                # Submodule resync script
     │   ├── firewall.sh              # Generates a tier's permission + sandbox rules
+    │   ├── decisions.sh             # The decision record: add, supersede, in-force, export
     │   ├── report-page.sh           # /report's and /decide's HTML pages in .claude/reports/ (no network)
     │   └── skills.sh                # List skill packs, install extensions on demand
     ├── commands/                # 54 workflow commands
-    ├── hooks/                   # PreToolUse/SessionStart gate scripts
+    ├── hooks/                   # PreToolUse guards, and the decision-record hooks
     ├── skills/                  # Progressive-loading knowledge
     │   ├── SKILL.md                 # Unified hub routing to all skills
     │   ├── ext/                     # External skill submodules (core: installed; others: extensions)
@@ -76,7 +77,7 @@ What is in the kit repository, which parts reach an installed project, and the w
     └── settings.json            # Sandbox, permissions, hooks, stbr marketplace + safe-ai-skill@stbr
 ```
 
-An install copies the named `.claude/` subdirectories (`agents`, `skills`, `commands`, `bin`, `hooks`) plus `VERSION`, `settings.json`, `security.json`, `.mcp.json`, `.safe-ai-skill/policy.yaml` (Claude Code installs only), `.env.schema` (only when absent) and `CLAUDE-solana.md` → `CLAUDE.md`. Everything else above — `docs/`, `tests/`, `install.sh`, `validate.sh`, the workflows — stays in the kit repository.
+An install copies the named `.claude/` subdirectories (`agents`, `skills`, `commands`, `bin`, `hooks`) plus `VERSION`, `settings.json`, `security.json`, `.mcp.json`, `.safe-ai-skill/policy.yaml` (Claude Code installs only), `.env.schema` (only when absent) and `CLAUDE-solana.md` → `CLAUDE.md`. Everything else above — `docs/`, `tests/`, `install.sh`, `validate.sh`, the workflows — stays in the kit repository. The [decision record](decisions.md) is in no tree at all: it lives under each clone's git directory, where nothing is committed.
 
 ## DX Scripts
 
