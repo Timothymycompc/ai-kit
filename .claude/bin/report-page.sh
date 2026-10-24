@@ -1,45 +1,64 @@
 #!/usr/bin/env bash
 # Render a page's JSON as a local HTML page in the project's reports folder: a decision
-# sheet for /decide (a card per decision, its options as buttons, a notes box, and a Copy
-# answers button whose text the user pastes back) or a report for /report (a TL;DR,
-# sections of items with a status and links, and numbered Done / Warnings / Open lists).
+# sheet for /decide (a card per decision, its options as buttons, a notes box, a Copy
+# answers button whose text the user pastes back, and the calls the run decided) or a
+# report for /report (a TL;DR, sections of items with a status and links, and numbered
+# Done / Warnings / Open lists).
 #
 # Usage: bash .claude/bin/report-page.sh <decisions|report> <file.json>
 #
 # Prints the page's absolute path on stdout and how to open it on stderr; it never opens
 # it. The page goes to .claude/reports/ at the project root: the git top-level, else the
 # current directory (.agents/reports/ when the script runs from an --agents install). Where
-# that folder can't be written, it goes to ${TMPDIR:-/tmp}/kit-reports/, and stderr says so.
+# that folder can't be written, it goes to ${TMPDIR:-/tmp}/kit-reports/, or to a private
+# kit-reports.XXXXXX beside it when that one is another user's or others can write in it,
+# and stderr says so. A .claude that is a link is followed, and so is git's core.worktree:
+# whoever can change either already controls more than this script.
 #
 # Per page the folder holds <YYYY-MM-DD>-<HHMMSS>-<kind>-<slug>.html and, under the same
-# name with .json, the JSON it was rendered from, so the names sort in the order the pages
-# were made. index.json lists them (sequence, kind, title, date, file), and a .gitignore
-# of "*" keeps them all out of git whatever the project's own .gitignore says, since a page
-# can hold private decisions. Every page carries a navigation bar listing every page in the
-# folder, and making a page re-renders each earlier one from its saved JSON, so every bar
-# stays current; a sheet's drafts are kept per page file, so a re-render keeps them.
-# REPORT_STAMP=YYYY-MM-DD-HHMMSS sets the time a page is stamped with.
+# name with .json, the JSON it was rendered from. The time is UTC, so the names sort in the
+# order the pages were made whatever the session's time zone, and two runs that pick one
+# name get -2, -3 and so on. index.json lists them (sequence, kind, title, date, file), and
+# a .gitignore of "*" keeps them all out of git whatever the project's own .gitignore says,
+# since a page can hold private decisions; stderr warns when git would still see a page.
+# Every page carries a navigation bar listing every page in the folder, and making a page
+# re-renders each earlier one from its saved JSON, so every bar stays current; a sheet's
+# drafts are kept per page path, so a re-render keeps them. Nothing is pruned and each run
+# rewrites every page, so a run's cost grows with the folder (measured on macOS: 1.7 s at
+# 150 pages; 13 s, and 232 MB on disk, at 1000); stderr says so past 500 pages.
+# REPORT_STAMP=YYYY-MM-DD-HHMMSS, in UTC, sets the time a page is stamped with.
 #
 # The JSON is embedded verbatim, every "<" written as \u003c so no string can close the
 # script element, and the page renders every string with textContent, since the text can
-# come from PRs, issues or agents. Only an https URL or a repo-relative path (an optional
-# :line kept in its label) becomes a link, the path resolved from the page so it opens from
-# the folder; anything else shows as text. The page fetches nothing (system fonts, and a
-# CSP of default-src 'none'), because it can hold private decisions.
+# come from PRs, issues or agents. Only an https URL with no "." or ".." path segment, or a
+# repo-relative path (an optional :line kept in its label) that names no dotfile and stays
+# out of .git, becomes a link, the path resolved from the page so it opens from the folder;
+# anything else shows as text. A GitHub pull request, issue or commit is labelled
+# owner/repo#n or owner/repo@sha from the URL's own path, and a label in the data that names
+# a URL or such a reference is not used. In the Copy answers text a line holds only the
+# page's own delimiters: inside a field the arrow, "|", "[" and "]" are written "->", "/",
+# "(" and ")", and line breaks, controls, zero-width and bidi characters become a space or
+# go. The page fetches nothing (system fonts, and a CSP of default-src 'none'), because it
+# can hold private decisions.
 #
 # The input checks are strict because the firewall allows this script without a prompt:
 # it must not become a way to copy any file somewhere readable. It reads one regular file,
 # once and at most 1 MiB of it, and goes on only if that is shaped like a page's JSON (an
 # object naming "title" and "decisions", or "title" and "summary"), which a keypair, a JSON
 # array, never is. An earlier page is re-rendered only from a regular file in the folder
-# that passes the same shape check, and only a page this script wrote is ever replaced.
+# that passes the same shape check, when its page is this script's own or index.json lists
+# it, and never from a file git tracks. Only a page this script wrote is ever replaced, and
+# always by renaming a new file over it, so a link put in its place is replaced, never
+# followed.
 #
-# python3, else node, checks the full shape and stops at the first problem; with neither,
-# the page shows any parse error instead.
+# python3, else node, checks the full shape and stops at the first problem, refusing a link
+# that holds a line break or another control character; a validator that fails on the data
+# refuses it. With neither interpreter, the page shows any parse error instead.
 #   decisions: {"title": str, "date": str?, "intro": str?, "decisions": [{"id": str,
 #     "number": int|str, "question": str, "why": str?, "recommended": <option value>?,
 #     "options": [{"value": str, "label": str, "detail": str?}], "context": [str]?,
-#     "premises": str?, "reversible": bool?, "blocks": str?, "links": [<link>]?}]}
+#     "premises": str?, "reversible": bool?, "blocks": str?, "links": [<link>]?}],
+#     "decided": [<item>]?}
 #   report: {"title": str, "date": str?, "summary": str | [str], "sections": [{"heading":
 #     str, "items": [<item>]}]?, "done": [<item>]?, "warnings": [<item>]?, "open": [<item>]?}
 #   <item>: str | {"text": str, "status": "PASS" | "NEEDS-FIX" | "REFUTED" | "UNVERIFIED"?,
@@ -165,10 +184,16 @@ function html(t) {
   gsub(/>/, "\\&gt;", t)
   return t
 }
-# guess(f): the raw body of the first "title" string in f, for when no JSON parser ran.
-function guess(f,    l, s, i, c, t) {
-  s = ""
-  while ((getline l < f) > 0) s = s " " l
+# guess(f): the raw body of the first "title" string in f, for when no JSON parser ran. It
+# keeps the text from the first line naming "title" on, and at most 8 KiB of it, so a large
+# file costs one pass.
+function guess(f,    l, s, i, c, t, on) {
+  s = ""; on = 0
+  while ((getline l < f) > 0) {
+    if (!on) { i = index(l, "\"title\""); if (!i) continue; on = 1; l = substr(l, i) }
+    s = s " " l
+    if (length(s) > 8192) break
+  }
   close(f)
   if (!match(s, /"title"[ \t\r]*:[ \t\r]*"/)) return ""
   s = substr(s, RSTART + RLENGTH, 4096)
@@ -180,6 +205,14 @@ function guess(f,    l, s, i, c, t) {
     t = t c
   }
   return ""
+}
+# cap(t, n): t cut to n bytes, dropping a multibyte character the cut would split. A title
+# is capped before clean() and plain(), which build their result a character at a time.
+function cap(t, n) {
+  if (length(t) <= n) return t
+  t = substr(t, 1, n)
+  sub(/[\300-\377][\200-\277]*$/, "", t)
+  return t
 }
 AWK
 }
@@ -198,10 +231,13 @@ not_shaped() {
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/report-page.XXXXXX" 2>/dev/null)" \
   || die "cannot create a temporary directory under ${TMPDIR:-/tmp}"
 NEW_JSON=""
-# The new page's JSON is removed again if its page is never written.
+STAGE=""
+# The new page's JSON is removed again if its page is never written, and so is the folder
+# pages are written in before they are renamed into place.
 cleanup() {
   rm -rf "$WORK"
   [ -z "$NEW_JSON" ] || rm -f "$NEW_JSON"
+  [ -z "$STAGE" ] || rm -rf "$STAGE"
 }
 trap cleanup EXIT
 # Read the file once, at most one byte past the limit, and check and embed only that copy:
@@ -221,9 +257,11 @@ SHAPED="$(F="$SRC" K="$KIND" M="$MAX_BYTES" LC_ALL=C awk "$(awk_lib)"'
 # without the command line tools, say), and the next one is tried.
 py_validator() {
   cat <<'PY'
-import json, sys
+import json, re, sys
 
 STATUSES = ("PASS", "NEEDS-FIX", "REFUTED", "UNVERIFIED")
+# A line break or another control character in a link breaks the page's reading of it.
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 def emit(kind, text):
     # As bytes, so a non-ASCII title prints under any locale.
@@ -257,8 +295,13 @@ def links(at, v):
                 err(lat + ".href must be a non-empty string")
             if given(l, "label") and not isinstance(l["label"], str):
                 err(lat + ".label must be a string")
+            shown = l["href"] + (l.get("label") or "")
         elif not text(l):
             err(lat + " must be a non-empty string or an object with an href")
+        else:
+            shown = l
+        if CONTROL.search(shown):
+            err(lat + " holds a line break or another control character")
 
 def item(at, it):
     if isinstance(it, dict):
@@ -319,6 +362,11 @@ def decisions(data):
             values.add(o["value"])
         if text(d.get("recommended")) and d["recommended"] not in values:
             err("%s.recommended %s is not one of its option values" % (at, show(d["recommended"])))
+    if given(data, "decided"):
+        if not isinstance(data["decided"], list):
+            err('"decided" must be an array')
+        for j, it in enumerate(data["decided"]):
+            item("decided[%d]" % j, it)
 
 def report(data):
     s = data.get("summary")
@@ -345,6 +393,17 @@ def report(data):
             for j, it in enumerate(data[k]):
                 item("%s[%d]" % (k, j), it)
 
+def check(data):
+    if not isinstance(data, dict):
+        err("the top level must be an object")
+    if not text(data.get("title")):
+        err('"title" must be a non-empty string')
+    if given(data, "date") and not isinstance(data["date"], str):
+        err('"date" must be a string')
+    (decisions if sys.argv[2] == "decisions" else report)(data)
+    # The title names the page and its file; 200 characters of it are plenty.
+    emit("OK", json.dumps(" ".join(data["title"].split())[:200], ensure_ascii=False))
+
 try:
     with open(sys.argv[1], encoding="utf-8-sig") as f:
         data = json.load(f, parse_constant=no_constant)
@@ -355,14 +414,12 @@ except (ValueError, RecursionError) as e:
 except OSError as e:
     err("cannot read: %s" % e.strerror)
 
-if not isinstance(data, dict):
-    err("the top level must be an object")
-if not text(data.get("title")):
-    err('"title" must be a non-empty string')
-if given(data, "date") and not isinstance(data["date"], str):
-    err('"date" must be a string')
-(decisions if sys.argv[2] == "decisions" else report)(data)
-emit("OK", json.dumps(" ".join(data["title"].split()), ensure_ascii=False))
+# A check that fails on the data, rather than refusing it, refuses it too: data the
+# validator could not get through never becomes a page unchecked.
+try:
+    check(data)
+except Exception as e:
+    err("could not be checked (%s: %s)" % (type(e).__name__, ("%s" % e)[:200]))
 PY
 }
 
@@ -376,14 +433,20 @@ const text = (v) => typeof v === 'string' && v.trim() !== '';
 const given = (o, k) => o[k] !== undefined && o[k] !== null;
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const show = (v) => { const s = JSON.stringify(v); return s.length <= 60 ? s : s.slice(0, 57) + '...'; };
+// A line break or another control character in a link breaks the page's reading of it.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 function links(at, v) {
   if (!Array.isArray(v)) err(at + '.links must be an array');
   v.forEach((l, i) => {
     const lat = at + '.links[' + i + ']';
+    let shown;
     if (isObj(l)) {
       if (!text(l.href)) err(lat + '.href must be a non-empty string');
       if (given(l, 'label') && typeof l.label !== 'string') err(lat + '.label must be a string');
+      shown = l.href + (typeof l.label === 'string' ? l.label : '');
     } else if (!text(l)) err(lat + ' must be a non-empty string or an object with an href');
+    else shown = l;
+    if (CONTROL.test(shown)) err(lat + ' holds a line break or another control character');
   });
 }
 function item(at, it) {
@@ -433,6 +496,10 @@ function decisions(data) {
       err(at + '.recommended ' + show(d.recommended) + ' is not one of its option values');
     }
   });
+  if (given(data, 'decided')) {
+    if (!Array.isArray(data.decided)) err('"decided" must be an array');
+    data.decided.forEach((it, j) => item('decided[' + j + ']', it));
+  }
 }
 function report(data) {
   const s = data.summary;
@@ -469,15 +536,19 @@ function check(file, kind) {
   if (!text(data.title)) err('"title" must be a non-empty string');
   if (given(data, 'date') && typeof data.date !== 'string') err('"date" must be a string');
   (kind === 'decisions' ? decisions : report)(data);
-  return JSON.stringify(data.title.split(/\s+/).filter(Boolean).join(' '));
+  // The title names the page and its file; 200 characters of it are plenty.
+  return JSON.stringify(Array.from(data.title.split(/\s+/).filter(Boolean).join(' ')).slice(0, 200).join(''));
 }
 let out;
 try {
   out = 'OK ' + check(process.argv[1], process.argv[2]);
   process.exitCode = 0;
 } catch (e) {
-  if (!(e instanceof Refused)) throw e;
-  out = 'ERR ' + String(e.message).split(/\s+/).filter(Boolean).join(' ');
+  // A check that fails on the data, rather than refusing it, refuses it too: data the
+  // validator could not get through never becomes a page unchecked.
+  const why = e instanceof Refused ? String(e.message)
+    : 'could not be checked (' + String((e && e.name) || 'Error') + ': ' + String(e && e.message).slice(0, 200) + ')';
+  out = 'ERR ' + why.split(/\s+/).filter(Boolean).join(' ');
   process.exitCode = 3;
 }
 process.stdout.write(out + '\n');
@@ -514,13 +585,14 @@ fi
   || echo "$ME: no python3 or node to validate $IN; the page will show any problem in it" >&2
 
 # The title as a JSON string body (for the index) and as text (for the file name): from the
-# validator when one ran, else read from the file as well as can be done without a parser.
+# validator when one ran, else read from the file as well as can be done without a parser;
+# 1 KiB of it at most.
 TITLES="$(GIVEN="$VTITLE" F="$SRC" LC_ALL=C awk "$(awk_lib)"'
   BEGIN {
     t = ENVIRON["GIVEN"]
     if (t ~ /^".*"$/) t = substr(t, 2, length(t) - 2)
     else t = guess(ENVIRON["F"])
-    t = clean(t)
+    t = clean(cap(t, 1024))
     print t "\t" plain(t)
   }')" || TITLES="$TAB"
 TITLE_BODY="${TITLES%%"$TAB"*}"
@@ -538,6 +610,8 @@ CONFIG_DIR="${SELF_DIR%/*}"
 CONFIG_NAME="${CONFIG_DIR##*/}"
 case "$CONFIG_NAME" in .claude | .agents) ;; *) CONFIG_NAME=".claude" ;; esac
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || ROOT=""
+IN_GIT=""
+[ -z "$ROOT" ] || IN_GIT=1
 [ -n "$ROOT" ] || ROOT="$(pwd)"
 ROOT="$(cd "$ROOT" 2>/dev/null && pwd -P)" || die "cannot enter the project root: $ROOT"
 # Printed and opened by this path, not a resolved one, so "../../" from a page is the root.
@@ -552,6 +626,13 @@ writable() {
   probe="$(mktemp "$1/.report-page.XXXXXX" 2>/dev/null)" || return 1
   rm -f "$probe"
 }
+# loose <dir> — group or other may write in it, so someone else could swap its files.
+loose() {
+  case "$(ls -ld "$1" 2>/dev/null | cut -c1-10)" in
+    ?????w???? | ????????w?) return 0 ;;
+  esac
+  return 1
+}
 WHY=""
 if [ -L "$DIR" ]; then
   WHY="it is a symbolic link"
@@ -565,9 +646,12 @@ if [ -n "$WHY" ]; then
   BASE="${BASE%/}"
   FALLBACK="$BASE/kit-reports"
   mkdir -p "$FALLBACK" 2>/dev/null || true
-  # On a shared /tmp another user can create that name first: use a private one then.
-  writable "$FALLBACK" || FALLBACK="$(mktemp -d "$BASE/kit-reports.XXXXXX" 2>/dev/null)" \
-    || die "cannot use $DIR ($WHY), nor create a folder for the page under $BASE"
+  # On a shared /tmp another user can create that name first, or it can be open to others:
+  # use a private one then.
+  if ! writable "$FALLBACK" || loose "$FALLBACK"; then
+    FALLBACK="$(mktemp -d "$BASE/kit-reports.XXXXXX" 2>/dev/null)" \
+      || die "cannot use $DIR ($WHY), nor create a folder for the page under $BASE"
+  fi
   FALLBACK="$(cd "$FALLBACK" && pwd -P)" || die "cannot enter $FALLBACK"
   echo "$ME: $DIR cannot be used ($WHY); the page goes to $FALLBACK instead" >&2
   DIR="$FALLBACK"
@@ -595,23 +679,17 @@ stems() {
 }
 LAST="$(stems | tail -n 1 | cut -c1-17)" || LAST=""
 if [ -z "$STAMP" ]; then
-  STAMP="$(date +%Y-%m-%d-%H%M%S)"
+  # In UTC, so the names sort in the order the pages were made whatever the time zone.
+  STAMP="$(date -u +%Y-%m-%d-%H%M%S)"
   # A page made in the same second as the last would sort by kind and slug rather than by
   # time: wait for the next second.
   n=0
   while [ "$STAMP" = "$LAST" ] && [ "$n" -lt 3 ]; do
     sleep 1
-    STAMP="$(date +%Y-%m-%d-%H%M%S)"
+    STAMP="$(date -u +%Y-%m-%d-%H%M%S)"
     n=$((n + 1))
   done
 fi
-STEM="$STAMP-$KIND-$SLUG"
-n=1
-while [ -e "$DIR/$STEM.html" ] || [ -L "$DIR/$STEM.html" ] || [ -e "$DIR/$STEM.json" ] || [ -L "$DIR/$STEM.json" ]; do
-  n=$((n + 1))
-  [ "$n" -le 99 ] || die "too many pages named $STAMP-$KIND-$SLUG in $DIR"
-  STEM="$STAMP-$KIND-$SLUG-$n"
-done
 
 # put <file> <name> — copy into the folder through a temp file, so a failed write leaves
 # nothing half-written and a link at the target is replaced, never followed.
@@ -624,8 +702,25 @@ put() {
     return 1
   fi
 }
-put "$SRC" "$STEM.json" || die "cannot write in $DIR"
+# taken <name> — something in the folder already has that name.
+taken() { [ -e "$DIR/$1" ] || [ -L "$DIR/$1" ]; }
+# claim <stem> — create <stem>.json empty, failing when anything has that name: noclobber
+# opens it with O_EXCL, so of two runs that pick one name only one gets it.
+claim() { ( set -C; : > "$DIR/$1.json" ) 2>/dev/null; }
+STEM0="$STAMP-$KIND-$SLUG"
+STEM="$STEM0"
+n=1
+while :; do
+  if ! taken "$STEM.html"; then
+    claim "$STEM" && break
+    taken "$STEM.json" || die "cannot write in $DIR"
+  fi
+  n=$((n + 1))
+  [ "$n" -le 99 ] || die "too many pages named $STEM0 in $DIR"
+  STEM="$STEM0-$n"
+done
 NEW_JSON="$DIR/$STEM.json"
+put "$SRC" "$STEM.json" || die "cannot write in $DIR"
 
 # --- Every page in the folder ---------------------------------------------------------
 # ours <path> — a page this script wrote: a regular file, not a link, with the marker in
@@ -645,8 +740,17 @@ if [ -f "$DIR/index.json" ] && [ ! -L "$DIR/index.json" ]; then
   LC_ALL=C sed -nE 's/^\{"sequence": [0-9]+, "kind": "(decisions|report)", "date": "[^"]*", "file": "('"$STEM_RE"')\.html", "title": "(([^"\\]|\\.)*)"\},?$/\2'"$TAB"'\5/p' \
     "$DIR/index.json" > "$WORK/known" 2>/dev/null || : > "$WORK/known"
 fi
-# Per page, "stem<TAB>kind<TAB>html<TAB>json": whether each file is there to use. A file
-# with a page's name that this script did not write is left alone, and so is its page.
+# Page files git tracks came from elsewhere, a cloned repository say, since this script
+# commits nothing: their pages are left alone like any other it did not write.
+: > "$WORK/tracked"
+if [ -n "$IN_GIT" ] && [ "$DIR" = "$ROOT/$CONFIG_NAME/reports" ]; then
+  { (cd "$ROOT" && git ls-files -- "$CONFIG_NAME/reports") 2>/dev/null \
+    | LC_ALL=C sed -nE 's#^(.*/)?('"$STEM_RE"')\.(html|json)$#\2#p' > "$WORK/tracked"; } || : > "$WORK/tracked"
+fi
+# Per page, "stem<TAB>kind<TAB>page<TAB>json": page 1 when the page is this script's, 2 when
+# it is an empty regular file, as a write cut short before its first byte leaves one, and 0
+# when there is none; json 1 when the JSON is a regular file. Any other file with a page's
+# name is left alone, and so is its page.
 : > "$WORK/pages"
 FOREIGN=""
 while IFS= read -r s; do
@@ -655,35 +759,46 @@ while IFS= read -r s; do
   h=0
   j=0
   if [ -e "$DIR/$s.html" ] || [ -L "$DIR/$s.html" ]; then
-    if ! ours "$DIR/$s.html"; then
+    if ours "$DIR/$s.html"; then
+      h=1
+    elif [ -f "$DIR/$s.html" ] && [ ! -L "$DIR/$s.html" ] && [ ! -s "$DIR/$s.html" ]; then
+      h=2
+    else
       FOREIGN="$FOREIGN $s.html"
       continue
     fi
-    h=1
   fi
   [ -f "$DIR/$s.json" ] && [ ! -L "$DIR/$s.json" ] && j=1
   printf '%s\t%s\t%s\t%s\n' "$s" "$k" "$h" "$j" >> "$WORK/pages"
 done < <(stems)
 
-# The index, and per page "stem<TAB>kind<TAB>render|stale<TAB>title as HTML": a page is
-# rendered from its JSON when that passes the shape check, and kept in the bar unrefreshed
-# when only its page is left.
+# The index, and per page "stem<TAB>kind<TAB>render|stale|skip|tracked<TAB>title as HTML".
+# A page is rendered from its JSON when that passes the shape check and the page is this
+# script's, or is missing or empty and index.json lists it: a page-named JSON with neither,
+# left by a run still in progress or put there by someone else, never becomes a page. A
+# page of this script's whose JSON is gone stays in the bar unrefreshed.
 : > "$WORK/list"
 DIR="$DIR" M="$MAX_BYTES" NEWSTEM="$STEM" NEWTITLE="$TITLE_BODY" \
   OUT_INDEX="$WORK/index.json" OUT_LIST="$WORK/list" LC_ALL=C awk "$(awk_lib)"'
-  BEGIN { FS = "\t"; max = ENVIRON["M"] + 0; dir = ENVIRON["DIR"] }
-  FILENAME == ARGV[1] { if (!($1 in known)) known[$1] = $2; next }
+  BEGIN { FS = "\t"; max = ENVIRON["M"] + 0; dir = ENVIRON["DIR"]; newstem = ENVIRON["NEWSTEM"] }
+  FILENAME == ARGV[1] { if (!($1 in known)) known[$1] = cap($2, 1024); next }
+  FILENAME == ARGV[2] { tracked[$1] = 1; next }
   {
-    stem = $1; kind = $2; good = ($4 == 1) && shaped(dir "/" stem ".json", kind)
-    if (!good && $3 != 1) next
-    if (stem == ENVIRON["NEWSTEM"]) t = ENVIRON["NEWTITLE"]
+    stem = $1; kind = $2; page = $3 + 0
+    if (stem != newstem && (stem in tracked)) { print stem "\t" kind "\ttracked\t" > ENVIRON["OUT_LIST"]; next }
+    good = ($4 == 1) && shaped(dir "/" stem ".json", kind)
+    if (stem != newstem && page != 1 && !(good && (stem in known))) {
+      if (page == 2) print stem "\t" kind "\tskip\t" > ENVIRON["OUT_LIST"]
+      next
+    }
+    if (stem == newstem) t = ENVIRON["NEWTITLE"]
     else if (stem in known) t = known[stem]
     else if (good) t = guess(dir "/" stem ".json")
     else t = ""
-    t = clean(t)
+    t = clean(cap(t, 1024))
     if (t == "") t = (kind == "report") ? "Report" : "Decision sheet"
     n++
-    entry[n] = sprintf("{\"sequence\": %d, \"kind\": \"%s\", \"date\": \"%s %s:%s:%s\", \"file\": \"%s.html\", \"title\": \"%s\"}", \
+    entry[n] = sprintf("{\"sequence\": %d, \"kind\": \"%s\", \"date\": \"%s %s:%s:%s UTC\", \"file\": \"%s.html\", \"title\": \"%s\"}", \
       n, kind, substr(stem, 1, 10), substr(stem, 12, 2), substr(stem, 14, 2), substr(stem, 16, 2), stem, t)
     print stem "\t" kind "\t" (good ? "render" : "stale") "\t" html(plain(t)) > ENVIRON["OUT_LIST"]
   }
@@ -691,7 +806,7 @@ DIR="$DIR" M="$MAX_BYTES" NEWSTEM="$STEM" NEWTITLE="$TITLE_BODY" \
     print "[" > ENVIRON["OUT_INDEX"]
     for (i = 1; i <= n; i++) print entry[i] (i < n ? "," : "") > ENVIRON["OUT_INDEX"]
     print "]" > ENVIRON["OUT_INDEX"]
-  }' "$WORK/known" "$WORK/pages" || die "cannot list the pages in $DIR"
+  }' "$WORK/known" "$WORK/tracked" "$WORK/pages" || die "cannot list the pages in $DIR"
 
 # --- The page -------------------------------------------------------------------------
 NONCE="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || NONCE=""
@@ -864,6 +979,16 @@ emit_js() {
   function $(id) { return doc.getElementById(id); }
   function str(v) { return typeof v === 'string' ? v : (v === null || v === undefined) ? '' : String(v); }
   function line(v) { return str(v).replace(/\s+/g, ' ').trim(); }
+  // field(v): v for the Copy answers text, which /decide reads by its delimiters. Line
+  // breaks and other controls become a space, zero-width and bidi characters go, and the
+  // delimiters (the arrow, "|", "[" and "]") are written "->", "/", "(" and ")", so a line
+  // holds only the page's own.
+  var INVISIBLE_RE = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/g;
+  var CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+  function field(v) {
+    return str(v).replace(INVISIBLE_RE, '').replace(CONTROL_RE, ' ').replace(/\s+/g, ' ').trim()
+      .replace(/\u2192/g, '->').replace(/\|/g, '/').replace(/\[/g, '(').replace(/\]/g, ')');
+  }
   function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
   // Every string from the data goes in through textContent or a text node, never as markup.
   function el(tag, cls, text) {
@@ -895,27 +1020,47 @@ emit_js() {
   // --- Links: an https URL or a path from the project root, nothing else ---------------
   // A URL with a user name, any other scheme, an absolute path, a path that climbs out
   // with "..", and anything holding a space or a backslash shows as text.
-  var HTTPS_RE = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*(?::[0-9]{1,5})?(?:[\/?#][^\s"<>\\^`{|}]*)?$/;
-  function urlLabel(u) {
-    var m = /^https:\/\/github\.com\/([^\/?#]+)\/([^\/?#]+)\/(?:pull|issues)\/([0-9]+)/.exec(u);
-    if (m) return m[1] + '/' + m[2] + '#' + m[3];
-    m = /^https:\/\/github\.com\/([^\/?#]+)\/([^\/?#]+)\/commit\/([0-9a-fA-F]{7,40})/.exec(u);
-    if (m) return m[1] + '/' + m[2] + '@' + m[3].slice(0, 7);
-    var s = u.replace(/^https:\/\//, '').replace(/\/$/, '');
+  var HTTPS_RE = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*(?::[0-9]{1,5})?(\/[^\s"<>\\^`{|}?#]*)?(?:[?#][^\s"<>\\^`{|}]*)?$/;
+  // httpsPath(raw): the path of an https URL that may be a link, else null. A "." or ".."
+  // segment, written out or %2e-encoded, makes the browser open a path other than the one
+  // shown, so a URL holding one stays text.
+  function httpsPath(raw) {
+    var m = raw.length <= 2048 ? HTTPS_RE.exec(raw) : null;
+    if (!m) return null;
+    var path = m[1] || '';
+    return path.split('/').some(function (s) { return /^(?:\.|%2e){1,2}$/i.test(s); }) ? null : path;
+  }
+  // urlLabel(raw, path): a GitHub pull request, issue or commit as owner/repo#n or
+  // owner/repo@sha, read from the URL's own path; else the URL without its scheme.
+  function urlLabel(raw, path) {
+    var m;
+    if (/^https:\/\/github\.com\//.test(raw)) {
+      m = /^\/([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)\/(?:pull|issues)\/([0-9]+)(?:\/|$)/.exec(path);
+      if (m) return m[1] + '/' + m[2] + '#' + m[3];
+      m = /^\/([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)\/commit\/([0-9a-fA-F]{7,40})(?:\/|$)/.exec(path);
+      if (m) return m[1] + '/' + m[2] + '@' + m[3].slice(0, 7);
+    }
+    var s = raw.replace(/^https:\/\//, '').replace(/\/$/, '');
     return s.length > 72 ? s.slice(0, 71) + '\u2026' : s;
   }
-  // "src/lib.rs:42" -> "../../src/lib.rs": the line stays in the label only.
+  // A label from the data that names a URL or a GitHub reference could pass for a target
+  // other than its link's, so the link's own label is shown instead.
+  var TARGET_RE = /:\/\/|^www\.|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#[0-9]+|@[0-9a-fA-F]{7,40})|(?:^|\s)#[0-9]+/i;
+  // "src/lib.rs:42" -> "../../src/lib.rs": the line stays in the label only. A dotfile such
+  // as .env, and anything inside .git, stays text: following the link would open it here.
   function pathHref(raw) {
     if (!ROOT) return '';
-    var m = /^(.*?)(?::[0-9]+(?:[-:][0-9]+)?)?$/.exec(raw);
+    var m = /^([\s\S]*?)(?::[0-9]+(?:[-:][0-9]+)?)?$/.exec(raw);
+    if (!m) return '';
     var p = m[1], dir = false;
     if (p.slice(0, 2) === './') p = p.slice(2);
     if (p.length > 1 && p.charAt(p.length - 1) === '/') { dir = true; p = p.slice(0, -1); }
     if (!p || p.length > 512 || !/^[A-Za-z0-9._]/.test(p) || /[\s\x00-\x1f\x7f\\:*?"<>|#%]/.test(p)) return '';
     var parts = p.split('/');
     for (var i = 0; i < parts.length; i++) {
-      if (parts[i] === '' || parts[i] === '.' || parts[i] === '..') return '';
+      if (parts[i] === '' || parts[i] === '.' || parts[i] === '..' || /^\.git$/i.test(parts[i])) return '';
     }
+    if (parts[parts.length - 1].charAt(0) === '.') return '';
     return ROOT + parts.map(encodeURIComponent).join('/') + (dir ? '/' : '');
   }
   function linksRow(list) {
@@ -924,10 +1069,11 @@ emit_js() {
     list.forEach(function (spec) {
       var raw = str(isObj(spec) ? spec.href : spec).trim();
       if (!raw) return;
-      var label = isObj(spec) ? line(spec.label) : '', href = '', a;
-      if (raw.length <= 2048 && HTTPS_RE.test(raw)) {
+      var label = isObj(spec) ? line(spec.label) : '', href = '', path = httpsPath(raw), a;
+      if (TARGET_RE.test(label)) label = '';
+      if (path !== null) {
         href = raw;
-        label = label || urlLabel(raw);
+        label = label || urlLabel(raw, path);
       } else {
         href = pathHref(raw);
         label = label || raw;
@@ -1031,9 +1177,12 @@ emit_js() {
       intro.hidden = false;
     }
 
-    // Drafts live in this browser only, one set per page file, so a re-rendered page keeps
-    // them. Blocked storage costs the drafts and nothing else.
-    var KEY = 'report-page:v1:' + (FILE || JSON.stringify([title, date]));
+    // Drafts live in this browser only, one set per page, keyed by the page's path: a
+    // re-rendered page keeps them, and a page of the same name in another folder keeps its
+    // own. Blocked storage costs the drafts and nothing else.
+    var where = '';
+    try { where = str(window.location && window.location.pathname); } catch (e) { where = ''; }
+    var KEY = 'report-page:v1:' + (where || FILE || JSON.stringify([title, date]));
     var store = null;
     try {
       store = window.localStorage;
@@ -1163,13 +1312,27 @@ emit_js() {
     });
     items.forEach(refresh);
 
-    // One line per decision, in the shape /decide records verbatim.
+    // The calls the run decided without the user, after the cards that need them.
+    var decided = (Array.isArray(data.decided) ? data.decided : []).map(function (it) { return item(it); }).filter(Boolean);
+    if (decided.length) {
+      var sec = el('section', 'sec');
+      sec.appendChild(el('h2', null, 'Decided this run'));
+      var ul = el('ul', 'items');
+      decided.forEach(function (li) { ul.appendChild(li); });
+      sec.appendChild(ul);
+      app.appendChild(sec);
+    }
+
+    // The shape /decide reads: a header naming the page, then a line per decision with its
+    // number, [id], question, the arrow and the choice, and " | notes: " before any notes.
     function answersText() {
-      var lines = ['Decision answers: ' + title + (date ? ' (' + date + ')' : '')];
+      var lines = ['Decision answers: ' + (field(title) || 'Decisions') + (field(date) ? ' (' + field(date) + ')' : '') +
+        (PAGE_RE.test(FILE) ? ' [' + FILE + ']' : '')];
       items.forEach(function (it) {
         var c = chosen(it);
-        var notes = notesOf(it).replace(/\s*[\r\n]+\s*/g, ' / ');
-        lines.push(it.number + '. [' + it.id + '] ' + it.question + ' \u2192 ' + (c ? c.label : 'not answered') +
+        var notes = field(notesOf(it).replace(/\s*[\r\n\u0085\u2028\u2029]+\s*/g, ' / '));
+        lines.push((field(it.number) || String(it.n + 1)) + '. [' + (field(it.id) || 'd' + (it.n + 1)) + '] ' +
+          (field(it.question) || '(no question given)') + ' \u2192 ' + (c ? field(c.label) || 'Option' : 'not answered') +
           (notes ? ' | notes: ' + notes : ''));
       });
       return lines.join('\n');
@@ -1310,61 +1473,86 @@ emit_body decisions > "$WORK/body-decisions"
 emit_body report > "$WORK/body-report"
 emit_js > "$WORK/js"
 
-# render new|earlier [<out>] — write the new page to <out>, or every earlier page that
-# can be rendered over its old copy. One awk for all of them: a process per page made a
-# folder of a hundred pages take seconds per run. An earlier page is rewritten in place,
-# which is safe because the scan above found it to be this script's own regular file, and
-# its saved JSON rebuilds it on the next run if a write is cut short.
+# render <list> <dir> — write each page <list> marks "render" to <dir>/<stem>.html. One awk
+# for all of them: a process per page made a folder of a hundred pages take seconds per run.
+# Each "<" in the data goes out as \u003c a piece at a time, so the time stays linear however
+# many the data holds, and close() is checked, so a write that fails, on a full disk say,
+# fails the run.
 render() {
-  W="$WORK" DIR="$DIR" NONCE="$NONCE" ROOTP="$ROOT_PREFIX" NEWSTEM="$STEM" WHICH="$1" OUT="${2:-}" \
-    LC_ALL=C awk '
+  W="$WORK" DIR="$DIR" NONCE="$NONCE" ROOTP="$ROOT_PREFIX" OUTDIR="$2" LC_ALL=C awk '
     function slurp(f,    s, l) { s = ""; while ((getline l < f) > 0) s = s l "\n"; close(f); return s }
-    # Every "<" as \u003c, so nothing in the data can close its script element.
-    function esc(s,    o, i) {
-      o = ""
-      while ((i = index(s, "<")) > 0) { o = o substr(s, 1, i - 1) "\\u003c"; s = substr(s, i + 1) }
-      return o s
+    # put(s, out): s and a newline, with every "<" as \u003c, so nothing in the data can close
+    # its script element.
+    function put(s, out,    n, p, i) {
+      n = split(s, p, "<")
+      printf("%s", p[1]) > out
+      for (i = 2; i <= n; i++) printf("\\u003c%s", p[i]) > out
+      printf("\n") > out
     }
     BEGIN {
-      FS = "\t"; w = ENVIRON["W"]; dir = ENVIRON["DIR"]; nonce = ENVIRON["NONCE"]
+      FS = "\t"; w = ENVIRON["W"]; dir = ENVIRON["DIR"]; nonce = ENVIRON["NONCE"]; od = ENVIRON["OUTDIR"]
       pre = slurp(w "/pre"); css = slurp(w "/css"); js = slurp(w "/js")
       body["decisions"] = slurp(w "/body-decisions"); body["report"] = slurp(w "/body-report")
-      nav = esc(slurp(w "/index.json"))
+      nn = 0
+      while ((getline l < (w "/index.json")) > 0) nav[++nn] = l
+      close(w "/index.json")
     }
     $3 != "render" { next }
-    ENVIRON["WHICH"] == "new" && $1 != ENVIRON["NEWSTEM"] { next }
-    ENVIRON["WHICH"] != "new" && $1 == ENVIRON["NEWSTEM"] { next }
     {
-      stem = $1; kind = $2
-      out = (ENVIRON["WHICH"] == "new") ? ENVIRON["OUT"] : dir "/" stem ".html"
+      stem = $1; kind = $2; out = od "/" stem ".html"
       printf("%s<title>%s</title>\n<style nonce=\"%s\">\n%s</style>\n</head>\n<body>\n%s", pre, $4, nonce, css, body[kind]) > out
       printf("<script type=\"application/json\" id=\"page-data\" data-kind=\"%s\" data-file=\"%s.html\" data-date=\"%s\" data-root=\"%s\">\n", \
         kind, stem, substr(stem, 1, 10), ENVIRON["ROOTP"]) > out
       f = dir "/" stem ".json"
-      while ((getline l < f) > 0) printf("%s\n", esc(l)) > out
+      while ((getline l < f) > 0) put(l, out)
       close(f)
-      printf("</script>\n<script type=\"application/json\" id=\"nav-data\">\n%s</script>\n<script nonce=\"%s\">\n%s</script>\n</body>\n</html>\n", \
-        nav, nonce, js) > out
-      close(out)
-    }' "$WORK/list"
+      printf("</script>\n<script type=\"application/json\" id=\"nav-data\">\n") > out
+      for (i = 1; i <= nn; i++) put(nav[i], out)
+      printf("</script>\n<script nonce=\"%s\">\n%s</script>\n</body>\n</html>\n", nonce, js) > out
+      if (close(out) != 0) bad = 1
+    }
+    END { exit bad }' "$1"
 }
 
-# The new page first, since it is the one asked for, through a temp file so a failed write
-# leaves nothing half-written and a link at the target is replaced, never followed; then
-# the index; then every earlier page, so each bar lists the new one.
+# Pages are written into a private folder inside this one, then renamed into place: a write
+# that fails leaves the old page whole, and a link put where a page was is replaced, never
+# followed. The new page goes first, since it is the one asked for; then the index; then
+# every earlier page, so each bar lists the new one.
 LC_ALL=C grep -q "^$STEM$TAB[a-z]*${TAB}render$TAB" "$WORK/list" \
   || die "the page's JSON did not pass the shape check in $DIR"
-NEW_TMP="$(mktemp "$DIR/.report-page.XXXXXX" 2>/dev/null)" || die "cannot write in $DIR"
-if ! render new "$NEW_TMP" || ! mv -f "$NEW_TMP" "$DIR/$STEM.html" 2>/dev/null; then
-  rm -f "$NEW_TMP"
+STAGE="$(mktemp -d "$DIR/.report-page.XXXXXX" 2>/dev/null)" || die "cannot write in $DIR"
+LC_ALL=C awk -F "$TAB" -v s="$STEM" '$1 == s' "$WORK/list" > "$WORK/list-new"
+LC_ALL=C awk -F "$TAB" -v s="$STEM" '$1 != s && $3 == "render"' "$WORK/list" > "$WORK/list-earlier"
+if ! render "$WORK/list-new" "$STAGE" || ! mv -f "$STAGE/$STEM.html" "$DIR/$STEM.html" 2>/dev/null; then
   die "cannot write the page in $DIR"
 fi
 NEW_JSON=""
 put "$WORK/index.json" index.json || echo "$ME: could not update $DIR/index.json" >&2
-render earlier || echo "$ME: could not refresh the navigation bar of every earlier page in $DIR" >&2
+if [ -s "$WORK/list-earlier" ]; then
+  if ! render "$WORK/list-earlier" "$STAGE" \
+    || ! (cd "$STAGE" && set -- *.html && [ -f "$1" ] && mv -f -- "$@" "$DIR/") 2>/dev/null; then
+    echo "$ME: could not refresh the navigation bar of every earlier page in $DIR" >&2
+  fi
+fi
+rm -rf "$STAGE"
+STAGE=""
 STALE="$(LC_ALL=C awk -F "$TAB" '$3 == "stale" { printf " %s.html", $1 }' "$WORK/list")" || STALE=""
-[ -z "$FOREIGN" ] || echo "$ME: left alone, since this script did not write them:$FOREIGN" >&2
+SKIP="$(LC_ALL=C awk -F "$TAB" '$3 == "skip" { printf " %s.html", $1 }' "$WORK/list")" || SKIP=""
+TRACKED="$(LC_ALL=C awk -F "$TAB" '$3 == "tracked" { printf " %s", $1 }' "$WORK/list")" || TRACKED=""
+PAGES="$(LC_ALL=C grep -c '"sequence"' "$WORK/index.json" 2>/dev/null)" || PAGES=0
+[ -z "$FOREIGN$SKIP" ] || echo "$ME: left alone, since this script did not write them:$FOREIGN$SKIP" >&2
+[ -z "$TRACKED" ] || echo "$ME: left alone, since git tracks them:$TRACKED" >&2
 [ -z "$STALE" ] || echo "$ME: kept in the bar but not refreshed, since their JSON is missing or not a page's:$STALE" >&2
+[ "$PAGES" -le 500 ] \
+  || echo "$ME: $DIR holds $PAGES pages and every run rewrites them all; delete old pages, with their .json, to keep runs quick" >&2
+# The folder's own .gitignore keeps the pages out of git, unless one was there already that
+# says otherwise and the project's does not cover them either: say so.
+if [ -n "$IN_GIT" ] && [ "$DIR" = "$ROOT/$CONFIG_NAME/reports" ]; then
+  rc=0
+  (cd "$ROOT" && git check-ignore -q -- "$CONFIG_NAME/reports/$STEM.html") 2>/dev/null || rc=$?
+  [ "$rc" -ne 1 ] \
+    || echo "$ME: git does not ignore $DIR/$STEM.html, and a page can hold private decisions: add $CONFIG_NAME/reports/ to the project's .gitignore" >&2
+fi
 
 case "$(uname -s 2>/dev/null || true)" in
   Darwin) OPENER="open" ;;
