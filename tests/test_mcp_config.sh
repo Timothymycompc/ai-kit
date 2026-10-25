@@ -36,7 +36,8 @@ assert_eq "context-mode context7 helius solana-dev" "$SERVERS" ".mcp.json ships 
 # whole Cloudflare write API — 2,594 endpoints — so the token's scopes are the only limit.
 # phantom is documented but not even offered by /setup-mcp — 29 tools that
 # sign, transfer and trade, with no key once logged in. memsearch-mcp is not published.
-for opt in playwright surfpool chainstack phantom nansen supabase cloudflare memsearch; do
+# solana-pulse is a hosted pre-sign checker with a daily free quota, so it stays the user's choice.
+for opt in playwright surfpool chainstack phantom nansen supabase cloudflare memsearch solana-pulse; do
   assert_file_not_contains "$MCP_FILE" "\"$opt\"" ".mcp.json leaves $opt opt-in"
 done
 # Nothing a default server needs is missing on a fresh machine: npx or a remote URL
